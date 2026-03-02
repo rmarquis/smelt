@@ -15,6 +15,23 @@ use super::blocks::wrap_line;
 use super::highlight::{count_inline_diff_rows, print_inline_diff, print_syntax_file};
 use super::{chunk_line, crlf, draw_bar, ConfirmChoice, ResumeEntry};
 
+/// Maximum number of scrollable list items in a dialog.
+///
+/// The dialog starts at `start_row` and can push content into scrollback
+/// by up to `height / 2` rows. This gives a max dialog height of
+/// `(height - start_row) + min(start_row, height / 2)`, minus overhead.
+fn max_dialog_items(start_row: u16, height: u16) -> usize {
+    max_dialog_height(start_row, height).saturating_sub(4)
+}
+
+/// Maximum total rows a dialog may occupy, accounting for push-up into
+/// scrollback (capped at half the terminal height).
+fn max_dialog_height(start_row: u16, height: u16) -> usize {
+    let space_below = height.saturating_sub(start_row) as usize;
+    let max_push = start_row.min(height / 2) as usize;
+    space_below + max_push
+}
+
 // ── TextArea ──────────────────────────────────────────────────────────────────
 
 /// Multi-line text editor used in dialog overlays.
@@ -233,6 +250,22 @@ fn render_inline_textarea(
     (row, cursor_pos)
 }
 
+/// Begin a dialog frame: synchronized update, hide cursor, move to start, clear.
+fn begin_dialog_draw(out: &mut io::Stdout, start_row: u16) {
+    let _ = out.queue(terminal::BeginSynchronizedUpdate);
+    let _ = out.queue(cursor::Hide);
+    let _ = out.queue(cursor::MoveTo(0, start_row));
+    let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+}
+
+/// End a dialog frame: clear remainder, end sync update, flush, return scroll.
+fn end_dialog_draw(out: &mut io::Stdout, start_row: u16, total_rows: u16, height: u16) -> u16 {
+    let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+    let _ = out.queue(terminal::EndSynchronizedUpdate);
+    let _ = out.flush();
+    (start_row + total_rows).saturating_sub(height)
+}
+
 /// Finish a dialog frame: optionally show cursor, end synchronized update, flush.
 fn finish_dialog_frame(out: &mut io::Stdout, cursor_pos: Option<(u16, u16)>, editing: bool) {
     if editing {
@@ -245,16 +278,6 @@ fn finish_dialog_frame(out: &mut io::Stdout, cursor_pos: Option<(u16, u16)>, edi
     let _ = out.flush();
 }
 
-/// Clear a dialog area and restore the cursor.
-fn dialog_cleanup(last_bar_row: u16) {
-    let mut out = io::stdout();
-    let (_, height) = terminal::size().unwrap_or((80, 24));
-    let clear_from = last_bar_row.min(height.saturating_sub(1));
-    let _ = out.queue(cursor::MoveTo(0, clear_from));
-    let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-    let _ = out.queue(cursor::Show);
-    let _ = out.flush();
-}
 
 // ── Dialog types ──────────────────────────────────────────────────────────────
 
@@ -488,10 +511,11 @@ impl ConfirmDialog {
         None
     }
 
-    /// Render the dialog overlay at the bottom of the terminal.
-    pub fn draw(&mut self) {
+    /// Render the dialog inline at `start_row`, pushing content into
+    /// scrollback if needed. Returns how many rows the terminal scrolled.
+    pub fn draw(&mut self, start_row: u16) -> u16 {
         if !self.dirty {
-            return;
+            return 0;
         }
         self.dirty = false;
 
@@ -524,7 +548,8 @@ impl ConfirmDialog {
         let base_rows: u16 =
             4 + title_rows + summary_rows + 1 + self.options.len() as u16 + ta_extra;
 
-        let max_preview = height.saturating_sub(base_rows + 5);
+        let max_avail = max_dialog_height(start_row, height) as u16;
+        let max_preview = max_avail.saturating_sub(base_rows + 2);
         let preview_rows = self.total_preview.min(max_preview);
         let has_preview = preview_rows > 0;
         let preview_extra = if has_preview {
@@ -535,7 +560,7 @@ impl ConfirmDialog {
         };
 
         let total_rows = base_rows + preview_extra;
-        let bar_row = height.saturating_sub(total_rows);
+        let bar_row = start_row;
 
         // Partial redraw: when editing and the dialog height hasn't changed,
         // skip re-rendering the static top portion (bar, title, preview, header)
@@ -678,12 +703,16 @@ impl ConfirmDialog {
         let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
         finish_dialog_frame(&mut out, cursor_pos, self.editing);
+
+        // Compute how much the terminal scrolled and adjust stored positions.
+        let scroll = (bar_row + total_rows).saturating_sub(height);
+        if scroll > 0 {
+            self.last_bar_row = self.last_bar_row.saturating_sub(scroll);
+            self.options_row = self.options_row.saturating_sub(scroll);
+        }
+        scroll
     }
 
-    /// Clear the dialog area and restore cursor.
-    pub fn cleanup(&self) {
-        dialog_cleanup(self.last_bar_row);
-    }
 }
 
 // ── RewindDialog ─────────────────────────────────────────────────────────────
@@ -694,29 +723,21 @@ pub struct RewindDialog {
     scroll_offset: usize,
     max_visible: usize,
     dirty: bool,
-    bar_row: u16,
-    prev_bar_row: u16,
     pub restore_vim_insert: bool,
 }
 
 impl RewindDialog {
     pub fn new(turns: Vec<(usize, String)>, restore_vim_insert: bool) -> Self {
         let (_, height) = terminal::size().unwrap_or((80, 24));
-        let max_visible = (height as usize).saturating_sub(6).min(turns.len());
-        let bar_row = height.saturating_sub((max_visible + 4) as u16);
+        let max_visible = max_dialog_items(height, height).min(turns.len());
         let selected = turns.len().saturating_sub(1);
         let scroll_offset = turns.len().saturating_sub(max_visible);
-        let mut out = io::stdout();
-        let _ = out.queue(cursor::Hide);
-        let _ = out.flush();
         Self {
             turns,
             selected,
             scroll_offset,
             max_visible,
             dirty: true,
-            bar_row,
-            prev_bar_row: bar_row,
             restore_vim_insert,
         }
     }
@@ -726,8 +747,7 @@ impl RewindDialog {
     }
 
     pub fn handle_resize(&mut self, h: u16) {
-        self.max_visible = (h as usize).saturating_sub(6).min(self.turns.len());
-        self.bar_row = h.saturating_sub((self.max_visible + 4) as u16);
+        self.max_visible = max_dialog_items(h, h).min(self.turns.len());
         self.scroll_offset = self
             .scroll_offset
             .min(self.turns.len().saturating_sub(self.max_visible));
@@ -763,34 +783,33 @@ impl RewindDialog {
         None
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, start_row: u16) -> u16 {
         if !self.dirty {
-            return;
+            return 0;
         }
         self.dirty = false;
 
         let mut out = io::stdout();
-        let (width, _) = terminal::size().unwrap_or((80, 24));
+        let (width, height) = terminal::size().unwrap_or((80, 24));
         let w = width as usize;
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
-        let clear_from = self.bar_row.min(self.prev_bar_row);
-        let _ = out.queue(cursor::MoveTo(0, clear_from));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(cursor::MoveTo(0, self.bar_row));
 
-        let mut row = self.bar_row;
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+        self.max_visible = max_dialog_items(start_row, height).min(self.turns.len());
+        self.scroll_offset = self
+            .scroll_offset
+            .min(self.turns.len().saturating_sub(self.max_visible));
+
+        // total_rows = bar(1) + title(1) + items + blank(1) + footer(1)
+        let total_rows = (self.max_visible as u16) + 4;
+
+        begin_dialog_draw(&mut out, start_row);
+
         draw_bar(&mut out, w, None, None, theme::ACCENT);
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
         let _ = out.queue(SetAttribute(Attribute::Dim));
         let _ = out.queue(Print(" Rewind to:"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
         let end = (self.scroll_offset + self.max_visible).min(self.turns.len());
         for (i, (_, ref full_text)) in self
@@ -804,8 +823,6 @@ impl RewindDialog {
             let num = i + 1;
             let max_label = w.saturating_sub(8);
             let truncated = truncate_str_local(label, max_label);
-            let _ = out.queue(cursor::MoveTo(0, row));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
             let _ = out.queue(Print("  "));
             if i == self.selected {
                 let _ = out.queue(SetAttribute(Attribute::Dim));
@@ -821,27 +838,16 @@ impl RewindDialog {
                 let _ = out.queue(SetAttribute(Attribute::Reset));
                 let _ = out.queue(Print(&truncated));
             }
-            row = row.saturating_add(1);
+            crlf(&mut out);
         }
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-        row = row.saturating_add(1);
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+        crlf(&mut out);
         let _ = out.queue(SetAttribute(Attribute::Dim));
         let _ = out.queue(Print(" enter: select  esc: cancel"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
-
-        self.prev_bar_row = self.bar_row;
+        end_dialog_draw(&mut out, start_row, total_rows, height)
     }
 
-    pub fn cleanup(&self) {
-        dialog_cleanup(self.bar_row);
-    }
 }
 
 // ── ResumeDialog ──────────────────────────────────────────────────────────────
@@ -856,8 +862,6 @@ pub struct ResumeDialog {
     scroll_offset: usize,
     max_visible: usize,
     dirty: bool,
-    bar_row: u16,
-    prev_bar_row: u16,
     pending_d: bool,
 }
 
@@ -865,13 +869,7 @@ impl ResumeDialog {
     pub fn new(entries: Vec<ResumeEntry>, current_cwd: String) -> Self {
         let (_, height) = terminal::size().unwrap_or((80, 24));
         let filtered = filter_resume_entries(&entries, "", true, &current_cwd);
-        let max_visible = (height as usize)
-            .saturating_sub(7)
-            .min(filtered.len().max(1));
-        let bar_row = height.saturating_sub((max_visible + 4) as u16);
-        let mut out = io::stdout();
-        let _ = out.queue(cursor::Hide);
-        let _ = out.flush();
+        let max_visible = max_dialog_items(height, height).min(filtered.len().max(1));
         Self {
             entries,
             current_cwd,
@@ -882,8 +880,6 @@ impl ResumeDialog {
             scroll_offset: 0,
             max_visible,
             dirty: true,
-            bar_row,
-            prev_bar_row: bar_row,
             pending_d: false,
         }
     }
@@ -899,10 +895,7 @@ impl ResumeDialog {
             self.workspace_only,
             &self.current_cwd,
         );
-        self.max_visible = (height as usize)
-            .saturating_sub(7)
-            .min(self.filtered.len().max(1));
-        self.bar_row = height.saturating_sub((self.max_visible + 4) as u16);
+        self.max_visible = max_dialog_items(height, height).min(self.filtered.len().max(1));
         if self.filtered.is_empty() {
             self.selected = 0;
             self.scroll_offset = 0;
@@ -1032,32 +1025,42 @@ impl ResumeDialog {
         }
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, start_row: u16) -> u16 {
         if !self.dirty {
-            return;
+            return 0;
         }
         self.dirty = false;
 
         let mut out = io::stdout();
-        let (width, _) = terminal::size().unwrap_or((80, 24));
+        let (width, height) = terminal::size().unwrap_or((80, 24));
         let w = width as usize;
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
-        let clear_from = self.bar_row.min(self.prev_bar_row);
-        let _ = out.queue(cursor::MoveTo(0, clear_from));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(cursor::MoveTo(0, self.bar_row));
 
-        let mut row = self.bar_row;
+        self.max_visible = max_dialog_items(start_row, height).min(self.filtered.len().max(1));
+        if self.filtered.is_empty() {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+            self.scroll_offset = self
+                .scroll_offset
+                .min(self.filtered.len().saturating_sub(self.max_visible));
+        }
+
+        // total_rows = bar(1) + title(1) + items + blank(1) + footer(1)
+        let item_rows = if self.filtered.is_empty() {
+            1
+        } else {
+            self.max_visible as u16
+        };
+        let total_rows = item_rows + 4;
+
+        begin_dialog_draw(&mut out, start_row);
+
         let now_ms = session::now_ms();
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
         draw_bar(&mut out, w, None, None, theme::ACCENT);
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
         let _ = out.queue(SetAttribute(Attribute::Dim));
         if self.workspace_only {
             let _ = out.queue(Print(" Resume (workspace):"));
@@ -1067,15 +1070,13 @@ impl ResumeDialog {
         let _ = out.queue(SetAttribute(Attribute::Reset));
         let _ = out.queue(Print(" "));
         let _ = out.queue(Print(&self.query));
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
         if self.filtered.is_empty() {
-            let _ = out.queue(cursor::MoveTo(0, row));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
             let _ = out.queue(SetAttribute(Attribute::Dim));
             let _ = out.queue(Print("  No matches"));
             let _ = out.queue(SetAttribute(Attribute::Reset));
-            row = row.saturating_add(1);
+            crlf(&mut out);
         } else {
             let end = (self.scroll_offset + self.max_visible).min(self.filtered.len());
             for (i, entry) in self
@@ -1090,8 +1091,6 @@ impl ResumeDialog {
                 let time_len = time_ago.chars().count() + 1;
                 let max_label = w.saturating_sub(time_len + 4);
                 let truncated = truncate_str_local(&title, max_label);
-                let _ = out.queue(cursor::MoveTo(0, row));
-                let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
                 if i == self.selected {
                     let _ = out.queue(Print("  "));
                     let _ = out.queue(SetForegroundColor(theme::ACCENT));
@@ -1105,15 +1104,11 @@ impl ResumeDialog {
                 let _ = out.queue(SetAttribute(Attribute::Dim));
                 let _ = out.queue(Print(&time_ago));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
-                row = row.saturating_add(1);
+                crlf(&mut out);
             }
         }
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-        row = row.saturating_add(1);
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+        crlf(&mut out);
         let _ = out.queue(SetAttribute(Attribute::Dim));
         if self.workspace_only {
             let _ = out.queue(Print(
@@ -1125,15 +1120,7 @@ impl ResumeDialog {
             ));
         }
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
-
-        self.prev_bar_row = self.bar_row;
-    }
-
-    pub fn cleanup(&self) {
-        dialog_cleanup(self.bar_row);
+        end_dialog_draw(&mut out, start_row, total_rows, height)
     }
 }
 
@@ -1146,8 +1133,6 @@ pub struct PsDialog {
     scroll_offset: usize,
     max_visible: usize,
     dirty: bool,
-    bar_row: u16,
-    prev_bar_row: u16,
     killed: Vec<String>,
 }
 
@@ -1155,11 +1140,7 @@ impl PsDialog {
     pub fn new(registry: engine::tools::ProcessRegistry) -> Self {
         let procs = Self::fetch_procs(&registry, &[]);
         let (_, height) = terminal::size().unwrap_or((80, 24));
-        let max_visible = (height as usize).saturating_sub(7).min(procs.len().max(1));
-        let bar_row = height.saturating_sub((max_visible + 4) as u16);
-        let mut out = io::stdout();
-        let _ = out.queue(cursor::Hide);
-        let _ = out.flush();
+        let max_visible = max_dialog_items(height, height).min(procs.len().max(1));
         Self {
             registry,
             procs,
@@ -1167,8 +1148,6 @@ impl PsDialog {
             scroll_offset: 0,
             max_visible,
             dirty: true,
-            bar_row,
-            prev_bar_row: bar_row,
             killed: Vec::new(),
         }
     }
@@ -1184,8 +1163,7 @@ impl PsDialog {
     }
 
     pub fn handle_resize(&mut self, h: u16) {
-        self.max_visible = (h as usize).saturating_sub(7).min(self.procs.len().max(1));
-        self.bar_row = h.saturating_sub((self.max_visible + 4) as u16);
+        self.max_visible = max_dialog_items(h, h).min(self.procs.len().max(1));
         if self.procs.is_empty() {
             self.selected = 0;
             self.scroll_offset = 0;
@@ -1233,8 +1211,7 @@ impl PsDialog {
                         self.selected = 0;
                     }
                     let (_, h) = terminal::size().unwrap_or((80, 24));
-                    self.max_visible = (h as usize).saturating_sub(7).min(self.procs.len().max(1));
-                    self.bar_row = h.saturating_sub((self.max_visible + 4) as u16);
+                    self.max_visible = max_dialog_items(h, h).min(self.procs.len().max(1));
                     self.dirty = true;
                 }
             }
@@ -1243,9 +1220,9 @@ impl PsDialog {
         None
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, start_row: u16) -> u16 {
         if !self.dirty {
-            return;
+            return 0;
         }
         self.dirty = false;
 
@@ -1253,31 +1230,43 @@ impl PsDialog {
         let now = std::time::Instant::now();
 
         let mut out = io::stdout();
-        let (width, _) = terminal::size().unwrap_or((80, 24));
+        let (width, height) = terminal::size().unwrap_or((80, 24));
         let w = width as usize;
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
-        let clear_from = self.bar_row.min(self.prev_bar_row);
-        let _ = out.queue(cursor::MoveTo(0, clear_from));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(cursor::MoveTo(0, self.bar_row));
 
-        let mut row = self.bar_row;
+        self.max_visible = max_dialog_items(start_row, height).min(self.procs.len().max(1));
+        if self.procs.is_empty() {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.selected = self.selected.min(self.procs.len().saturating_sub(1));
+            self.scroll_offset = self
+                .scroll_offset
+                .min(self.procs.len().saturating_sub(self.max_visible));
+        }
+
+        // total_rows = bar(1) + title(1) + items + blank(1) + footer(1)
+        let item_rows = if self.procs.is_empty() {
+            1
+        } else {
+            self.max_visible as u16
+        };
+        let total_rows = item_rows + 4;
+
+        begin_dialog_draw(&mut out, start_row);
+
         draw_bar(&mut out, w, None, None, theme::ACCENT);
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
-        let _ = out.queue(cursor::MoveTo(0, row));
         let _ = out.queue(SetAttribute(Attribute::Dim));
         let _ = out.queue(Print(" Background Processes"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        row = row.saturating_add(1);
+        crlf(&mut out);
 
         if self.procs.is_empty() {
-            let _ = out.queue(cursor::MoveTo(0, row));
             let _ = out.queue(SetAttribute(Attribute::Dim));
             let _ = out.queue(Print("  No processes"));
             let _ = out.queue(SetAttribute(Attribute::Reset));
-            row = row.saturating_add(1);
+            crlf(&mut out);
         } else {
             let end = (self.scroll_offset + self.max_visible).min(self.procs.len());
             for (i, proc) in self
@@ -1287,8 +1276,6 @@ impl PsDialog {
                 .take(end)
                 .skip(self.scroll_offset)
             {
-                let _ = out.queue(cursor::MoveTo(0, row));
-                let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
                 let time = format_duration(now.duration_since(proc.started_at).as_secs());
                 let meta = format!(" {time} {}", proc.id);
                 let meta_len = meta.chars().count() + 1;
@@ -1307,28 +1294,17 @@ impl PsDialog {
                 let _ = out.queue(SetAttribute(Attribute::Dim));
                 let _ = out.queue(Print(format!("{time} {}", proc.id)));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
-                row = row.saturating_add(1);
+                crlf(&mut out);
             }
         }
 
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-        row = row.saturating_add(1);
-        let _ = out.queue(cursor::MoveTo(0, row));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+        crlf(&mut out);
         let _ = out.queue(SetAttribute(Attribute::Dim));
         let _ = out.queue(Print(" esc: close  k: kill selected"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
-
-        self.prev_bar_row = self.bar_row;
+        end_dialog_draw(&mut out, start_row, total_rows, height)
     }
 
-    pub fn cleanup(&self) {
-        dialog_cleanup(self.bar_row);
-    }
 }
 
 /// Non-blocking question dialog state machine.
@@ -1344,7 +1320,6 @@ pub struct QuestionDialog {
     visited: Vec<bool>,
     answered: Vec<bool>,
     dirty: bool,
-    last_bar_row: u16,
 }
 
 impl QuestionDialog {
@@ -1367,7 +1342,6 @@ impl QuestionDialog {
             visited: vec![false; n],
             answered: vec![false; n],
             dirty: true,
-            last_bar_row: u16::MAX,
         }
     }
 
@@ -1476,10 +1450,11 @@ impl QuestionDialog {
         None
     }
 
-    /// Render the dialog overlay at the bottom of the terminal.
-    pub fn draw(&mut self) {
+    /// Render the dialog inline at `start_row`, pushing content into
+    /// scrollback if needed. Returns how many rows the terminal scrolled.
+    pub fn draw(&mut self, start_row: u16) -> u16 {
         if !self.dirty {
-            return;
+            return 0;
         }
         self.dirty = false;
 
@@ -1515,13 +1490,10 @@ impl QuestionDialog {
         // 1=bar, 1=blank, q_rows=question, 1=blank, 2=other+bottom
         let fixed_rows =
             1 + (self.has_tabs as u16) + 1 + q_rows + 1 + self.max_options as u16 + 2 + ta_extra;
-        let bar_row = height.saturating_sub(fixed_rows);
-        let clear_from = bar_row.min(self.last_bar_row);
-        self.last_bar_row = bar_row;
+        let bar_row = start_row;
 
-        let _ = out.queue(cursor::MoveTo(0, clear_from));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
         let _ = out.queue(cursor::MoveTo(0, bar_row));
+        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
         let mut row = bar_row;
 
@@ -1695,12 +1667,10 @@ impl QuestionDialog {
         let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
         finish_dialog_frame(&mut out, cursor_pos, editing);
+
+        (bar_row + fixed_rows).saturating_sub(height)
     }
 
-    /// Clear the dialog area and restore cursor.
-    pub fn cleanup(&self) {
-        dialog_cleanup(self.last_bar_row);
-    }
 
     fn build_answer(&self) -> String {
         let mut answers = serde_json::Map::new();

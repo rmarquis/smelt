@@ -153,52 +153,24 @@ impl ActiveDialog {
         }
     }
 
-    fn draw(&mut self) {
+    fn draw(&mut self, start_row: u16) -> u16 {
         match self {
-            ActiveDialog::Confirm { dialog, .. } => dialog.draw(),
-            ActiveDialog::AskQuestion { dialog, .. } => dialog.draw(),
-            ActiveDialog::Ps(d) => d.draw(),
-            ActiveDialog::Rewind(d) => d.draw(),
-            ActiveDialog::Resume(d) => d.draw(),
+            ActiveDialog::Confirm { dialog, .. } => dialog.draw(start_row),
+            ActiveDialog::AskQuestion { dialog, .. } => dialog.draw(start_row),
+            ActiveDialog::Ps(d) => d.draw(start_row),
+            ActiveDialog::Rewind(d) => d.draw(start_row),
+            ActiveDialog::Resume(d) => d.draw(start_row),
         }
     }
 
-    fn cleanup(&self) {
+    fn handle_resize(&mut self, _w: u16, h: u16) {
         match self {
-            ActiveDialog::Confirm { dialog, .. } => dialog.cleanup(),
-            ActiveDialog::AskQuestion { dialog, .. } => dialog.cleanup(),
-            ActiveDialog::Ps(d) => d.cleanup(),
-            ActiveDialog::Rewind(d) => d.cleanup(),
-            ActiveDialog::Resume(d) => d.cleanup(),
+            ActiveDialog::Confirm { dialog, .. } => dialog.mark_dirty(),
+            ActiveDialog::AskQuestion { dialog, .. } => dialog.mark_dirty(),
+            ActiveDialog::Ps(d) => d.handle_resize(h),
+            ActiveDialog::Rewind(d) => d.handle_resize(h),
+            ActiveDialog::Resume(d) => d.handle_resize(h),
         }
-    }
-
-    fn handle_resize(&mut self, w: u16, h: u16) {
-        match self {
-            ActiveDialog::Confirm { dialog, .. } => {
-                dialog.mark_dirty();
-                dialog.draw();
-            }
-            ActiveDialog::AskQuestion { dialog, .. } => {
-                dialog.mark_dirty();
-                dialog.draw();
-            }
-            ActiveDialog::Ps(d) => {
-                d.handle_resize(h);
-                d.draw();
-            }
-            ActiveDialog::Rewind(d) => {
-                d.handle_resize(h);
-                d.draw();
-            }
-            ActiveDialog::Resume(d) => {
-                d.handle_resize(h);
-                d.draw();
-            }
-        }
-        // Resize needs width for screen redraw but dialogs use terminal::size()
-        // internally — we just need to suppress the unused warning.
-        let _ = w;
     }
 }
 
@@ -489,7 +461,8 @@ impl App {
                 if redirtied {
                     d.mark_dirty();
                 }
-                d.draw();
+                let scroll = d.draw(self.screen.dialog_row());
+                self.screen.adjust_for_dialog_scroll(scroll);
             }
 
             // ── Wait for next event ──────────────────────────────────────
@@ -532,7 +505,8 @@ impl App {
                     let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
                     if let Some(d) = active_dialog.as_mut() {
                         if redirtied { d.mark_dirty(); }
-                        d.draw();
+                        let scroll = d.draw(self.screen.dialog_row());
+                        self.screen.adjust_for_dialog_scroll(scroll);
                     }
                 }
 
@@ -560,7 +534,8 @@ impl App {
                     let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
                     if let Some(d) = active_dialog.as_mut() {
                         if redirtied { d.mark_dirty(); }
-                        d.draw();
+                        let scroll = d.draw(self.screen.dialog_row());
+                        self.screen.adjust_for_dialog_scroll(scroll);
                     }
                 }
 
@@ -711,9 +686,7 @@ impl App {
                 match active_dialog.take().unwrap() {
                     ActiveDialog::Ps(mut d) => {
                         if let Some(_killed) = d.handle_key(code, modifiers) {
-                            d.cleanup();
-                            // Process killing is now handled by the engine.
-                            self.screen.redraw(self.screen.has_scrollback);
+                            self.screen.clear_dialog_area();
                         } else {
                             *active_dialog = Some(ActiveDialog::Ps(d));
                         }
@@ -722,7 +695,6 @@ impl App {
                     ActiveDialog::Rewind(mut d) => {
                         let restore = d.restore_vim_insert;
                         if let Some(maybe_idx) = d.handle_key(code, modifiers) {
-                            d.cleanup();
                             if let Some(idx) = maybe_idx {
                                 if let Some(text) = self.rewind_to(idx) {
                                     self.input.buf = text;
@@ -731,7 +703,7 @@ impl App {
                             } else if restore {
                                 self.input.set_vim_mode(vim::ViMode::Insert);
                             }
-                            self.screen.redraw(self.screen.has_scrollback);
+                            self.screen.clear_dialog_area();
                         } else {
                             *active_dialog = Some(ActiveDialog::Rewind(d));
                         }
@@ -739,7 +711,6 @@ impl App {
                     }
                     ActiveDialog::Resume(mut d) => {
                         if let Some(maybe_id) = d.handle_key(code, modifiers) {
-                            d.cleanup();
                             if let Some(id) = maybe_id {
                                 if let Some(loaded) = session::load(&id) {
                                     self.load_session(loaded);
@@ -747,7 +718,7 @@ impl App {
                                     self.screen.flush_blocks();
                                 }
                             }
-                            self.screen.redraw(self.screen.has_scrollback);
+                            self.screen.clear_dialog_area();
                         } else {
                             *active_dialog = Some(ActiveDialog::Resume(d));
                         }
@@ -759,14 +730,13 @@ impl App {
                         request_id,
                     } => {
                         if let Some((choice, message)) = dialog.handle_key(code, modifiers) {
-                            dialog.cleanup();
                             let should_cancel = self.resolve_confirm(
                                 (choice, message),
                                 request_id,
                                 &tool_name,
                                 agent,
                             );
-                            self.screen.redraw(self.screen.has_scrollback);
+                            self.screen.clear_dialog_area();
                             if should_cancel && agent.is_some() {
                                 self.finish_turn(true);
                                 *agent = None;
@@ -784,9 +754,8 @@ impl App {
                         request_id,
                     } => {
                         if let Some(answer) = dialog.handle_key(code, modifiers) {
-                            dialog.cleanup();
                             let should_cancel = self.resolve_question(answer, request_id, agent);
-                            self.screen.redraw(self.screen.has_scrollback);
+                            self.screen.clear_dialog_area();
                             if should_cancel && agent.is_some() {
                                 self.finish_turn(true);
                                 *agent = None;
@@ -1458,13 +1427,12 @@ impl App {
         let mut dialog = render::ResumeDialog::new(entries, cwd);
         terminal::enable_raw_mode().ok();
         loop {
-            dialog.draw();
+            let _ = dialog.draw(0);
             match event::read() {
                 Ok(Event::Key(KeyEvent {
                     code, modifiers, ..
                 })) => {
                     if let Some(maybe_id) = dialog.handle_key(code, modifiers) {
-                        dialog.cleanup();
                         terminal::disable_raw_mode().ok();
                         if let Some(id) = maybe_id {
                             if let Some(loaded) = session::load(&id) {
@@ -2035,9 +2003,8 @@ impl App {
                 }
 
                 // Close any non-blocking dialog (e.g. Ps) to make room.
-                if let Some(prev) = active_dialog.take() {
-                    prev.cleanup();
-                    self.screen.redraw(self.screen.has_scrollback);
+                if active_dialog.take().is_some() {
+                    self.screen.clear_dialog_area();
                 }
                 self.screen.set_active_status(ToolStatus::Confirm);
                 self.render_screen();
@@ -2065,9 +2032,8 @@ impl App {
                 }
 
                 // Close any non-blocking dialog (e.g. Ps) to make room.
-                if let Some(prev) = active_dialog.take() {
-                    prev.cleanup();
-                    self.screen.redraw(self.screen.has_scrollback);
+                if active_dialog.take().is_some() {
+                    self.screen.clear_dialog_area();
                 }
                 self.render_screen();
                 let questions = render::parse_questions(&args);

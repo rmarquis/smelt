@@ -219,6 +219,8 @@ struct PromptState {
     drawn: bool,
     dirty: bool,
     redraw_row: u16,
+    /// Row where a dialog should start rendering (after active tool + gap).
+    dialog_row: u16,
     prev_rows: u16,
     /// Cursor row to use when `drawn` is false, avoiding racy cursor::position() queries.
     fallback_row: Option<u16>,
@@ -230,6 +232,7 @@ impl PromptState {
             drawn: false,
             dirty: true,
             redraw_row: 0,
+            dialog_row: 0,
             prev_rows: 0,
             fallback_row: None,
         }
@@ -406,6 +409,44 @@ impl Screen {
             self.running_procs = count;
             self.prompt.dirty = true;
         }
+    }
+
+    /// Row where the prompt section starts (includes active tool + gap).
+    pub fn redraw_row(&self) -> u16 {
+        self.prompt.redraw_row
+    }
+
+    /// Row where a dialog should start rendering (lines up with the prompt bar).
+    pub fn dialog_row(&self) -> u16 {
+        self.prompt.dialog_row
+    }
+
+    /// Adjust internal row positions after a dialog push caused terminal scroll.
+    pub fn adjust_for_dialog_scroll(&mut self, scroll: u16) {
+        if scroll == 0 {
+            return;
+        }
+        self.prompt.redraw_row = self.prompt.redraw_row.saturating_sub(scroll);
+        self.prompt.dialog_row = self.prompt.dialog_row.saturating_sub(scroll);
+        if let Some(ref mut row) = self.content_start_row {
+            *row = row.saturating_sub(scroll);
+        }
+    }
+
+    /// Clear the area occupied by a dismissed dialog and prepare the prompt
+    /// for re-rendering on the next tick.  Scrollback is never touched.
+    pub fn clear_dialog_area(&mut self) {
+        let row = self.prompt.redraw_row;
+        let mut out = io::stdout();
+        let _ = out.queue(terminal::BeginSynchronizedUpdate);
+        let _ = out.queue(cursor::MoveTo(0, row));
+        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+        let _ = out.queue(terminal::EndSynchronizedUpdate);
+        let _ = out.flush();
+        self.prompt.drawn = false;
+        self.prompt.dirty = true;
+        self.prompt.fallback_row = Some(row);
+        self.prompt.prev_rows = 0;
     }
 
     /// Move the cursor to the line after the prompt so the shell resumes cleanly.
@@ -808,6 +849,9 @@ impl Screen {
             } else {
                 self.prompt.redraw_row = top_row + block_rows;
             }
+            // dialog_row: where the prompt bar actually starts (after active
+            // tool + gap).  Dialogs render here to line up with the prompt.
+            self.prompt.dialog_row = self.prompt.redraw_row + active_rows + gap;
             self.prompt.drawn = true;
             self.prompt.dirty = false;
 
@@ -816,28 +860,37 @@ impl Screen {
             let _ = out.flush();
             false
         } else {
-            // ── Content-only mode (dialog overlay) ──────────────────────
-            // Clear anything left over from a previous prompt or longer
-            // tool output, then handle scroll detection the same way the
-            // full path does.
+            // ── Content-only mode (dialog inline) ───────────────────────
+            // Render blocks + active tool, then leave a gap line before
+            // the dialog that follows.  The dialog renders inline at
+            // `redraw_row`, pushing conversation up via terminal scroll
+            // rather than overlaying it.
+            let gap: u16 = if block_rows > 0 || active_rows > 0 {
+                let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+                let _ = out.queue(Print("\r\n"));
+                1
+            } else {
+                0
+            };
             let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
-            let content_rows = block_rows + active_rows;
+            let content_rows = block_rows + active_rows + gap;
             let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
             let scrolled = draw_start_row + content_rows > height;
 
             if scrolled {
                 self.has_scrollback = true;
-                self.prompt.redraw_row = height.saturating_sub(active_rows);
+                self.prompt.redraw_row = height.saturating_sub(active_rows + gap);
             } else {
-                self.prompt.redraw_row = draw_start_row + block_rows;
+                self.prompt.redraw_row = draw_start_row + content_rows;
             }
-            self.prompt.prev_rows = active_rows;
+            self.prompt.dialog_row = self.prompt.redraw_row;
+            self.prompt.prev_rows = active_rows + gap;
             self.prompt.drawn = true;
             // Keep dirty so prompt re-renders immediately when dialog closes.
             self.prompt.dirty = true;
 
-            // Leave the synchronized update open — the dialog overlay that
+            // Leave the synchronized update open — the dialog that
             // follows will end the sync and flush, so the terminal paints
             // content + dialog as one atomic frame (no flicker).
             content_rows > 0
