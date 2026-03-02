@@ -9,6 +9,7 @@ pub use dialogs::{
 
 use crate::input::{InputState, MenuKind, PASTE_MARKER};
 use crate::theme;
+use crate::utils::format_duration;
 use crossterm::{
     cursor,
     style::{
@@ -298,7 +299,7 @@ impl WorkingState {
                         attr: Some(Attribute::Bold),
                     },
                     BarSpan {
-                        text: format!(" {}s", elapsed.as_secs()),
+                        text: format!(" {}", format_duration(elapsed.as_secs())),
                         color: theme::MUTED,
                         attr: Some(Attribute::Dim),
                     },
@@ -322,7 +323,7 @@ impl WorkingState {
                         attr: Some(Attribute::Bold),
                     },
                     BarSpan {
-                        text: format!(" {}s", elapsed.as_secs()),
+                        text: format!(" {}", format_duration(elapsed.as_secs())),
                         color: theme::MUTED,
                         attr: Some(Attribute::Dim),
                     },
@@ -343,7 +344,7 @@ impl WorkingState {
             Throbber::Done => {
                 let secs = self.final_elapsed.map(|d| d.as_secs()).unwrap_or(0);
                 vec![BarSpan {
-                    text: format!("done {}s", secs),
+                    text: format!("done {}", format_duration(secs)),
                     color: theme::MUTED,
                     attr: Some(Attribute::Dim),
                 }]
@@ -1316,16 +1317,7 @@ pub fn tool_arg_summary(name: &str, args: &HashMap<String, serde_json::Value>) -
 
 pub fn tool_timeout_label(args: &HashMap<String, serde_json::Value>) -> Option<String> {
     let ms = args.get("timeout_ms").and_then(|v| v.as_u64())?;
-    let secs = ms as f64 / 1000.0;
-    if secs >= 60.0 {
-        Some(format!(
-            "timeout: {}m{:.0}s",
-            (secs / 60.0) as u64,
-            secs % 60.0
-        ))
-    } else {
-        Some(format!("timeout: {:.0}s", secs))
-    }
+    Some(format!("timeout: {}", format_duration(ms / 1000)))
 }
 
 fn format_tokens(n: u32) -> String {

@@ -1,5 +1,6 @@
 use crate::session;
 use crate::theme;
+use crate::utils::format_duration;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::{
     cursor,
@@ -1199,12 +1200,7 @@ impl PsDialog {
                 let _ = out.queue(cursor::MoveTo(0, row));
                 let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
                 let status = if proc.running { "running" } else { "done" };
-                let elapsed_secs = proc.elapsed_ms / 1000;
-                let time = if elapsed_secs >= 60 {
-                    format!("{}m{}s", elapsed_secs / 60, elapsed_secs % 60)
-                } else {
-                    format!("{}s", elapsed_secs)
-                };
+                let time = format_duration(proc.elapsed_ms / 1000);
                 let meta = format!(" {} {} {}", status, time, proc.id);
                 let meta_len = meta.chars().count() + 1;
                 let max_cmd = w.saturating_sub(meta_len + 4);

@@ -8,6 +8,7 @@ pub mod render;
 pub mod session;
 pub mod state;
 pub mod theme;
+pub mod utils;
 pub mod vim;
 
 /// Expand @path references in user input: if a token starts with @ and

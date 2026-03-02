@@ -1,4 +1,5 @@
 use crate::theme;
+use crate::utils::format_duration;
 use crossterm::{
     style::{
         Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
@@ -357,7 +358,7 @@ fn print_tool_line(
     let _ = out.queue(ResetColor);
     let time_str = elapsed
         .filter(|d| d.as_secs_f64() >= 0.1)
-        .map(|d| format!("  {:.1}s", d.as_secs_f64()))
+        .map(|d| format!("  {}", format_duration(d.as_secs())))
         .unwrap_or_default();
     let timeout_str = timeout_label
         .map(|l| format!(" ({})", l))
