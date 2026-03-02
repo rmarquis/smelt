@@ -55,13 +55,14 @@ pub trait Tool: Send + Sync {
     }
 }
 
+#[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: vec![] }
+        Self::default()
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {

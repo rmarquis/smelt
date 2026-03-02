@@ -474,6 +474,10 @@ impl Screen {
 
     pub fn set_active_status(&mut self, status: ToolStatus) {
         if let Some(ref mut tool) = self.active_tool {
+            // Reset timer when transitioning from confirm → pending (user approved)
+            if tool.status == ToolStatus::Confirm && status == ToolStatus::Pending {
+                tool.start_time = Instant::now();
+            }
             tool.status = status;
             self.prompt.dirty = true;
         }

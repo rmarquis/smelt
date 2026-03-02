@@ -102,6 +102,10 @@ pub enum UiCommand {
         model: String,
         reasoning_effort: ReasoningEffort,
         history: Vec<Message>,
+        /// Override API base URL for this turn (uses engine default if None).
+        api_base: Option<String>,
+        /// Override API key for this turn (uses engine default if None).
+        api_key: Option<String>,
     },
 
     /// Inject a message mid-turn (steering / type-ahead).
@@ -185,6 +189,8 @@ pub struct Message {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]

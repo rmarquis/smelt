@@ -30,9 +30,15 @@ pub struct ProcessInfo {
 #[derive(Clone)]
 pub struct ProcessRegistry(Arc<Mutex<HashMap<String, Process>>>);
 
+impl Default for ProcessRegistry {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(HashMap::new())))
+    }
+}
+
 impl ProcessRegistry {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(HashMap::new())))
+        Self::default()
     }
 
     /// Spawn a background process. Output is accumulated internally; a

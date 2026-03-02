@@ -52,6 +52,12 @@ pub struct SessionMeta {
     pub cwd: Option<String>,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     pub fn new() -> Self {
         let now = now_ms();

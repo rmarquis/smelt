@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 pub struct App {
     pub model: String,
+    pub api_base: String,
+    pub api_key_env: String,
     pub reasoning_effort: ReasoningEffort,
     pub mode: Mode,
     pub screen: Screen,
@@ -220,8 +222,11 @@ enum DeferredDialog {
 // ── App impl ─────────────────────────────────────────────────────────────────
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: String,
+        api_base: String,
+        api_key_env: String,
         engine: EngineHandle,
         vim_from_config: bool,
         auto_compact: bool,
@@ -241,6 +246,8 @@ impl App {
         screen.set_reasoning_effort(reasoning_effort);
         Self {
             model,
+            api_base,
+            api_key_env,
             reasoning_effort,
             mode,
             screen,
@@ -654,6 +661,8 @@ impl App {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort,
             history: self.history.clone(),
+            api_base: Some(self.api_base.clone()),
+            api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
         });
 
         // Drain events, printing text to stdout.
@@ -792,11 +801,9 @@ impl App {
                                 agent,
                             );
                             self.screen.redraw(self.screen.has_scrollback);
-                            if should_cancel {
-                                if agent.is_some() {
-                                    self.finish_turn(true);
-                                    *agent = None;
-                                }
+                            if should_cancel && agent.is_some() {
+                                self.finish_turn(true);
+                                *agent = None;
                             }
                         } else {
                             *active_dialog = Some(ActiveDialog::Confirm {
@@ -814,11 +821,9 @@ impl App {
                             dialog.cleanup();
                             let should_cancel = self.resolve_question(answer, request_id, agent);
                             self.screen.redraw(self.screen.has_scrollback);
-                            if should_cancel {
-                                if agent.is_some() {
-                                    self.finish_turn(true);
-                                    *agent = None;
-                                }
+                            if should_cancel && agent.is_some() {
+                                self.finish_turn(true);
+                                *agent = None;
                             }
                         } else {
                             *active_dialog = Some(ActiveDialog::AskQuestion { dialog, request_id });
@@ -884,6 +889,8 @@ impl App {
                         if let Some(resolved) = self.available_models.iter().find(|m| m.key == key)
                         {
                             self.model = resolved.model_name.clone();
+                            self.api_base = resolved.api_base.clone();
+                            self.api_key_env = resolved.api_key_env.clone();
                             self.screen.set_model_label(resolved.model_name.clone());
                             state::set_selected_model(key);
                         }
@@ -1279,6 +1286,8 @@ impl App {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort,
             history: self.history.clone(),
+            api_base: Some(self.api_base.clone()),
+            api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
         });
 
         TurnState {
@@ -1447,6 +1456,8 @@ impl App {
                 .find(|m| m.key == *model_key || m.model_name == *model_key)
             {
                 self.model = resolved.model_name.clone();
+                self.api_base = resolved.api_base.clone();
+                self.api_key_env = resolved.api_key_env.clone();
                 self.screen.set_model_label(resolved.model_name.clone());
             }
         }
@@ -1544,6 +1555,13 @@ impl App {
                     }
                 }
                 Role::Assistant => {
+                    if let Some(ref reasoning) = msg.reasoning_content {
+                        if !reasoning.is_empty() {
+                            self.screen.push(Block::Thinking {
+                                content: reasoning.clone(),
+                            });
+                        }
+                    }
                     if let Some(ref content) = msg.content {
                         if !content.is_empty() {
                             self.screen.push(Block::Text {
@@ -1682,6 +1700,7 @@ impl App {
         self.history.push(Message {
             role: Role::User,
             content: Some(expanded),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });

@@ -45,7 +45,7 @@ async fn main() {
     let available_models = cfg.resolve_models();
 
     // Resolve the active model: CLI flags > cached selection > default_model > first in config
-    let (api_base, api_key, model, model_config) = {
+    let (api_base, api_key, api_key_env, model, model_config) = {
         let resolved = if let Some(ref cli_model) = args.model {
             available_models
                 .iter()
@@ -67,7 +67,7 @@ async fn main() {
                 .clone()
                 .unwrap_or_else(|| r.api_key_env.clone());
             let key = std::env::var(&key_env).unwrap_or_default();
-            (base, key, r.model_name.clone(), r.config.clone())
+            (base, key, key_env, r.model_name.clone(), r.config.clone())
         } else {
             let base = args
                 .api_base
@@ -79,7 +79,13 @@ async fn main() {
                 .model
                 .clone()
                 .expect("model must be set via --model or config file");
-            (base, key, model, tui::config::ModelConfig::default())
+            (
+                base,
+                key,
+                key_env,
+                model,
+                tui::config::ModelConfig::default(),
+            )
         }
     };
 
@@ -167,6 +173,7 @@ async fn main() {
 
     // Start the engine
     let permissions = engine::Permissions::load();
+    let initial_api_base = api_base.clone();
     let engine_handle = engine::start(engine::EngineConfig {
         api_base,
         api_key,
@@ -208,6 +215,8 @@ async fn main() {
     // Build the TUI app
     let mut app = tui::app::App::new(
         model,
+        initial_api_base,
+        api_key_env,
         engine_handle,
         vim_enabled,
         auto_compact,

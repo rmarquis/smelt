@@ -85,7 +85,18 @@ impl Provider {
     ) -> Result<LLMResponse, String> {
         let mut body: HashMap<&str, serde_json::Value> = HashMap::new();
         body.insert("model", serde_json::json!(model));
-        body.insert("messages", serde_json::to_value(messages).unwrap());
+        // Strip reasoning_content from messages — most APIs don't accept it back
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                let mut v = serde_json::to_value(m).unwrap();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("reasoning_content");
+                }
+                v
+            })
+            .collect();
+        body.insert("messages", serde_json::json!(api_messages));
         if !tools.is_empty() {
             body.insert("tools", serde_json::to_value(tools).unwrap());
         }
@@ -266,12 +277,14 @@ impl Provider {
         let system = Message {
             role: Role::System,
             content: Some(COMPACT_PROMPT.trim().to_string()),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         };
         let user = Message {
             role: Role::User,
             content: Some(format!("Conversation to summarize:\n\n{}", conversation)),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         };

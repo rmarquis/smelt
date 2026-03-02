@@ -294,7 +294,7 @@ pub(super) fn print_inline_diff(
     let visible = compute_change_visibility(changes, ctx);
     let mut old_lineno = dv.start_line;
     let mut new_lineno = dv.start_line;
-    let mut in_ellipsis = false;
+    let mut pending_ellipsis = false;
     for (ci, change) in changes.iter().enumerate() {
         if rows >= limit {
             return limit;
@@ -303,19 +303,21 @@ pub(super) fn print_inline_diff(
         match change.tag {
             ChangeTag::Equal => {
                 if visible[ci] {
-                    in_ellipsis = false;
+                    if pending_ellipsis {
+                        pending_ellipsis = false;
+                        let _ = out.queue(Print(indent));
+                        let _ = out.queue(SetForegroundColor(Color::DarkGrey));
+                        let _ = out.queue(Print(format!(" {:>w$}   ...", " ", w = gutter_width)));
+                        let _ = out.queue(ResetColor);
+                        crlf(out);
+                        rows += 1;
+                    }
                     if new_lineno >= dv.view_start && new_lineno < dv.view_end {
                         print_diff_lines(out, &mut h_new, &[text], new_lineno, None, None, &layout);
                         rows += 1;
                     }
-                } else if !in_ellipsis {
-                    in_ellipsis = true;
-                    let _ = out.queue(Print(indent));
-                    let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                    let _ = out.queue(Print(format!(" {:>w$}   ...", " ", w = gutter_width)));
-                    let _ = out.queue(ResetColor);
-                    crlf(out);
-                    rows += 1;
+                } else {
+                    pending_ellipsis = true;
                 }
                 let _ = h_old.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
                 // Advance h_new through skipped lines to keep highlighting in sync
@@ -325,7 +327,15 @@ pub(super) fn print_inline_diff(
                 new_lineno += 1;
             }
             ChangeTag::Delete => {
-                in_ellipsis = false;
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    let _ = out.queue(Print(indent));
+                    let _ = out.queue(SetForegroundColor(Color::DarkGrey));
+                    let _ = out.queue(Print(format!(" {:>w$}   ...", " ", w = gutter_width)));
+                    let _ = out.queue(ResetColor);
+                    crlf(out);
+                    rows += 1;
+                }
                 print_diff_lines(
                     out,
                     &mut h_old,
@@ -339,7 +349,15 @@ pub(super) fn print_inline_diff(
                 rows += 1;
             }
             ChangeTag::Insert => {
-                in_ellipsis = false;
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    let _ = out.queue(Print(indent));
+                    let _ = out.queue(SetForegroundColor(Color::DarkGrey));
+                    let _ = out.queue(Print(format!(" {:>w$}   ...", " ", w = gutter_width)));
+                    let _ = out.queue(ResetColor);
+                    crlf(out);
+                    rows += 1;
+                }
                 print_diff_lines(
                     out,
                     &mut h_new,
@@ -410,28 +428,36 @@ pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &
     let ctx = 3usize;
     let visible = compute_change_visibility(&dv.changes, ctx);
     let mut new_lineno = dv.start_line;
-    let mut in_ellipsis = false;
+    let mut pending_ellipsis = false;
     for (ci, change) in dv.changes.iter().enumerate() {
         let line = change.value.trim_end_matches('\n');
         match change.tag {
             ChangeTag::Equal => {
                 if visible[ci] {
-                    in_ellipsis = false;
+                    if pending_ellipsis {
+                        pending_ellipsis = false;
+                        rows += 1; // the "..." line
+                    }
                     if new_lineno >= dv.view_start && new_lineno < dv.view_end {
                         rows += visual_rows_for(line);
                     }
-                } else if !in_ellipsis {
-                    in_ellipsis = true;
-                    rows += 1; // the "..." line
+                } else {
+                    pending_ellipsis = true;
                 }
                 new_lineno += 1;
             }
             ChangeTag::Delete => {
-                in_ellipsis = false;
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    rows += 1;
+                }
                 rows += visual_rows_for(line);
             }
             ChangeTag::Insert => {
-                in_ellipsis = false;
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    rows += 1;
+                }
                 rows += visual_rows_for(line);
                 new_lineno += 1;
             }

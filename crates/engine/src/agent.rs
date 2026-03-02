@@ -36,12 +36,13 @@ pub async fn engine_task(
         tokio::select! {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
-                    UiCommand::StartTurn { input, mode, model, reasoning_effort, history } => {
+                    UiCommand::StartTurn { input, mode, model, reasoning_effort, history, api_base, api_key } => {
                         last_model = model.clone();
                         run_turn(
                             &config, &client, &registry, &config.permissions,
                             &processes, &proc_done_tx, &mut cmd_rx, &event_tx,
                             input, mode, &model, reasoning_effort, history,
+                            api_base, api_key,
                         ).await;
                     }
                     UiCommand::ListProcesses => {
@@ -109,6 +110,22 @@ fn build_provider(
     .with_reasoning_effort(reasoning_effort)
 }
 
+fn build_provider_with_overrides(
+    config: &EngineConfig,
+    client: &reqwest::Client,
+    reasoning_effort: ReasoningEffort,
+    api_base: Option<&str>,
+    api_key: Option<&str>,
+) -> Provider {
+    Provider::new(
+        api_base.unwrap_or(&config.api_base).to_string(),
+        api_key.unwrap_or(&config.api_key).to_string(),
+        client.clone(),
+    )
+    .with_model_config(config.model_config.clone())
+    .with_reasoning_effort(reasoning_effort)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_turn(
     config: &EngineConfig,
@@ -124,14 +141,23 @@ async fn run_turn(
     model: &str,
     reasoning_effort: ReasoningEffort,
     history: Vec<Message>,
+    api_base_override: Option<String>,
+    api_key_override: Option<String>,
 ) {
-    let provider = build_provider(config, client, reasoning_effort);
+    let provider = build_provider_with_overrides(
+        config,
+        client,
+        reasoning_effort,
+        api_base_override.as_deref(),
+        api_key_override.as_deref(),
+    );
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let mut messages = Vec::with_capacity(history.len() + 2);
     messages.push(Message {
         role: Role::System,
         content: Some(config.system_prompt.clone()),
+        reasoning_content: None,
         tool_calls: None,
         tool_call_id: None,
     });
@@ -141,6 +167,7 @@ async fn run_turn(
         messages.push(Message {
             role: Role::User,
             content: Some(input),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });
@@ -162,6 +189,7 @@ async fn run_turn(
                         messages.push(Message {
                             role: Role::User,
                             content: Some(text),
+                            reasoning_content: None,
                             tool_calls: None,
                             tool_call_id: None,
                         });
@@ -237,10 +265,13 @@ async fn run_turn(
         let content = resp.content;
         let tool_calls = resp.tool_calls;
 
+        let reasoning = resp.reasoning_content;
+
         if tool_calls.is_empty() {
             messages.push(Message {
                 role: Role::Assistant,
                 content,
+                reasoning_content: reasoning,
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -252,6 +283,7 @@ async fn run_turn(
         messages.push(Message {
             role: Role::Assistant,
             content,
+            reasoning_content: reasoning,
             tool_calls: Some(tool_calls.clone()),
             tool_call_id: None,
         });
@@ -468,6 +500,7 @@ async fn run_turn(
             messages.push(Message {
                 role: Role::Tool,
                 content: Some(model_content),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: Some(tc.id.clone()),
             });
@@ -550,6 +583,7 @@ async fn compact_history(
     let mut new_messages = vec![Message {
         role: Role::System,
         content: Some(format!("Summary of prior conversation:\n\n{summary}")),
+        reasoning_content: None,
         tool_calls: None,
         tool_call_id: None,
     }];
@@ -603,6 +637,7 @@ fn push_tool_result(
     messages.push(Message {
         role: Role::Tool,
         content: Some(content.to_string()),
+        reasoning_content: None,
         tool_calls: None,
         tool_call_id: Some(tool_call_id.to_string()),
     });
