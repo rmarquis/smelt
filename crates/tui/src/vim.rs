@@ -1185,7 +1185,7 @@ impl Vim {
 // ── Character classification ────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
-enum CharClass {
+pub(crate) enum CharClass {
     /// vim "word" boundaries: alphanumeric+underscore vs punctuation vs whitespace.
     Word,
     /// vim "WORD" boundaries: non-whitespace vs whitespace.
@@ -1271,7 +1271,7 @@ fn word_forward_pos(buf: &str, cpos: usize, mode: CharClass) -> usize {
     }
 }
 
-fn word_backward_pos(buf: &str, cpos: usize, mode: CharClass) -> usize {
+pub(crate) fn word_backward_pos(buf: &str, cpos: usize, mode: CharClass) -> usize {
     if cpos == 0 {
         return 0;
     }

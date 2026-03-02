@@ -152,6 +152,12 @@ pub fn load(id: &str) -> Option<Session> {
     serde_json::from_str(&contents).ok()
 }
 
+pub fn delete(id: &str) {
+    let dir = sessions_dir();
+    let _ = fs::remove_file(dir.join(format!("{}.json", id)));
+    let _ = fs::remove_file(dir.join(format!("{}.meta.json", id)));
+}
+
 pub fn list_sessions() -> Vec<SessionMeta> {
     let _perf = crate::perf::begin("session_list");
     let dir = sessions_dir();

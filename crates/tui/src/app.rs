@@ -42,7 +42,6 @@ pub struct App {
     pub available_models: Vec<crate::config::ResolvedModel>,
     pub engine: EngineHandle,
     pending_title: bool,
-    ps_requested: bool,
     last_width: u16,
     last_height: u16,
 }
@@ -263,7 +262,6 @@ impl App {
             available_models,
             engine,
             pending_title: false,
-            ps_requested: false,
             last_width: terminal::size().map(|(w, _)| w).unwrap_or(80),
             last_height: terminal::size().map(|(_, h)| h).unwrap_or(24),
         }
@@ -354,23 +352,6 @@ impl App {
                             break;
                         }
                     };
-                    // Handle ProcessList event for /ps command.
-                    if let EngineEvent::ProcessList { ref processes } = ev {
-                        if self.ps_requested {
-                            self.ps_requested = false;
-                            if processes.is_empty() {
-                                self.screen.push(Block::Error {
-                                    message: "no background processes".into(),
-                                });
-                                self.screen.flush_blocks();
-                            } else {
-                                active_dialog = Some(ActiveDialog::Ps(render::PsDialog::new(
-                                    processes.clone(),
-                                )));
-                            }
-                            continue;
-                        }
-                    }
                     let action = if let Some(ref mut ag) = agent {
                         let ctrl =
                             self.handle_engine_event(ev, &mut ag.pending, &mut ag.steered_count);
@@ -556,22 +537,7 @@ impl App {
                 }
 
                 Some(ev) = self.engine.recv(), if !active_dialog.as_ref().is_some_and(|d| d.blocks_agent()) => {
-                    // Handle ProcessList event for /ps command.
-                    if let EngineEvent::ProcessList { ref processes } = ev {
-                        if self.ps_requested {
-                            self.ps_requested = false;
-                            if processes.is_empty() {
-                                self.screen.push(Block::Error {
-                                    message: "no background processes".into(),
-                                });
-                                self.screen.flush_blocks();
-                            } else {
-                                active_dialog = Some(ActiveDialog::Ps(
-                                    render::PsDialog::new(processes.clone()),
-                                ));
-                            }
-                        }
-                    } else if let Some(ref mut ag) = agent {
+                    if let Some(ref mut ag) = agent {
                         let ctrl = self.handle_engine_event(ev, &mut ag.pending, &mut ag.steered_count);
                         let action = self.dispatch_control(
                             ctrl,
@@ -1360,9 +1326,17 @@ impl App {
                 CommandAction::Continue
             }
             "/ps" => {
-                self.ps_requested = true;
-                self.engine.send(UiCommand::ListProcesses);
-                CommandAction::Continue
+                if self.engine.processes.list().is_empty() {
+                    self.screen.push(Block::Error {
+                        message: "no background processes".into(),
+                    });
+                    self.screen.flush_blocks();
+                    CommandAction::Continue
+                } else {
+                    CommandAction::OpenDialog(Box::new(ActiveDialog::Ps(render::PsDialog::new(
+                        self.engine.processes.clone(),
+                    ))))
+                }
             }
             _ if input.starts_with('!') => {
                 self.run_shell_escape(&input[1..]);
@@ -1435,6 +1409,7 @@ impl App {
         self.queued_messages.clear();
         self.screen.clear();
         self.input.clear();
+        self.engine.processes.clear();
         self.session = session::Session::new();
     }
 
@@ -1849,7 +1824,6 @@ impl App {
                 SessionControl::Done
             }
             EngineEvent::Shutdown { .. } => SessionControl::Done,
-            _ => SessionControl::Continue,
         }
     }
 

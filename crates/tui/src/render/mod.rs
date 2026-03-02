@@ -702,10 +702,12 @@ impl Screen {
         }
 
         let has_new_blocks = self.history.has_unflushed();
-        let has_active_tool = self.active_tool.is_some();
 
-        // Content-only: skip if nothing to render.
-        if prompt.is_none() && !has_new_blocks && !has_active_tool {
+        // Content-only (dialog overlay): only render when new blocks arrived.
+        // The active tool is already on screen from before the dialog opened;
+        // re-rendering it every tick would clear+redraw the dialog area and
+        // cause visible flicker.
+        if prompt.is_none() && !has_new_blocks {
             return false;
         }
         // Full mode: skip if nothing changed.
@@ -835,8 +837,9 @@ impl Screen {
             // Keep dirty so prompt re-renders immediately when dialog closes.
             self.prompt.dirty = true;
 
-            let _ = out.queue(terminal::EndSynchronizedUpdate);
-            let _ = out.flush();
+            // Leave the synchronized update open — the dialog overlay that
+            // follows will end the sync and flush, so the terminal paints
+            // content + dialog as one atomic frame (no flicker).
             content_rows > 0
         }
     }

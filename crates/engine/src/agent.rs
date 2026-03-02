@@ -45,16 +45,6 @@ pub async fn engine_task(
                             api_base, api_key,
                         ).await;
                     }
-                    UiCommand::ListProcesses => {
-                        let list = processes.list().into_iter().map(|p| protocol::ProcessInfo {
-                            id: p.id,
-                            command: p.command,
-                            running: p.running,
-                            exit_code: p.exit_code,
-                            elapsed_ms: p.started_at.elapsed().as_millis() as u64,
-                        }).collect();
-                        let _ = event_tx.send(EngineEvent::ProcessList { processes: list });
-                    }
                     UiCommand::Compact { keep_turns, history } => {
                         let provider = build_provider(&config, &client, ReasoningEffort::Off);
                         let cancel = tokio_util::sync::CancellationToken::new();
@@ -177,7 +167,7 @@ async fn run_turn(
     let mut first = true;
 
     loop {
-        // Drain pending commands (steering, mode changes, cancel)
+        // Drain pending commands (steering, mode changes, cancel, process list)
         if !first {
             loop {
                 match cmd_rx.try_recv() {
@@ -200,7 +190,8 @@ async fn run_turn(
                     Ok(UiCommand::Cancel) => {
                         cancel.cancel();
                     }
-                    _ => break,
+                    Ok(_) => {}
+                    Err(_) => break,
                 }
             }
         }

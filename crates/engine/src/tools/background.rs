@@ -17,12 +17,10 @@ struct Process {
     kill_tx: Option<mpsc::Sender<()>>,
 }
 
-/// Info about a background process, returned by `list()`.
+/// Info about a running background process, returned by `list()`.
 pub struct ProcessInfo {
     pub id: String,
     pub command: String,
-    pub running: bool,
-    pub exit_code: Option<i32>,
     pub started_at: Instant,
 }
 
@@ -173,20 +171,30 @@ impl ProcessRegistry {
         map.values().filter(|p| !p.finished).count()
     }
 
-    /// List all background processes with their status.
+    /// List running background processes.
     pub fn list(&self) -> Vec<ProcessInfo> {
         let map = self.0.lock().unwrap();
         let mut procs: Vec<ProcessInfo> = map
             .iter()
+            .filter(|(_, p)| !p.finished)
             .map(|(id, p)| ProcessInfo {
                 id: id.clone(),
                 command: p.command.clone(),
-                running: !p.finished,
-                exit_code: p.exit_code,
                 started_at: p.started_at,
             })
             .collect();
         procs.sort_by(|a, b| a.id.cmp(&b.id));
         procs
+    }
+
+    /// Kill all running processes and remove all entries.
+    pub fn clear(&self) {
+        let mut map = self.0.lock().unwrap();
+        for p in map.values_mut() {
+            if let Some(tx) = p.kill_tx.take() {
+                let _ = tx.try_send(());
+            }
+        }
+        map.clear();
     }
 }

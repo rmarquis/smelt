@@ -390,6 +390,17 @@ impl InputState {
                 self.insert_char(c);
                 Action::Redraw
             }
+            // Alt+Backspace (macOS) / Ctrl+Backspace (Linux/Windows): delete word backward.
+            Event::Key(KeyEvent {
+                code: KeyCode::Backspace,
+                modifiers,
+                ..
+            }) if modifiers.contains(KeyModifiers::ALT)
+                || modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.delete_word_backward();
+                Action::Redraw
+            }
             Event::Key(KeyEvent {
                 code: KeyCode::Backspace,
                 ..
@@ -746,6 +757,16 @@ impl InputState {
         self.maybe_remove_paste(prev);
         self.buf.drain(prev..self.cpos);
         self.cpos = prev;
+        self.recompute_completer();
+    }
+
+    fn delete_word_backward(&mut self) {
+        if self.cpos == 0 {
+            return;
+        }
+        let target = vim::word_backward_pos(&self.buf, self.cpos, vim::CharClass::Word);
+        self.buf.drain(target..self.cpos);
+        self.cpos = target;
         self.recompute_completer();
     }
 

@@ -7,7 +7,7 @@ use crossterm::{
     style::{Attribute, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal, QueueableCommand,
 };
-use protocol::ProcessInfo;
+use engine::tools::ProcessInfo;
 use std::collections::HashMap;
 use std::io::{self, Write};
 
@@ -117,6 +117,19 @@ impl TextArea {
         }
     }
 
+    fn delete_word_backward(&mut self) {
+        if self.col == 0 {
+            return;
+        }
+        let line = &self.lines[self.row];
+        let byte_pos = char_to_byte(line, self.col);
+        let target = crate::vim::word_backward_pos(line, byte_pos, crate::vim::CharClass::Word);
+        let target_col = line[..target].chars().count();
+        let end_byte = char_to_byte(&self.lines[self.row], self.col);
+        self.lines[self.row].drain(target..end_byte);
+        self.col = target_col;
+    }
+
     fn move_left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
@@ -163,6 +176,11 @@ impl TextArea {
         match (code, modifiers) {
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => self.insert_char(c),
             (KeyCode::Enter, _) => self.insert_newline(),
+            (KeyCode::Backspace, m)
+                if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
+            {
+                self.delete_word_backward()
+            }
             (KeyCode::Backspace, _) => self.backspace(),
             (KeyCode::Left, _) => self.move_left(),
             (KeyCode::Right, _) => self.move_right(),
@@ -840,6 +858,7 @@ pub struct ResumeDialog {
     dirty: bool,
     bar_row: u16,
     prev_bar_row: u16,
+    pending_d: bool,
 }
 
 impl ResumeDialog {
@@ -865,6 +884,7 @@ impl ResumeDialog {
             dirty: true,
             bar_row,
             prev_bar_row: bar_row,
+            pending_d: false,
         }
     }
 
@@ -902,6 +922,19 @@ impl ResumeDialog {
     /// Returns `Some(Some(id))` on selection, `Some(None)` on cancel.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Option<String>> {
         let (_, height) = terminal::size().unwrap_or((80, 24));
+
+        // Check for DD completion before anything else.
+        if self.pending_d {
+            self.pending_d = false;
+            if code == KeyCode::Char('d') && mods == KeyModifiers::NONE {
+                self.delete_selected(height);
+                return None;
+            }
+            // 'd' followed by something else: insert both as query chars.
+            self.query.push('d');
+            // Fall through to handle the current key normally.
+        }
+
         match (code, mods) {
             (KeyCode::Enter, _) => {
                 return Some(self.filtered.get(self.selected).map(|e| e.id.clone()));
@@ -912,13 +945,52 @@ impl ResumeDialog {
                 self.workspace_only = !self.workspace_only;
                 self.recalculate_layout(height);
             }
+            // Ctrl+U: half-page up
             (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.query.clear();
-                self.recalculate_layout(height);
+                if !self.filtered.is_empty() {
+                    let half = self.max_visible / 2;
+                    self.selected = self.selected.saturating_sub(half.max(1));
+                    if self.selected < self.scroll_offset {
+                        self.scroll_offset = self.selected;
+                    }
+                    self.dirty = true;
+                }
+            }
+            // Ctrl+D: half-page down
+            (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if !self.filtered.is_empty() {
+                    let half = self.max_visible / 2;
+                    self.selected =
+                        (self.selected + half.max(1)).min(self.filtered.len().saturating_sub(1));
+                    if self.selected >= self.scroll_offset + self.max_visible {
+                        self.scroll_offset = self.selected + 1 - self.max_visible;
+                    }
+                    self.dirty = true;
+                }
+            }
+            (KeyCode::Backspace, m)
+                if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
+            {
+                if self.query.is_empty() {
+                    self.delete_selected(height);
+                } else {
+                    let len = self.query.len();
+                    let target = crate::vim::word_backward_pos(
+                        &self.query,
+                        len,
+                        crate::vim::CharClass::Word,
+                    );
+                    self.query.truncate(target);
+                    self.recalculate_layout(height);
+                }
             }
             (KeyCode::Backspace, _) => {
-                self.query.pop();
-                self.recalculate_layout(height);
+                if self.query.is_empty() {
+                    self.delete_selected(height);
+                } else {
+                    self.query.pop();
+                    self.recalculate_layout(height);
+                }
             }
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                 if self.selected > 0 {
@@ -938,6 +1010,10 @@ impl ResumeDialog {
                     self.dirty = true;
                 }
             }
+            (KeyCode::Char('d'), KeyModifiers::NONE) if self.query.is_empty() => {
+                self.pending_d = true;
+                self.dirty = true;
+            }
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 self.query.push(c);
                 self.recalculate_layout(height);
@@ -945,6 +1021,15 @@ impl ResumeDialog {
             _ => {}
         }
         None
+    }
+
+    fn delete_selected(&mut self, height: u16) {
+        if let Some(entry) = self.filtered.get(self.selected) {
+            let id = entry.id.clone();
+            session::delete(&id);
+            self.entries.retain(|e| e.id != id);
+            self.recalculate_layout(height);
+        }
     }
 
     pub fn draw(&mut self) {
@@ -1032,11 +1117,11 @@ impl ResumeDialog {
         let _ = out.queue(SetAttribute(Attribute::Dim));
         if self.workspace_only {
             let _ = out.queue(Print(
-                " enter: select  esc: cancel  ctrl+w: all sessions  type to filter",
+                " enter: select  dd/bs: delete  esc: cancel  ctrl+w: all sessions",
             ));
         } else {
             let _ = out.queue(Print(
-                " enter: select  esc: cancel  ctrl+w: this workspace  type to filter",
+                " enter: select  dd/bs: delete  esc: cancel  ctrl+w: this workspace",
             ));
         }
         let _ = out.queue(SetAttribute(Attribute::Reset));
@@ -1055,6 +1140,7 @@ impl ResumeDialog {
 // ── PsDialog ──────────────────────────────────────────────────────────────────
 
 pub struct PsDialog {
+    registry: engine::tools::ProcessRegistry,
     procs: Vec<ProcessInfo>,
     selected: usize,
     scroll_offset: usize,
@@ -1066,7 +1152,8 @@ pub struct PsDialog {
 }
 
 impl PsDialog {
-    pub fn new(procs: Vec<ProcessInfo>) -> Self {
+    pub fn new(registry: engine::tools::ProcessRegistry) -> Self {
+        let procs = Self::fetch_procs(&registry, &[]);
         let (_, height) = terminal::size().unwrap_or((80, 24));
         let max_visible = (height as usize).saturating_sub(7).min(procs.len().max(1));
         let bar_row = height.saturating_sub((max_visible + 4) as u16);
@@ -1074,6 +1161,7 @@ impl PsDialog {
         let _ = out.queue(cursor::Hide);
         let _ = out.flush();
         Self {
+            registry,
             procs,
             selected: 0,
             scroll_offset: 0,
@@ -1083,6 +1171,12 @@ impl PsDialog {
             prev_bar_row: bar_row,
             killed: Vec::new(),
         }
+    }
+
+    fn fetch_procs(registry: &engine::tools::ProcessRegistry, killed: &[String]) -> Vec<ProcessInfo> {
+        registry.list().into_iter()
+            .filter(|p| !killed.contains(&p.id))
+            .collect()
     }
 
     pub fn mark_dirty(&mut self) {
@@ -1131,24 +1225,17 @@ impl PsDialog {
             }
             (KeyCode::Char('k'), KeyModifiers::NONE) => {
                 if let Some(p) = self.procs.get(self.selected) {
-                    if p.running {
-                        self.killed.push(p.id.clone());
-                        self.procs.remove(self.selected);
-                        if !self.procs.is_empty() {
-                            self.selected = self.selected.min(self.procs.len().saturating_sub(1));
-                        } else {
-                            self.selected = 0;
-                        }
-                        self.max_visible = {
-                            let (_, h) = terminal::size().unwrap_or((80, 24));
-                            (h as usize).saturating_sub(7).min(self.procs.len().max(1))
-                        };
-                        self.bar_row = {
-                            let (_, h) = terminal::size().unwrap_or((80, 24));
-                            h.saturating_sub((self.max_visible + 4) as u16)
-                        };
-                        self.dirty = true;
+                    self.killed.push(p.id.clone());
+                    self.procs = Self::fetch_procs(&self.registry, &self.killed);
+                    if !self.procs.is_empty() {
+                        self.selected = self.selected.min(self.procs.len().saturating_sub(1));
+                    } else {
+                        self.selected = 0;
                     }
+                    let (_, h) = terminal::size().unwrap_or((80, 24));
+                    self.max_visible = (h as usize).saturating_sub(7).min(self.procs.len().max(1));
+                    self.bar_row = h.saturating_sub((self.max_visible + 4) as u16);
+                    self.dirty = true;
                 }
             }
             _ => {}
@@ -1161,6 +1248,9 @@ impl PsDialog {
             return;
         }
         self.dirty = false;
+
+        self.procs = Self::fetch_procs(&self.registry, &self.killed);
+        let now = std::time::Instant::now();
 
         let mut out = io::stdout();
         let (width, _) = terminal::size().unwrap_or((80, 24));
@@ -1199,9 +1289,8 @@ impl PsDialog {
             {
                 let _ = out.queue(cursor::MoveTo(0, row));
                 let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-                let status = if proc.running { "running" } else { "done" };
-                let time = format_duration(proc.elapsed_ms / 1000);
-                let meta = format!(" {} {} {}", status, time, proc.id);
+                let time = format_duration(now.duration_since(proc.started_at).as_secs());
+                let meta = format!(" {time} {}", proc.id);
                 let meta_len = meta.chars().count() + 1;
                 let max_cmd = w.saturating_sub(meta_len + 4);
                 let cmd_display = truncate_str_local(&proc.command, max_cmd);
@@ -1216,14 +1305,7 @@ impl PsDialog {
                 }
                 let _ = out.queue(Print(" "));
                 let _ = out.queue(SetAttribute(Attribute::Dim));
-                if proc.running {
-                    let _ = out.queue(SetForegroundColor(theme::ACCENT));
-                    let _ = out.queue(Print(status));
-                    let _ = out.queue(ResetColor);
-                } else {
-                    let _ = out.queue(Print(status));
-                }
-                let _ = out.queue(Print(format!(" {time}")));
+                let _ = out.queue(Print(format!("{time} {}", proc.id)));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
                 row = row.saturating_add(1);
             }

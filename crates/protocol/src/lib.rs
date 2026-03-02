@@ -71,9 +71,6 @@ pub enum EngineEvent {
     /// A background process has finished.
     ProcessCompleted { id: String, exit_code: Option<i32> },
 
-    /// Response to `UiCommand::ListProcesses`.
-    ProcessList { processes: Vec<ProcessInfo> },
-
     /// Response to `UiCommand::Compact`.
     CompactionComplete { messages: Vec<Message> },
 
@@ -126,9 +123,6 @@ pub enum UiCommand {
 
     /// Change the active mode while the engine is running.
     SetMode { mode: Mode },
-
-    /// Request a list of background processes.
-    ListProcesses,
 
     /// Compact conversation history.
     Compact {
@@ -299,14 +293,4 @@ pub struct SessionMeta {
     pub model: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
-}
-
-/// Info about a background process.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessInfo {
-    pub id: String,
-    pub command: String,
-    pub running: bool,
-    pub exit_code: Option<i32>,
-    pub elapsed_ms: u64,
 }

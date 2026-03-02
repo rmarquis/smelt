@@ -56,6 +56,7 @@ pub struct EngineConfig {
 pub struct EngineHandle {
     pub cmd_tx: mpsc::UnboundedSender<UiCommand>,
     pub event_rx: mpsc::UnboundedReceiver<EngineEvent>,
+    pub processes: tools::ProcessRegistry,
 }
 
 impl EngineHandle {
@@ -80,9 +81,18 @@ pub fn start(config: EngineConfig) -> EngineHandle {
     let processes = tools::ProcessRegistry::new();
     let registry = tools::build_tools(processes.clone());
 
+    let processes_clone = processes.clone();
     tokio::spawn(agent::engine_task(
-        config, registry, processes, cmd_rx, event_tx,
+        config,
+        registry,
+        processes_clone,
+        cmd_rx,
+        event_tx,
     ));
 
-    EngineHandle { cmd_tx, event_rx }
+    EngineHandle {
+        cmd_tx,
+        event_rx,
+        processes,
+    }
 }
