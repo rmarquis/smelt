@@ -23,7 +23,7 @@ pub struct ProcessInfo {
     pub command: String,
     pub running: bool,
     pub exit_code: Option<i32>,
-    pub elapsed: std::time::Duration,
+    pub started_at: Instant,
 }
 
 /// Shared registry of background processes.
@@ -177,7 +177,7 @@ impl ProcessRegistry {
                 command: p.command.clone(),
                 running: !p.finished,
                 exit_code: p.exit_code,
-                elapsed: p.started_at.elapsed(),
+                started_at: p.started_at,
             })
             .collect();
         procs.sort_by(|a, b| a.id.cmp(&b.id));

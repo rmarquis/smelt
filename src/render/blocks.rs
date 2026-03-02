@@ -35,6 +35,8 @@ pub(super) fn gap_between(above: &Element, below: &Element) -> u16 {
         (_, Element::Block(Block::Thinking { .. })) => 1,
         (Element::Block(Block::Thinking { .. }), _) => 1,
         (Element::Block(Block::ToolCall { .. }), Element::Block(Block::Text { .. })) => 1,
+        (Element::Block(Block::Error { .. }), _) => 1,
+        (_, Element::Block(Block::Error { .. })) => 1,
         (Element::Block(_), Element::Prompt) => 1,
         (Element::ActiveTool, Element::Prompt) => 1,
         _ => 0,

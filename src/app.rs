@@ -4,8 +4,8 @@ use crate::input::{
 };
 use crate::provider::{Message, Provider, Role};
 use crate::render::{
-    tool_arg_summary, Block, ConfirmChoice, ConfirmDialog, QuestionDialog, ResumeEntry, Screen,
-    ToolOutput, ToolStatus,
+    tool_arg_summary, Block, ConfirmChoice, ConfirmDialog, FramePrompt, QuestionDialog,
+    ResumeEntry, Screen, ToolOutput, ToolStatus,
 };
 use crate::session::Session;
 use crate::{permissions, render, session, state, tools, vim};
@@ -144,6 +144,75 @@ enum ActiveDialog {
     Ps(render::PsDialog),
     Rewind(render::RewindDialog),
     Resume(render::ResumeDialog),
+}
+
+impl ActiveDialog {
+    /// Whether the agent is blocked on a reply channel for this dialog.
+    /// When true, no agent events will arrive so draining can be paused.
+    fn blocks_agent(&self) -> bool {
+        matches!(
+            self,
+            ActiveDialog::Confirm { .. } | ActiveDialog::AskQuestion { .. }
+        )
+    }
+
+    fn mark_dirty(&mut self) {
+        match self {
+            ActiveDialog::Confirm { dialog, .. } => dialog.mark_dirty(),
+            ActiveDialog::AskQuestion { dialog, .. } => dialog.mark_dirty(),
+            ActiveDialog::Ps(d) => d.mark_dirty(),
+            ActiveDialog::Rewind(d) => d.mark_dirty(),
+            ActiveDialog::Resume(d) => d.mark_dirty(),
+        }
+    }
+
+    fn draw(&mut self) {
+        match self {
+            ActiveDialog::Confirm { dialog, .. } => dialog.draw(),
+            ActiveDialog::AskQuestion { dialog, .. } => dialog.draw(),
+            ActiveDialog::Ps(d) => d.draw(),
+            ActiveDialog::Rewind(d) => d.draw(),
+            ActiveDialog::Resume(d) => d.draw(),
+        }
+    }
+
+    fn cleanup(&self) {
+        match self {
+            ActiveDialog::Confirm { dialog, .. } => dialog.cleanup(),
+            ActiveDialog::AskQuestion { dialog, .. } => dialog.cleanup(),
+            ActiveDialog::Ps(d) => d.cleanup(),
+            ActiveDialog::Rewind(d) => d.cleanup(),
+            ActiveDialog::Resume(d) => d.cleanup(),
+        }
+    }
+
+    fn handle_resize(&mut self, w: u16, h: u16) {
+        match self {
+            ActiveDialog::Confirm { dialog, .. } => {
+                dialog.mark_dirty();
+                dialog.draw();
+            }
+            ActiveDialog::AskQuestion { dialog, .. } => {
+                dialog.mark_dirty();
+                dialog.draw();
+            }
+            ActiveDialog::Ps(d) => {
+                d.handle_resize(h);
+                d.draw();
+            }
+            ActiveDialog::Rewind(d) => {
+                d.handle_resize(h);
+                d.draw();
+            }
+            ActiveDialog::Resume(d) => {
+                d.handle_resize(h);
+                d.draw();
+            }
+        }
+        // Resize needs width for screen redraw but dialogs use terminal::size()
+        // internally — we just need to suppress the unused warning.
+        let _ = w;
+    }
 }
 
 /// A permission dialog deferred because the user was actively typing.
@@ -285,8 +354,8 @@ impl App {
                 }
             }
 
-            // ── Drain agent events (only when no dialog is showing) ─────
-            if agent.is_some() && active_dialog.is_none() {
+            // ── Drain agent events (paused only for Confirm/AskQuestion) ──
+            if agent.is_some() && !active_dialog.as_ref().is_some_and(|d| d.blocks_agent()) {
                 loop {
                     let ev = match agent_rx.try_recv() {
                         Ok(ev) => ev,
@@ -428,9 +497,11 @@ impl App {
             }
 
             // ── Render ───────────────────────────────────────────────────
-            let has_dialog = active_dialog.is_some();
-            self.tick(agent.is_some(), has_dialog);
-            draw_active_dialog(&mut active_dialog);
+            let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+            if let Some(d) = active_dialog.as_mut() {
+                if redirtied { d.mark_dirty(); }
+                d.draw();
+            }
 
             // ── Wait for next event ──────────────────────────────────────
             tokio::select! {
@@ -469,12 +540,14 @@ impl App {
                     }
 
                     // Render immediately after terminal events for responsive typing.
-                    let has_dialog = active_dialog.is_some();
-                    self.tick(agent.is_some(), has_dialog);
-                    draw_active_dialog(&mut active_dialog);
+                    let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+                    if let Some(d) = active_dialog.as_mut() {
+                        if redirtied { d.mark_dirty(); }
+                        d.draw();
+                    }
                 }
 
-                Some(ev) = agent_rx.recv(), if agent.is_some() && active_dialog.is_none() => {
+                Some(ev) = agent_rx.recv(), if agent.is_some() && !active_dialog.as_ref().is_some_and(|d| d.blocks_agent()) => {
                     let action = {
                         let ag = agent.as_mut().unwrap();
                         let ctrl = self.handle_agent_event(ev, &mut ag.pending, &mut ag.steered_count);
@@ -492,8 +565,11 @@ impl App {
                             self.finish_agent(agent.take().unwrap(), false).await;
                         }
                     }
-                    self.tick(agent.is_some(), active_dialog.is_some());
-                    draw_active_dialog(&mut active_dialog);
+                    let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+                    if let Some(d) = active_dialog.as_mut() {
+                        if redirtied { d.mark_dirty(); }
+                        d.draw();
+                    }
                 }
 
                 Some((id, code)) = self.proc_done_rx.recv() => {
@@ -531,11 +607,19 @@ impl App {
                         // see the completed process on its next tool call.
                         self.screen.push(Block::Text { content: msg });
                     }
-                    self.tick(agent.is_some(), active_dialog.is_some());
+                    let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+                    if let Some(d) = active_dialog.as_mut() {
+                        if redirtied { d.mark_dirty(); }
+                        d.draw();
+                    }
                 }
 
                 _ = tokio::time::sleep(Duration::from_millis(80)) => {
                     // Timer tick for spinner animation.
+                    // Mark PsDialog dirty so elapsed timers update live.
+                    if let Some(ActiveDialog::Ps(d)) = active_dialog.as_mut() {
+                        d.mark_dirty();
+                    }
                 }
             }
         }
@@ -662,28 +746,7 @@ impl App {
                     self.last_height = h;
                     self.screen.redraw(true);
                 }
-                match active_dialog.as_mut().unwrap() {
-                    ActiveDialog::Confirm { dialog, .. } => {
-                        dialog.mark_dirty();
-                        dialog.draw();
-                    }
-                    ActiveDialog::AskQuestion { dialog, .. } => {
-                        dialog.mark_dirty();
-                        dialog.draw();
-                    }
-                    ActiveDialog::Ps(d) => {
-                        d.handle_resize(h);
-                        d.draw();
-                    }
-                    ActiveDialog::Rewind(d) => {
-                        d.handle_resize(h);
-                        d.draw();
-                    }
-                    ActiveDialog::Resume(d) => {
-                        d.handle_resize(h);
-                        d.draw();
-                    }
-                }
+                active_dialog.as_mut().unwrap().handle_resize(w, h);
                 return false;
             }
             if let Event::Key(KeyEvent {
@@ -847,6 +910,7 @@ impl App {
                 false
             }
             EventOutcome::OpenDialog(dlg) => {
+                self.screen.erase_prompt();
                 *active_dialog = Some(*dlg);
                 false
             }
@@ -1849,11 +1913,13 @@ impl App {
     }
 
     pub fn render_screen(&mut self) {
-        self.screen.draw_prompt_with_queued(
-            &self.input,
-            self.mode,
+        self.screen.draw_frame(
             render::term_width(),
-            &self.queued_messages,
+            Some(FramePrompt {
+                state: &self.input,
+                mode: self.mode,
+                queued: &self.queued_messages,
+            }),
         );
     }
 
@@ -2082,7 +2148,11 @@ impl App {
                     return LoopAction::Continue;
                 }
 
-                // Show dialog immediately (non-blocking).
+                // Close any non-blocking dialog (e.g. Ps) to make room.
+                if let Some(prev) = active_dialog.take() {
+                    prev.cleanup();
+                    self.screen.redraw(self.screen.has_scrollback);
+                }
                 self.screen.set_active_status(ToolStatus::Confirm);
                 self.render_screen();
                 *active_dialog = Some(ActiveDialog::Confirm {
@@ -2108,7 +2178,11 @@ impl App {
                     return LoopAction::Continue;
                 }
 
-                // Show dialog immediately (non-blocking).
+                // Close any non-blocking dialog (e.g. Ps) to make room.
+                if let Some(prev) = active_dialog.take() {
+                    prev.cleanup();
+                    self.screen.redraw(self.screen.has_scrollback);
+                }
                 self.render_screen();
                 let questions = render::parse_questions(&args);
                 *active_dialog = Some(ActiveDialog::AskQuestion {
@@ -2120,20 +2194,37 @@ impl App {
         }
     }
 
-    fn tick(&mut self, agent_running: bool, has_dialog: bool) {
-        // Skip prompt/spinner render when a dialog overlay is showing —
-        // the dialog covers the bottom and drawing underneath causes flicker.
-        if has_dialog {
-            return;
-        }
+    /// Returns true if a dialog overlay needs to be re-dirtied (because
+    /// `draw_frame` cleared the area underneath it).
+    fn tick(&mut self, agent_running: bool, has_dialog: bool) -> bool {
         self.screen
             .set_running_procs(self.processes.running_count());
-        if agent_running {
-            self.render_screen();
-        } else {
-            self.screen
-                .draw_prompt(&self.input, self.mode, render::term_width());
+        let w = render::term_width();
+        if has_dialog {
+            // Render blocks + active tool but skip the prompt — the dialog
+            // covers the bottom and must stay at the highest z-index.
+            return self.screen.draw_frame(w, None);
         }
+        if agent_running {
+            self.screen.draw_frame(
+                w,
+                Some(FramePrompt {
+                    state: &self.input,
+                    mode: self.mode,
+                    queued: &self.queued_messages,
+                }),
+            );
+        } else {
+            self.screen.draw_frame(
+                w,
+                Some(FramePrompt {
+                    state: &self.input,
+                    mode: self.mode,
+                    queued: &[],
+                }),
+            );
+        }
+        false
     }
 
     fn export_to_clipboard(&mut self) {
@@ -2218,18 +2309,6 @@ enum LoopAction {
 
 pub struct PendingTool {
     pub name: String,
-}
-
-fn draw_active_dialog(dlg: &mut Option<ActiveDialog>) {
-    if let Some(dlg) = dlg {
-        match dlg {
-            ActiveDialog::Confirm { dialog, .. } => dialog.draw(),
-            ActiveDialog::AskQuestion { dialog, .. } => dialog.draw(),
-            ActiveDialog::Ps(d) => d.draw(),
-            ActiveDialog::Rewind(d) => d.draw(),
-            ActiveDialog::Resume(d) => d.draw(),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -22,6 +22,14 @@ use std::time::{Duration, Instant};
 
 use blocks::{gap_between, render_block, render_tool, Element};
 
+/// Parameters for rendering the prompt section in `draw_frame`.
+/// When `None` is passed instead, only content (blocks + active tool) is drawn.
+pub struct FramePrompt<'a> {
+    pub state: &'a InputState,
+    pub mode: super::input::Mode,
+    pub queued: &'a [String],
+}
+
 /// Clear remaining characters on the current line and advance to the next.
 /// Using Clear(UntilNewLine) before \r\n ensures old content doesn't leak
 /// through when overwriting in place (flicker-free rendering).
@@ -541,6 +549,10 @@ impl Screen {
                 user_message: tool.user_message,
             });
         }
+        self.render_pending_blocks();
+    }
+
+    fn render_pending_blocks(&mut self) {
         let mut out = io::stdout();
         let _ = out.queue(terminal::BeginSynchronizedUpdate);
         let start_row = if self.prompt.drawn {
@@ -650,17 +662,26 @@ impl Screen {
     }
 
     pub fn draw_prompt(&mut self, state: &InputState, mode: super::input::Mode, width: usize) {
-        self.draw_prompt_with_queued(state, mode, width, &[]);
+        self.draw_frame(
+            width,
+            Some(FramePrompt {
+                state,
+                mode,
+                queued: &[],
+            }),
+        );
     }
 
-    pub fn draw_prompt_with_queued(
+    /// Unified rendering entry point. Renders pending blocks + active tool,
+    /// then either the prompt (`Some`) or nothing (`None` = dialog covers it).
+    /// Returns `true` when content-only mode drew something (caller should
+    /// re-dirty any overlay dialog so it repaints on top).
+    pub fn draw_frame(
         &mut self,
-        state: &InputState,
-        mode: super::input::Mode,
         width: usize,
-        queued: &[String],
-    ) {
-        let _perf = crate::perf::begin("draw_prompt");
+        prompt: Option<FramePrompt>,
+    ) -> bool {
+        let _perf = crate::perf::begin("draw_frame");
 
         if let Some(start) = self.working.since {
             let frame = (start.elapsed().as_millis() / 150) as usize % SPINNER_FRAMES.len();
@@ -671,12 +692,20 @@ impl Screen {
         }
 
         let has_new_blocks = self.history.has_unflushed();
-        if !has_new_blocks && !self.prompt.dirty {
-            return;
+        let has_active_tool = self.active_tool.is_some();
+
+        // Content-only: skip if nothing to render.
+        if prompt.is_none() && !has_new_blocks && !has_active_tool {
+            return false;
+        }
+        // Full mode: skip if nothing changed.
+        if prompt.is_some() && !has_new_blocks && !self.prompt.dirty {
+            return false;
         }
 
         let mut out = io::stdout();
 
+        // ── Position cursor ─────────────────────────────────────────────
         let draw_start_row = if self.prompt.drawn {
             let _ = out.queue(terminal::BeginSynchronizedUpdate);
             let _ = out.queue(cursor::Hide);
@@ -695,8 +724,10 @@ impl Screen {
             row
         };
 
-        let block_rows = self.history.render(&mut out, term_width());
+        // ── Render blocks ───────────────────────────────────────────────
+        let block_rows = self.history.render(&mut out, width);
 
+        // ── Render active tool ──────────────────────────────────────────
         let mut active_rows: u16 = 0;
         if let Some(ref tool) = self.active_tool {
             let tool_gap = if let Some(last) = self.history.blocks.last() {
@@ -722,53 +753,82 @@ impl Screen {
             active_rows = tool_gap + rows;
         }
 
-        let gap = if self.active_tool.is_some() {
-            gap_between(&Element::ActiveTool, &Element::Prompt)
+        if let Some(p) = prompt {
+            // ── Full mode: render prompt ────────────────────────────────
+            let gap = if self.active_tool.is_some() {
+                gap_between(&Element::ActiveTool, &Element::Prompt)
+            } else {
+                self.history.blocks.last().map_or(0, |last| {
+                    gap_between(&Element::Block(last), &Element::Prompt)
+                })
+            };
+            for _ in 0..gap {
+                let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+                let _ = out.queue(Print("\r\n"));
+            }
+
+            let pre_prompt = block_rows + active_rows + gap;
+            let (top_row, new_rows, scrolled) = self.draw_prompt_sections(
+                &mut out,
+                p.state,
+                p.mode,
+                width,
+                p.queued,
+                self.prompt.prev_rows.saturating_sub(pre_prompt),
+                draw_start_row,
+                pre_prompt,
+            );
+            if scrolled {
+                self.has_scrollback = true;
+                self.content_start_row = Some(top_row);
+            } else if self.content_start_row.is_none() {
+                self.content_start_row = Some(top_row);
+            }
+            self.prompt.prev_rows = (pre_prompt - block_rows) + new_rows;
+
+            // redraw_row: where the next frame starts drawing (prompt section).
+            // When blocks overflow, top_row + block_rows overshoots — compute
+            // from the bottom of the viewport instead.
+            let prompt_section_rows = active_rows + gap + new_rows;
+            if scrolled {
+                let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
+                self.prompt.redraw_row = height.saturating_sub(prompt_section_rows);
+            } else {
+                self.prompt.redraw_row = top_row + block_rows;
+            }
+            self.prompt.drawn = true;
+            self.prompt.dirty = false;
+
+            let _ = out.queue(cursor::Show);
+            let _ = out.queue(terminal::EndSynchronizedUpdate);
+            let _ = out.flush();
+            false
         } else {
-            self.history.blocks.last().map_or(0, |last| {
-                gap_between(&Element::Block(last), &Element::Prompt)
-            })
-        };
-        for _ in 0..gap {
-            let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-            let _ = out.queue(Print("\r\n"));
-        }
+            // ── Content-only mode (dialog overlay) ──────────────────────
+            // Clear anything left over from a previous prompt or longer
+            // tool output, then handle scroll detection the same way the
+            // full path does.
+            let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
-        let pre_prompt = block_rows + active_rows + gap;
-        let (top_row, new_rows, scrolled) = self.draw_prompt_sections(
-            &mut out,
-            state,
-            mode,
-            width,
-            queued,
-            self.prompt.prev_rows.saturating_sub(pre_prompt),
-            draw_start_row,
-            pre_prompt,
-        );
-        if scrolled {
-            self.has_scrollback = true;
-            self.content_start_row = Some(top_row);
-        } else if self.content_start_row.is_none() {
-            self.content_start_row = Some(top_row);
-        }
-        self.prompt.prev_rows = (pre_prompt - block_rows) + new_rows;
-
-        // redraw_row: where the next frame starts drawing (prompt section).
-        // When blocks overflow, top_row + block_rows overshoots — compute
-        // from the bottom of the viewport instead.
-        let prompt_section_rows = active_rows + gap + new_rows;
-        if scrolled {
+            let content_rows = block_rows + active_rows;
             let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
-            self.prompt.redraw_row = height.saturating_sub(prompt_section_rows);
-        } else {
-            self.prompt.redraw_row = top_row + block_rows;
-        }
-        self.prompt.drawn = true;
-        self.prompt.dirty = false;
+            let scrolled = draw_start_row + content_rows > height;
 
-        let _ = out.queue(cursor::Show);
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
+            if scrolled {
+                self.has_scrollback = true;
+                self.prompt.redraw_row = height.saturating_sub(active_rows);
+            } else {
+                self.prompt.redraw_row = draw_start_row + block_rows;
+            }
+            self.prompt.prev_rows = active_rows;
+            self.prompt.drawn = true;
+            // Keep dirty so prompt re-renders immediately when dialog closes.
+            self.prompt.dirty = true;
+
+            let _ = out.queue(terminal::EndSynchronizedUpdate);
+            let _ = out.flush();
+            content_rows > 0
+        }
     }
 
     /// Returns (top_row, total_prompt_rows, scrolled).
