@@ -315,6 +315,91 @@ fn split_impl(cmd: &str) -> (Vec<String>, Vec<String>) {
             }
             _ => {
                 let rest = &cmd[i..];
+
+                // Handle heredoc: << or <<- followed by a delimiter word.
+                // Skip everything until the delimiter appears on its own line.
+                if rest.starts_with("<<") {
+                    let mut hi = 2;
+                    if hi < rest.len() && rest.as_bytes()[hi] == b'-' {
+                        hi += 1;
+                    }
+                    // Skip whitespace before delimiter
+                    while hi < rest.len() && rest.as_bytes()[hi] == b' ' {
+                        hi += 1;
+                    }
+                    // Read the delimiter (strip quotes)
+                    let mut delim_start = hi;
+                    let mut strip_quotes = false;
+                    if hi < rest.len()
+                        && (rest.as_bytes()[hi] == b'\'' || rest.as_bytes()[hi] == b'"')
+                    {
+                        let q = rest.as_bytes()[hi];
+                        strip_quotes = true;
+                        hi += 1;
+                        delim_start = hi;
+                        while hi < rest.len() && rest.as_bytes()[hi] != q {
+                            hi += 1;
+                        }
+                    } else {
+                        while hi < rest.len()
+                            && !rest.as_bytes()[hi].is_ascii_whitespace()
+                            && rest.as_bytes()[hi] != b';'
+                            && rest.as_bytes()[hi] != b'&'
+                            && rest.as_bytes()[hi] != b'|'
+                        {
+                            hi += 1;
+                        }
+                    }
+                    let delim = &rest[delim_start..hi];
+                    if strip_quotes && hi < rest.len() {
+                        hi += 1; // skip closing quote
+                    }
+                    if !delim.is_empty() {
+                        // Skip past the heredoc body: find \n<delim>\n or \n<delim>EOF
+                        let search_from = i + hi;
+                        let mut found = false;
+                        let mut si = search_from;
+                        while si < len {
+                            if bytes[si] == b'\n' {
+                                let line_start = si + 1;
+                                let line_end = cmd[line_start..]
+                                    .find('\n')
+                                    .map(|p| line_start + p)
+                                    .unwrap_or(len);
+                                let line = cmd[line_start..line_end].trim();
+                                if line == delim {
+                                    i = line_end;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            si += 1;
+                        }
+                        if !found {
+                            // No closing delimiter — consume rest
+                            i = len;
+                        }
+                        continue;
+                    }
+                }
+
+                // Handle redirections containing & (e.g. 2>&1, >&2, &>, &>>)
+                // Don't treat & as an operator in these contexts.
+                if rest.starts_with("&>") {
+                    // &> or &>> redirection
+                    i += if rest.starts_with("&>>") { 3 } else { 2 };
+                    continue;
+                }
+                if bytes[i] == b'&' && i > 0 && bytes[i - 1] == b'>' {
+                    // >& redirection (e.g. 2>&1)
+                    i += 1;
+                    // skip the fd number after
+                    while i < len && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    continue;
+                }
+
                 if let Some(&(op, op_len)) =
                     SHELL_OPERATORS.iter().find(|(op, _)| rest.starts_with(op))
                 {
@@ -1002,6 +1087,61 @@ mod tests {
     fn redirection_not_split() {
         // << is not a shell operator we handle, so it stays as one command
         assert_eq!(split_shell_commands("cat << EOF"), vec!["cat << EOF"]);
+    }
+
+    // --- heredoc content not treated as commands ---
+
+    #[test]
+    fn heredoc_content_not_split() {
+        let cmd = "cat << 'EOF'\nhello world\nsome content\nEOF";
+        assert_eq!(
+            split_shell_commands(cmd),
+            vec!["cat << 'EOF'\nhello world\nsome content\nEOF"]
+        );
+    }
+
+    #[test]
+    fn heredoc_with_pipe() {
+        let cmd = "cat << 'EOF' | grep foo\nhello\nworld\nEOF";
+        // The heredoc body should not produce extra commands
+        let cmds = split_shell_commands(cmd);
+        assert!(!cmds.iter().any(|c| c == "hello" || c == "world"));
+    }
+
+    #[test]
+    fn heredoc_permission_check() {
+        let p = perms_with_bash(&["cat *", "grep *"], &[], &["rm *"]);
+        let cmd = "cat << 'EOF' | grep foo\nrm -rf /\nEOF";
+        // "rm -rf /" is heredoc content, not a command — should not be denied
+        assert_eq!(p.check_bash(Mode::Normal, cmd), Decision::Allow);
+    }
+
+    // --- 2>&1 not split on & ---
+
+    #[test]
+    fn redirect_stderr_not_split() {
+        assert_eq!(
+            split_shell_commands("cargo build 2>&1"),
+            vec!["cargo build 2>&1"]
+        );
+    }
+
+    #[test]
+    fn redirect_stderr_permission() {
+        let p = perms_with_bash(&["cargo *"], &[], &[]);
+        assert_eq!(
+            p.check_bash(Mode::Normal, "cargo build 2>&1"),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn redirect_ampersand_greater() {
+        // &> /dev/null
+        assert_eq!(
+            split_shell_commands("cargo build &> /dev/null"),
+            vec!["cargo build &> /dev/null"]
+        );
     }
 
     // --- newline as separator ---

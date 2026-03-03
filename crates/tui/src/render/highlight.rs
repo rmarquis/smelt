@@ -295,6 +295,7 @@ pub(super) fn print_inline_diff(
     let mut old_lineno = dv.start_line;
     let mut new_lineno = dv.start_line;
     let mut pending_ellipsis = false;
+    let mut emitted_any = rows > 0;
     for (ci, change) in changes.iter().enumerate() {
         if rows >= limit {
             return limit;
@@ -315,8 +316,9 @@ pub(super) fn print_inline_diff(
                     if new_lineno >= dv.view_start && new_lineno < dv.view_end {
                         print_diff_lines(out, &mut h_new, &[text], new_lineno, None, None, &layout);
                         rows += 1;
+                        emitted_any = true;
                     }
-                } else {
+                } else if emitted_any {
                     pending_ellipsis = true;
                 }
                 let _ = h_old.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
@@ -429,6 +431,7 @@ pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &
     let visible = compute_change_visibility(&dv.changes, ctx);
     let mut new_lineno = dv.start_line;
     let mut pending_ellipsis = false;
+    let mut emitted_any = rows > 0;
     for (ci, change) in dv.changes.iter().enumerate() {
         let line = change.value.trim_end_matches('\n');
         match change.tag {
@@ -440,8 +443,9 @@ pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &
                     }
                     if new_lineno >= dv.view_start && new_lineno < dv.view_end {
                         rows += visual_rows_for(line);
+                        emitted_any = true;
                     }
-                } else {
+                } else if emitted_any {
                     pending_ellipsis = true;
                 }
                 new_lineno += 1;
