@@ -8,6 +8,7 @@ use crate::completer::{Completer, CompleterKind};
 use crate::render;
 use crate::vim::{self, ViMode, Vim};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use protocol::Content;
 
 pub const PASTE_MARKER: char = '\u{FFFC}';
 const PASTE_LINE_THRESHOLD: usize = 12;
@@ -20,19 +21,21 @@ pub struct InputState {
     pub buf: String,
     pub cpos: usize,
     pub pastes: Vec<String>,
+    /// Attached image data URLs (base64-encoded).
+    pub images: Vec<String>,
     pub completer: Option<Completer>,
     pub menu: Option<MenuState>,
     vim: Option<Vim>,
     /// Saved buffer before history search, restored on cancel.
     history_saved_buf: Option<(String, usize)>,
-    /// Stashed prompt: (buf, cpos, pastes). Ctrl+S toggles.
-    pub stash: Option<(String, usize, Vec<String>)>,
+    /// Stashed prompt: (buf, cpos, pastes, images). Ctrl+S toggles.
+    pub stash: Option<(String, usize, Vec<String>, Vec<String>)>,
 }
 
 /// What the caller should do after `handle_event`.
 pub enum Action {
     Redraw,
-    Submit(String),
+    Submit(Content),
     MenuResult(MenuResult),
     ToggleMode,
     CycleReasoning,
@@ -52,6 +55,7 @@ impl InputState {
             buf: String::new(),
             cpos: 0,
             pastes: Vec::new(),
+            images: Vec::new(),
             completer: None,
             menu: None,
             vim: None,
@@ -107,6 +111,7 @@ impl InputState {
         self.buf.clear();
         self.cpos = 0;
         self.pastes.clear();
+        self.images.clear();
         self.completer = None;
         self.menu = None;
         self.history_saved_buf = None;
@@ -115,18 +120,20 @@ impl InputState {
 
     /// Toggle stash: if no stash, save current buf and clear; if stashed, restore.
     pub fn toggle_stash(&mut self) {
-        if let Some((buf, cpos, pastes)) = self.stash.take() {
+        if let Some((buf, cpos, pastes, images)) = self.stash.take() {
             // Unstash: restore stashed content
             self.buf = buf;
             self.cpos = cpos;
             self.pastes = pastes;
+            self.images = images;
             self.completer = None;
-        } else if !self.buf.is_empty() {
+        } else if !self.buf.is_empty() || !self.images.is_empty() {
             // Stash: save current content and clear
             self.stash = Some((
                 std::mem::take(&mut self.buf),
                 std::mem::replace(&mut self.cpos, 0),
                 std::mem::take(&mut self.pastes),
+                std::mem::take(&mut self.images),
             ));
             self.completer = None;
         }
@@ -134,10 +141,11 @@ impl InputState {
 
     /// Restore stash into the buffer (called after submit/command completes).
     pub fn restore_stash(&mut self) {
-        if let Some((buf, cpos, pastes)) = self.stash.take() {
+        if let Some((buf, cpos, pastes, images)) = self.stash.take() {
             self.buf = buf;
             self.cpos = cpos;
             self.pastes = pastes;
+            self.images = images;
         }
     }
 
@@ -248,6 +256,21 @@ impl InputState {
         expand_pastes(&self.buf, &self.pastes)
     }
 
+    pub fn image_count(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Attach an image data URL (base64-encoded).
+    pub fn insert_image(&mut self, data_url: String) {
+        self.images.push(data_url);
+    }
+
+    /// Build the message content combining text and any attached images.
+    pub fn build_content(&self) -> Content {
+        let text = self.expanded_text();
+        Content::with_images(text, self.images.clone())
+    }
+
     /// Process a terminal event. Returns what the caller should do next.
     pub fn handle_event(&mut self, ev: Event, mut history: Option<&mut History>) -> Action {
         // Menu intercepts all keys when open
@@ -271,12 +294,13 @@ impl InputState {
                         return Action::Redraw;
                     }
                     vim::Action::Submit => {
-                        let text = self.expanded_text();
+                        let content = self.build_content();
                         self.buf.clear();
                         self.cpos = 0;
                         self.pastes.clear();
+                        self.images.clear();
                         self.completer = None;
-                        return Action::Submit(text);
+                        return Action::Submit(content);
                     }
                     vim::Action::HistoryPrev => {
                         if let Some(entry) = history.as_deref_mut().and_then(|h| h.up(&self.buf)) {
@@ -303,8 +327,31 @@ impl InputState {
 
         match ev {
             Event::Paste(data) => {
+                let trimmed = data.trim().trim_matches('\'').trim_matches('"');
+                if !trimmed.contains('\n')
+                    && engine::image::is_image_file(trimmed)
+                    && std::path::Path::new(trimmed).exists()
+                {
+                    if let Ok(url) = engine::image::read_image_as_data_url(trimmed) {
+                        self.insert_image(url);
+                        return Action::Redraw;
+                    }
+                }
                 self.insert_paste(data);
                 Action::Redraw
+            }
+            // Ctrl+V: read image from clipboard (text paste goes through Event::Paste).
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('v'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => {
+                if let Some(url) = clipboard_image_to_data_url() {
+                    self.insert_image(url);
+                    Action::Redraw
+                } else {
+                    Action::Noop
+                }
             }
             Event::Key(KeyEvent {
                 code: KeyCode::BackTab,
@@ -314,12 +361,12 @@ impl InputState {
                 code: KeyCode::Enter,
                 ..
             }) => {
-                if self.buf.trim().is_empty() {
+                if self.buf.trim().is_empty() && self.images.is_empty() {
                     Action::Noop
                 } else {
-                    let text = self.expanded_text();
+                    let content = self.build_content();
                     self.clear();
-                    Action::Submit(text)
+                    Action::Submit(content)
                 }
             }
             // Ctrl+T: cycle reasoning effort.
@@ -574,9 +621,9 @@ impl InputState {
                     let kind = comp.kind;
                     self.accept_completion(&comp);
                     if kind == CompleterKind::Command {
-                        let text = self.expanded_text();
+                        let content = self.build_content();
                         self.clear();
-                        Some(Action::Submit(text))
+                        Some(Action::Submit(content))
                     } else {
                         // File: accept and keep editing
                         Some(Action::Redraw)
@@ -881,6 +928,25 @@ fn cursor_in_at_zone(buf: &str, cpos: usize) -> Option<usize> {
         return None;
     }
     Some(at_pos)
+}
+
+/// Read image data from the system clipboard, encode as PNG, and return a data URL.
+fn clipboard_image_to_data_url() -> Option<String> {
+    use base64::Engine;
+    use image::{ImageBuffer, ImageFormat, RgbaImage};
+
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let img_data = clipboard.get_image().ok()?;
+    let rgba: RgbaImage = ImageBuffer::from_raw(
+        img_data.width as u32,
+        img_data.height as u32,
+        img_data.bytes.into_owned(),
+    )?;
+    let mut buf = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buf);
+    rgba.write_to(&mut cursor, ImageFormat::Png).ok()?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Some(format!("data:image/png;base64,{b64}"))
 }
 
 fn find_slash_anchor(buf: &str, cpos: usize) -> Option<usize> {

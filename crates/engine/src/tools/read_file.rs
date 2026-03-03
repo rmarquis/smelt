@@ -1,4 +1,5 @@
 use super::{hash_content, int_arg, str_arg, FileHashes, Tool, ToolResult};
+use crate::image;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -12,7 +13,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Reads a file from the local filesystem. You can access any file directly by using this tool."
+        "Reads a file from the local filesystem. Supports text files and image files (png, jpg, gif, webp, bmp, tiff, svg)."
     }
 
     fn parameters(&self) -> Value {
@@ -38,6 +39,21 @@ impl Tool for ReadFileTool {
 
     fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
         let path = str_arg(args, "file_path");
+
+        // Image files: return base64 data URL
+        if image::is_image_file(&path) {
+            return match image::read_image_as_data_url(&path) {
+                Ok(data_url) => ToolResult {
+                    content: format!("![image]({data_url})"),
+                    is_error: false,
+                },
+                Err(e) => ToolResult {
+                    content: e,
+                    is_error: true,
+                },
+            };
+        }
+
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {

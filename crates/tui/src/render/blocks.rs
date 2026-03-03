@@ -36,6 +36,8 @@ pub(super) fn gap_between(above: &Element, below: &Element) -> u16 {
         (_, Element::Block(Block::Thinking { .. })) => 1,
         (Element::Block(Block::Thinking { .. }), _) => 1,
         (Element::Block(Block::ToolCall { .. }), Element::Block(Block::Text { .. })) => 1,
+        (Element::Block(Block::Hint { .. }), _) => 1,
+        (_, Element::Block(Block::Hint { .. })) => 1,
         (Element::Block(Block::Error { .. }), _) => 1,
         (_, Element::Block(Block::Error { .. })) => 1,
         (Element::Block(_), Element::Prompt) => 1,
@@ -185,6 +187,13 @@ pub(super) fn render_block(out: &mut io::Stdout, block: &Block, width: usize) ->
         ),
         Block::Confirm { tool, desc, choice } => {
             render_confirm_result(out, tool, desc, choice.clone(), width)
+        }
+        Block::Hint { content } => {
+            let _ = out.queue(SetAttribute(Attribute::Dim));
+            let _ = out.queue(Print(content));
+            let _ = out.queue(SetAttribute(Attribute::Reset));
+            crlf(out);
+            1
         }
         Block::Error { message } => {
             print_error(out, message);

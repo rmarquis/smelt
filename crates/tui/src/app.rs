@@ -6,7 +6,7 @@ use crate::render::{
 use crate::session::Session;
 use crate::{render, session, state, vim};
 use engine::EngineHandle;
-use protocol::{EngineEvent, Message, Mode, ReasoningEffort, Role, UiCommand};
+use protocol::{Content, EngineEvent, Message, Mode, ReasoningEffort, Role, UiCommand};
 
 use crossterm::{
     event::{
@@ -58,7 +58,7 @@ enum EventOutcome {
     Quit,
     CancelAgent,
     CancelAndClear,
-    Submit(String),
+    Submit(Content),
     MenuResult(MenuResult),
     OpenDialog(Box<ActiveDialog>),
 }
@@ -341,7 +341,8 @@ impl App {
                 self.screen.flush_blocks();
             } else {
                 self.screen.erase_prompt();
-                agent = Some(self.begin_agent_turn(&msg));
+                let content = Content::text(msg.clone());
+                agent = Some(self.begin_agent_turn(&msg, content));
             }
         }
 
@@ -433,7 +434,8 @@ impl App {
                     self.screen.erase_prompt();
                     match self.process_input(&text) {
                         InputOutcome::StartAgent => {
-                            agent = Some(self.begin_agent_turn(&text));
+                            let content = Content::text(text.clone());
+                            agent = Some(self.begin_agent_turn(&text, content));
                         }
                         InputOutcome::Compact => {
                             if self.history.is_empty() {
@@ -651,7 +653,7 @@ impl App {
             std::process::exit(1);
         }
 
-        self.push_user_message(message.clone());
+        self.push_user_message(Content::text(message.clone()));
         if self.session.first_user_message.is_none() {
             self.session.first_user_message = Some(message.clone());
         }
@@ -904,12 +906,13 @@ impl App {
                 *active_dialog = Some(*dlg);
                 false
             }
-            EventOutcome::Submit(text) => {
-                if !text.trim().is_empty() {
+            EventOutcome::Submit(content) => {
+                let text = content.text_content();
+                if !text.trim().is_empty() || content.image_count() > 0 {
                     self.screen.erase_prompt();
                     match self.process_input(&text) {
                         InputOutcome::StartAgent => {
-                            *agent = Some(self.begin_agent_turn(&text));
+                            *agent = Some(self.begin_agent_turn(&text, content));
                         }
                         InputOutcome::Compact => {
                             if self.history.is_empty() {
@@ -1066,7 +1069,7 @@ impl App {
 
         // Delegate to InputState::handle_event
         match self.input.handle_event(ev, Some(&mut self.input_history)) {
-            Action::Submit(text) if text.trim() == "/model" => {
+            Action::Submit(ref c) if c.as_text().trim() == "/model" => {
                 let models: Vec<(String, String, String)> = self
                     .available_models
                     .iter()
@@ -1078,22 +1081,22 @@ impl App {
                 }
                 EventOutcome::Redraw
             }
-            Action::Submit(text) if text.trim() == "/settings" => {
+            Action::Submit(ref c) if c.as_text().trim() == "/settings" => {
                 self.input
                     .open_settings(self.input.vim_enabled(), self.auto_compact);
                 self.screen.mark_dirty();
                 EventOutcome::Redraw
             }
-            Action::Submit(text) if text.trim() == "/stats" => {
+            Action::Submit(ref c) if c.as_text().trim() == "/stats" => {
                 let entries = crate::metrics::load();
                 let lines = crate::metrics::render_stats(&entries);
                 self.input.open_stats(lines);
                 self.screen.mark_dirty();
                 EventOutcome::Redraw
             }
-            Action::Submit(text) => {
+            Action::Submit(content) => {
                 self.input.restore_stash();
-                EventOutcome::Submit(text)
+                EventOutcome::Submit(content)
             }
             Action::MenuResult(result) => EventOutcome::MenuResult(result),
             Action::ToggleMode => {
@@ -1223,7 +1226,8 @@ impl App {
 
         // Everything else → InputState::handle_event (type-ahead with history).
         match self.input.handle_event(ev, Some(&mut self.input_history)) {
-            Action::Submit(text) => {
+            Action::Submit(content) => {
+                let text = content.text_content();
                 if let Some(outcome) = self.try_command_while_running(text.trim()) {
                     return outcome;
                 }
@@ -1275,13 +1279,24 @@ impl App {
 
     // ── Agent lifecycle ──────────────────────────────────────────────────
 
-    fn begin_agent_turn(&mut self, input: &str) -> TurnState {
+    fn begin_agent_turn(&mut self, input: &str, content: Content) -> TurnState {
         self.screen.begin_turn();
-        self.show_user_message(input);
+        let display = if content.image_count() > 0 {
+            let n = content.image_count();
+            let suffix = if n == 1 {
+                " [1 image]".to_string()
+            } else {
+                format!(" [{n} images]")
+            };
+            format!("{input}{suffix}")
+        } else {
+            input.to_string()
+        };
+        self.show_user_message(&display);
         if self.session.first_user_message.is_none() {
             self.session.first_user_message = Some(input.to_string());
         }
-        self.push_user_message(input.to_string());
+        self.push_user_message(content);
         self.save_session();
         self.screen.set_throbber(render::Throbber::Working);
 
@@ -1393,7 +1408,10 @@ impl App {
     /// Returns the `EventOutcome` to use, or `None` to queue as a message.
     fn try_command_while_running(&mut self, input: &str) -> Option<EventOutcome> {
         // Not a command — will be queued as a user message.
-        if !input.starts_with('/') && !input.starts_with('!') && !matches!(input, ":q" | ":qa" | ":wq" | ":wqa") {
+        if !input.starts_with('/')
+            && !input.starts_with('!')
+            && !matches!(input, ":q" | ":qa" | ":wq" | ":wqa")
+        {
             return None;
         }
         if input.starts_with('/') && !crate::completer::Completer::is_command(input) {
@@ -1456,13 +1474,13 @@ impl App {
         }
         // Save current session first.
         self.save_session();
-        // Create the fork.
+        let original_id = self.session.id.clone();
+        // Create the fork and switch to it.
         let forked = self.session.fork();
-        let fork_id = forked.id.clone();
         self.session = forked;
         self.save_session();
-        self.screen.push(Block::Text {
-            content: format!("forked session {fork_id}"),
+        self.screen.push(Block::Hint {
+            content: format!("forked from {original_id}"),
         });
         self.screen.flush_blocks();
     }
@@ -1575,11 +1593,15 @@ impl App {
         for msg in &self.history {
             if matches!(msg.role, Role::Tool) {
                 if let Some(ref id) = msg.tool_call_id {
-                    let content = msg.content.clone().unwrap_or_default();
+                    let text = msg
+                        .content
+                        .as_ref()
+                        .map(|c| c.text_content())
+                        .unwrap_or_default();
                     tool_outputs.insert(
                         id.clone(),
                         ToolOutput {
-                            content,
+                            content: text,
                             is_error: false,
                         },
                     );
@@ -1592,7 +1614,7 @@ impl App {
                 Role::User => {
                     if let Some(ref content) = msg.content {
                         self.screen.push(Block::User {
-                            text: content.clone(),
+                            text: content.text_content(),
                         });
                     }
                 }
@@ -1607,7 +1629,7 @@ impl App {
                     if let Some(ref content) = msg.content {
                         if !content.is_empty() {
                             self.screen.push(Block::Text {
-                                content: content.clone(),
+                                content: content.text_content(),
                             });
                         }
                     }
@@ -1637,8 +1659,9 @@ impl App {
                 Role::Tool => {}
                 Role::System => {
                     if let Some(ref content) = msg.content {
+                        let text = content.as_text();
                         if let Some(summary) =
-                            content.strip_prefix("Summary of prior conversation:\n\n")
+                            text.strip_prefix("Summary of prior conversation:\n\n")
                         {
                             self.screen.push(Block::Text {
                                 content: summary.to_string(),
@@ -1737,11 +1760,25 @@ impl App {
         });
     }
 
-    pub fn push_user_message(&mut self, input: String) {
-        let expanded = crate::expand_at_refs(&input);
+    pub fn push_user_message(&mut self, content: Content) {
+        // Expand @file references in the text portion
+        let content = match content {
+            Content::Text(s) => Content::text(crate::expand_at_refs(&s)),
+            Content::Parts(parts) => Content::Parts(
+                parts
+                    .into_iter()
+                    .map(|p| match p {
+                        protocol::ContentPart::Text { text } => protocol::ContentPart::Text {
+                            text: crate::expand_at_refs(&text),
+                        },
+                        other => other,
+                    })
+                    .collect(),
+            ),
+        };
         self.history.push(Message {
             role: Role::User,
-            content: Some(expanded),
+            content: Some(content),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
@@ -2236,7 +2273,7 @@ impl App {
                 Role::User => {
                     if let Some(c) = &msg.content {
                         out.push_str("User: ");
-                        out.push_str(c);
+                        out.push_str(c.as_text());
                         out.push_str("\n\n");
                     }
                 }
@@ -2244,7 +2281,7 @@ impl App {
                     if let Some(c) = &msg.content {
                         if !c.is_empty() {
                             out.push_str("Assistant: ");
-                            out.push_str(c);
+                            out.push_str(c.as_text());
                             out.push_str("\n\n");
                         }
                     }

@@ -1,6 +1,167 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// ── Multipart content ────────────────────────────────────────────────────────
+
+/// A single part of a multipart message content block.
+#[derive(Debug, Clone)]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { url: String },
+}
+
+impl Serialize for ContentPart {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            ContentPart::Text { text } => {
+                let mut map = s.serialize_map(Some(2))?;
+                map.serialize_entry("type", "text")?;
+                map.serialize_entry("text", text)?;
+                map.end()
+            }
+            ContentPart::ImageUrl { url } => {
+                let mut map = s.serialize_map(Some(2))?;
+                map.serialize_entry("type", "image_url")?;
+                map.serialize_entry("image_url", &serde_json::json!({"url": url}))?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentPart {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v: serde_json::Value = Deserialize::deserialize(d)?;
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                let text = v["text"].as_str().unwrap_or("").to_string();
+                Ok(ContentPart::Text { text })
+            }
+            Some("image_url") => {
+                let url = v["image_url"]["url"].as_str().unwrap_or("").to_string();
+                Ok(ContentPart::ImageUrl { url })
+            }
+            _ => Err(serde::de::Error::custom("unknown content part type")),
+        }
+    }
+}
+
+/// Message content: either a plain string or an array of typed parts.
+///
+/// Serializes as a JSON string when `Text`, or a JSON array when `Parts`.
+/// Backward-compatible: deserializing a plain JSON string produces `Text`.
+#[derive(Debug, Clone)]
+pub enum Content {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl Content {
+    pub fn text(s: impl Into<String>) -> Self {
+        Content::Text(s.into())
+    }
+
+    /// Construct multipart content from text + image data URLs.
+    pub fn with_images(text: String, images: Vec<String>) -> Self {
+        if images.is_empty() {
+            return Content::Text(text);
+        }
+        let mut parts = vec![ContentPart::Text { text }];
+        for url in images {
+            parts.push(ContentPart::ImageUrl { url });
+        }
+        Content::Parts(parts)
+    }
+
+    /// Return the first text part, or the full string for `Text`.
+    pub fn as_text(&self) -> &str {
+        match self {
+            Content::Text(s) => s,
+            Content::Parts(parts) => parts
+                .iter()
+                .find_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .unwrap_or(""),
+        }
+    }
+
+    /// Concatenate all text parts (ignoring images).
+    pub fn text_content(&self) -> String {
+        match self {
+            Content::Text(s) => s.clone(),
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    pub fn image_count(&self) -> usize {
+        match self {
+            Content::Text(_) => 0,
+            Content::Parts(parts) => parts
+                .iter()
+                .filter(|p| matches!(p, ContentPart::ImageUrl { .. }))
+                .count(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Content::Text(s) => s.is_empty(),
+            Content::Parts(parts) => parts.is_empty(),
+        }
+    }
+}
+
+impl Serialize for Content {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Content::Text(text) => s.serialize_str(text),
+            Content::Parts(parts) => parts.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Content {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v: serde_json::Value = Deserialize::deserialize(d)?;
+        match v {
+            serde_json::Value::String(s) => Ok(Content::Text(s)),
+            serde_json::Value::Array(arr) => {
+                let parts: Vec<ContentPart> = arr
+                    .into_iter()
+                    .map(|v| serde_json::from_value(v).map_err(serde::de::Error::custom))
+                    .collect::<Result<_, _>>()?;
+                Ok(Content::Parts(parts))
+            }
+            serde_json::Value::Null => Ok(Content::Text(String::new())),
+            _ => Err(serde::de::Error::custom(
+                "expected string or array for content",
+            )),
+        }
+    }
+}
+
+impl From<String> for Content {
+    fn from(s: String) -> Self {
+        Content::Text(s)
+    }
+}
+
+impl From<&str> for Content {
+    fn from(s: &str) -> Self {
+        Content::Text(s.to_string())
+    }
+}
+
 // ── Engine → UI ─────────────────────────────────────────────────────────────
 
 /// Events emitted by the engine. The UI consumes these to update its display.
@@ -191,7 +352,7 @@ impl Mode {
 pub struct Message {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<Content>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

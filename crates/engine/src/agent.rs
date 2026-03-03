@@ -3,7 +3,9 @@ use crate::permissions::{Decision, Permissions};
 use crate::provider::{Provider, ToolDefinition};
 use crate::tools::{self, ToolRegistry, ToolResult};
 use crate::EngineConfig;
-use protocol::{EngineEvent, Message, Mode, ReasoningEffort, Role, ToolOutcome, UiCommand};
+use protocol::{
+    Content, EngineEvent, Message, Mode, ReasoningEffort, Role, ToolOutcome, UiCommand,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -138,7 +140,7 @@ async fn run_turn(
     let mut messages = Vec::with_capacity(history.len() + 2);
     messages.push(Message {
         role: Role::System,
-        content: Some(config.system_prompt.clone()),
+        content: Some(Content::text(config.system_prompt.clone())),
         reasoning_content: None,
         tool_calls: None,
         tool_call_id: None,
@@ -148,7 +150,7 @@ async fn run_turn(
     if !input.is_empty() {
         messages.push(Message {
             role: Role::User,
-            content: Some(input),
+            content: Some(Content::text(input)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
@@ -177,7 +179,7 @@ async fn run_turn(
                         });
                         messages.push(Message {
                             role: Role::User,
-                            content: Some(text),
+                            content: Some(Content::text(text)),
                             reasoning_content: None,
                             tool_calls: None,
                             tool_call_id: None,
@@ -264,7 +266,7 @@ async fn run_turn(
             }
         }
 
-        let content = resp.content;
+        let content = resp.content.map(Content::text);
         let tool_calls = resp.tool_calls;
 
         let reasoning = resp.reasoning_content;
@@ -505,7 +507,7 @@ async fn run_turn(
             }
             messages.push(Message {
                 role: Role::Tool,
-                content: Some(model_content),
+                content: Some(Content::text(model_content)),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: Some(tc.id.clone()),
@@ -593,7 +595,9 @@ async fn compact_history(
 
     let mut new_messages = vec![Message {
         role: Role::System,
-        content: Some(format!("Summary of prior conversation:\n\n{summary}")),
+        content: Some(Content::text(format!(
+            "Summary of prior conversation:\n\n{summary}"
+        ))),
         reasoning_content: None,
         tool_calls: None,
         tool_call_id: None,
@@ -647,7 +651,7 @@ fn push_tool_result(
 ) {
     messages.push(Message {
         role: Role::Tool,
-        content: Some(content.to_string()),
+        content: Some(Content::text(content)),
         reasoning_content: None,
         tool_calls: None,
         tool_call_id: Some(tool_call_id.to_string()),

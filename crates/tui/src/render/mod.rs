@@ -126,6 +126,9 @@ pub enum Block {
         desc: String,
         choice: Option<ConfirmChoice>,
     },
+    Hint {
+        content: String,
+    },
     Error {
         message: String,
     },
@@ -989,6 +992,26 @@ impl Screen {
             });
         }
         let mut throbber_spans = self.working.throbber_spans();
+        let image_count = state.image_count();
+        if image_count > 0 {
+            if !throbber_spans.is_empty() {
+                throbber_spans.push(BarSpan {
+                    text: " · ".into(),
+                    color: bar_color,
+                    attr: None,
+                });
+            }
+            let label = if image_count == 1 {
+                "1 image".to_string()
+            } else {
+                format!("{image_count} images")
+            };
+            throbber_spans.push(BarSpan {
+                text: label,
+                color: theme::ACCENT,
+                attr: Some(Attribute::Bold),
+            });
+        }
         if self.pending_dialog {
             if !throbber_spans.is_empty() {
                 throbber_spans.push(BarSpan {
@@ -1192,10 +1215,10 @@ impl Screen {
 
 fn render_stash(
     out: &mut io::Stdout,
-    stash: &Option<(String, usize, Vec<String>)>,
+    stash: &Option<(String, usize, Vec<String>, Vec<String>)>,
     usable: usize,
 ) -> u16 {
-    let Some((ref stash_buf, _, _)) = stash else {
+    let Some((ref stash_buf, _, _, _)) = stash else {
         return 0;
     };
     let first_line = stash_buf.lines().next().unwrap_or("");

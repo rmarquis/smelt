@@ -19,3 +19,5 @@ two-face = "0.5.1"
 similar = "2.7.0"
 arboard = "3.6.1"
 reqwest = { version = "0.13", features = ["json"] }
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+base64 = "0.22.1"

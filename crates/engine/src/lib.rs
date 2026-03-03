@@ -1,5 +1,6 @@
 mod agent;
 pub mod config;
+pub mod image;
 pub mod log;
 pub mod permissions;
 pub mod provider;

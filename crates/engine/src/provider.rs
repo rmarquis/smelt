@@ -1,5 +1,5 @@
 use crate::log;
-use protocol::{Message, ReasoningEffort, Role, ToolCall};
+use protocol::{Content, Message, ReasoningEffort, Role, ToolCall};
 use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -263,11 +263,12 @@ impl Provider {
                     Role::System => "System",
                     Role::Tool => return None,
                 };
-                let content = m.content.as_deref().unwrap_or("").trim();
-                if content.is_empty() {
+                let text = m.content.as_ref().map(|c| c.as_text()).unwrap_or("");
+                let text = text.trim();
+                if text.is_empty() {
                     None
                 } else {
-                    Some(format!("{}: {}", role, content))
+                    Some(format!("{}: {}", role, text))
                 }
             })
             .collect::<Vec<_>>()
@@ -275,14 +276,17 @@ impl Provider {
 
         let system = Message {
             role: Role::System,
-            content: Some(COMPACT_PROMPT.trim().to_string()),
+            content: Some(Content::text(COMPACT_PROMPT.trim())),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         };
         let user = Message {
             role: Role::User,
-            content: Some(format!("Conversation to summarize:\n\n{}", conversation)),
+            content: Some(Content::text(format!(
+                "Conversation to summarize:\n\n{}",
+                conversation
+            ))),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,

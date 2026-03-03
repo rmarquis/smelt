@@ -2540,11 +2540,13 @@ name = "tui"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64",
  "comfy-table",
  "crossterm",
  "engine",
  "futures-util",
  "glob",
+ "image",
  "protocol",
  "reqwest",
  "serde",
