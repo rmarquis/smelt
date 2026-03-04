@@ -81,38 +81,9 @@ impl Provider {
     ) -> Result<LLMResponse, String> {
         let mut body: HashMap<&str, serde_json::Value> = HashMap::new();
         body.insert("model", serde_json::json!(model));
-        // Fold reasoning_content into the message content so the model can
-        // see its own prior thinking, then strip the separate field (APIs
-        // don't accept it).
         let api_messages: Vec<serde_json::Value> = messages
             .iter()
-            .map(|m| {
-                let mut v = serde_json::to_value(m).unwrap();
-                if let Some(obj) = v.as_object_mut() {
-                    if let Some(reasoning) = obj.remove("reasoning_content") {
-                        if let Some(reasoning_str) = reasoning.as_str() {
-                            if !reasoning_str.is_empty() {
-                                let existing = obj
-                                    .get("content")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or("");
-                                let merged = if existing.is_empty() {
-                                    format!("<thinking>\n{reasoning_str}\n</thinking>")
-                                } else {
-                                    format!(
-                                        "<thinking>\n{reasoning_str}\n</thinking>\n\n{existing}"
-                                    )
-                                };
-                                obj.insert(
-                                    "content".into(),
-                                    serde_json::Value::String(merged),
-                                );
-                            }
-                        }
-                    }
-                }
-                v
-            })
+            .map(|m| serde_json::to_value(m).unwrap())
             .collect();
         body.insert("messages", serde_json::json!(api_messages));
         if !tools.is_empty() {
