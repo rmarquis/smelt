@@ -74,11 +74,25 @@ pub struct SettingsConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
+pub struct ThemeConfig {
+    pub accent: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DefaultsConfig {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct Config {
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
-    pub default_model: Option<String>,
+    pub defaults: DefaultsConfig,
     pub settings: SettingsConfig,
+    pub theme: ThemeConfig,
 }
 
 /// A resolved model entry combining provider connection info with model config.
@@ -136,6 +150,11 @@ impl Config {
             }
         }
         out
+    }
+
+    /// Get the default model key from defaults.model
+    pub fn get_default_model(&self) -> Option<&str> {
+        self.defaults.model.as_deref()
     }
 }
 

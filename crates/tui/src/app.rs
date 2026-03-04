@@ -267,6 +267,7 @@ impl App {
         vim_from_config: bool,
         auto_compact: bool,
         show_speed: bool,
+        reasoning_effort: protocol::ReasoningEffort,
         shared_session: Arc<Mutex<Option<Session>>>,
         available_models: Vec<crate::config::ResolvedModel>,
     ) -> Self {
@@ -277,10 +278,20 @@ impl App {
         if vim_enabled {
             input.set_vim_enabled(true);
         }
-        if let Some(accent) = saved.accent_color {
-            crate::theme::set_accent(accent);
+        // Only load accent from state if not already set from config
+        if crate::theme::accent_value() == crate::theme::DEFAULT_ACCENT {
+            if let Some(accent) = saved.accent_color {
+                crate::theme::set_accent(accent);
+            }
         }
-        let reasoning_effort = saved.reasoning_effort;
+        // Use saved reasoning effort if not set from config
+        let reasoning_effort = if reasoning_effort == protocol::ReasoningEffort::Off
+            && saved.reasoning_effort != protocol::ReasoningEffort::Off
+        {
+            saved.reasoning_effort
+        } else {
+            reasoning_effort
+        };
         let mut screen = Screen::new();
         screen.set_model_label(model.clone());
         screen.set_reasoning_effort(reasoning_effort);

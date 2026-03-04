@@ -37,11 +37,17 @@ providers:
     models:
       - claude-sonnet-4-20250514
 
-default_model: ollama/glm-5 # provider_name/model_name
+defaults:
+  model: ollama/glm-5 # provider_name/model_name
+  reasoning_effort: "off" # "off" | "low" | "medium" | "high"
 
 settings:
   vim_mode: false # default
   auto_compact: false # default
+  show_speed: true # default
+
+theme:
+  accent: "lavender" # preset name or ANSI value (0-255)
 
 # Permissions: control what tools and bash commands the agent can run without asking
 permissions:
@@ -70,9 +76,15 @@ only `openai-compatible`), connection info (`api_base`, `api_key_env`), and a
 sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`,
 `repeat_penalty`).
 
-The `default_model` field selects which model to use at startup. It can be a
-`provider_name/model_name` key or just a model name. If omitted, the first model
-in the first provider is used. Use `/model` to switch models at runtime.
+The `defaults` section sets startup values. `defaults.model` selects which model
+to use at startup (as `provider_name/model_name` or just a model name). If omitted,
+the first model in the first provider is used. Use `/model` to switch models at
+runtime. `defaults.reasoning_effort` controls the default thinking level for the
+agent ("off", "low", "medium", or "high").
+
+The `theme` section controls visual appearance. `theme.accent` sets the accent
+color, either by preset name (lavender, sky, mint, rose, peach, lilac, gold, ember,
+ice, sage, coral, silver) or by ANSI value (0-255).
 
 **Default tool permissions** (when `permissions` is omitted):
 

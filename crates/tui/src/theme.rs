@@ -1,7 +1,9 @@
 use crossterm::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-static ACCENT_VALUE: AtomicU8 = AtomicU8::new(147);
+pub const DEFAULT_ACCENT: u8 = 147;
+
+static ACCENT_VALUE: AtomicU8 = AtomicU8::new(DEFAULT_ACCENT);
 
 pub fn accent() -> Color {
     Color::AnsiValue(ACCENT_VALUE.load(Ordering::Relaxed))
@@ -35,7 +37,7 @@ pub const SUCCESS: Color = Color::AnsiValue(114); // soft green for answered/suc
 
 /// Preset themes: (name, detail, ansi value)
 pub const PRESETS: &[(&str, &str, u8)] = &[
-    ("lavender", "default", 147),
+    ("lavender", "default", DEFAULT_ACCENT),
     ("sky", "light blue", 117),
     ("mint", "soft green", 115),
     ("rose", "soft pink", 211),

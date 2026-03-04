@@ -996,7 +996,11 @@ impl Screen {
         let queued_rows = queued_visual as usize;
 
         let vi_normal = state.vim_mode() == Some(crate::vim::ViMode::Normal);
-        let bar_color = if vi_normal { theme::accent() } else { theme::BAR };
+        let bar_color = if vi_normal {
+            theme::accent()
+        } else {
+            theme::BAR
+        };
 
         // Build all bar spans with priorities. draw_bar drops highest
         // priority first until everything fits.
@@ -1550,7 +1554,11 @@ pub(super) fn draw_bar(
                     .filter(|s| s.priority < drop_above)
                     .map(|s| s.text.chars().count())
                     .sum();
-                if inner > 0 { 1 + 1 + inner + 1 } else { 0 } // dash + space + spans + space
+                if inner > 0 {
+                    1 + 1 + inner + 1
+                } else {
+                    0
+                } // dash + space + spans + space
             })
             .unwrap_or(0);
         let right_chars: usize = right
@@ -1560,7 +1568,11 @@ pub(super) fn draw_bar(
                     .filter(|s| s.priority < drop_above)
                     .map(|s| s.text.chars().count())
                     .sum();
-                if inner > 0 { inner + 1 } else { 0 } // spans + trailing dash
+                if inner > 0 {
+                    inner + 1
+                } else {
+                    0
+                } // spans + trailing dash
             })
             .unwrap_or(0);
         let total = left_chars + min_dashes + right_chars;
@@ -1580,12 +1592,21 @@ pub(super) fn draw_bar(
     let left_len: usize = if left_filtered.is_empty() {
         0
     } else {
-        1 + 1 + left_filtered.iter().map(|s| s.text.chars().count()).sum::<usize>() + 1
+        1 + 1
+            + left_filtered
+                .iter()
+                .map(|s| s.text.chars().count())
+                .sum::<usize>()
+            + 1
     };
     let right_len: usize = if right_filtered.is_empty() {
         0
     } else {
-        right_filtered.iter().map(|s| s.text.chars().count()).sum::<usize>() + 1
+        right_filtered
+            .iter()
+            .map(|s| s.text.chars().count())
+            .sum::<usize>()
+            + 1
     };
     let bar_len = width.saturating_sub(left_len + right_len);
 

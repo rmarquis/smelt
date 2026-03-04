@@ -1,6 +1,6 @@
 use clap::Parser;
 use crossterm::ExecutableCommand;
-use protocol::Mode;
+use protocol::{Mode, ReasoningEffort};
 use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
@@ -44,7 +44,7 @@ async fn main() {
     let app_state = tui::state::State::load();
     let available_models = cfg.resolve_models();
 
-    // Resolve the active model: CLI flags > cached selection > default_model > first in config
+    // Resolve the active model: CLI flags > cached selection > defaults.model > first in config
     let (api_base, api_key, api_key_env, model, model_config) = {
         let resolved = if let Some(ref cli_model) = args.model {
             available_models
@@ -52,10 +52,10 @@ async fn main() {
                 .find(|m| m.model_name == *cli_model || m.key == *cli_model)
         } else if let Some(ref cached) = app_state.selected_model {
             available_models.iter().find(|m| m.key == *cached)
-        } else if let Some(ref default) = cfg.default_model {
+        } else if let Some(default) = cfg.get_default_model() {
             available_models
                 .iter()
-                .find(|m| m.key == *default || m.model_name == *default)
+                .find(|m| m.key == default || m.model_name == default)
         } else {
             available_models.first()
         };
@@ -117,6 +117,35 @@ async fn main() {
     let vim_enabled = cfg.settings.vim_mode.unwrap_or(false);
     let auto_compact = cfg.settings.auto_compact.unwrap_or(false);
     let show_speed = cfg.settings.show_speed.unwrap_or(true);
+
+    // Parse reasoning effort from defaults
+    let reasoning_effort = cfg
+        .defaults
+        .reasoning_effort
+        .as_deref()
+        .map(|s| match s.to_lowercase().as_str() {
+            "low" => ReasoningEffort::Low,
+            "medium" => ReasoningEffort::Medium,
+            "high" => ReasoningEffort::High,
+            _ => ReasoningEffort::Off,
+        })
+        .unwrap_or(ReasoningEffort::Off);
+
+    // Parse theme accent from config
+    if let Some(ref accent) = cfg.theme.accent {
+        let theme_value = if let Ok(v) = accent.parse::<u8>() {
+            v
+        } else {
+            // Try to find by name in presets
+            tui::theme::PRESETS
+                .iter()
+                .find(|(name, _, _)| name.eq_ignore_ascii_case(accent))
+                .map(|(_, _, value)| *value)
+                .unwrap_or(tui::theme::DEFAULT_ACCENT)
+        };
+        tui::theme::set_accent(theme_value);
+    }
+
     let shared_session: Arc<Mutex<Option<tui::session::Session>>> = Arc::new(Mutex::new(None));
 
     // Signal handler for graceful shutdown
@@ -222,6 +251,7 @@ async fn main() {
         vim_enabled,
         auto_compact,
         show_speed,
+        reasoning_effort,
         shared_session,
         available_models,
     );
