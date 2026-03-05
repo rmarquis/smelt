@@ -31,6 +31,8 @@ pub struct Session {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +56,8 @@ pub struct SessionMeta {
     pub cwd: Option<String>,
     #[serde(default)]
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
 }
 
 impl Default for Session {
@@ -81,6 +85,7 @@ impl Session {
             cwd,
             parent_id: None,
             messages: Vec::new(),
+            context_tokens: None,
         }
     }
 
@@ -96,6 +101,7 @@ impl Session {
             model: self.model.clone(),
             cwd: self.cwd.clone(),
             parent_id: self.parent_id.clone(),
+            context_tokens: self.context_tokens,
         }
     }
 
@@ -114,6 +120,7 @@ impl Session {
             cwd: self.cwd.clone(),
             parent_id: Some(self.id.clone()),
             messages: self.messages.clone(),
+            context_tokens: self.context_tokens,
         }
     }
 }

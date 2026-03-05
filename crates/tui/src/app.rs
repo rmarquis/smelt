@@ -335,6 +335,9 @@ impl App {
 
         if !self.history.is_empty() {
             self.rebuild_screen_from_history();
+            if let Some(tokens) = self.session.context_tokens {
+                self.screen.set_context_tokens(tokens);
+            }
             self.screen.flush_blocks();
         }
         self.screen
@@ -811,6 +814,9 @@ impl App {
                                 if let Some(loaded) = session::load(&id) {
                                     self.load_session(loaded);
                                     self.rebuild_screen_from_history();
+                                    if let Some(tokens) = self.session.context_tokens {
+                                        self.screen.set_context_tokens(tokens);
+                                    }
                                     self.screen.flush_blocks();
                                     clear = false;
                                 }
@@ -1933,6 +1939,7 @@ impl App {
             } => {
                 if prompt_tokens > 0 {
                     self.screen.set_context_tokens(prompt_tokens);
+                    self.session.context_tokens = Some(prompt_tokens);
                 }
                 if let Some(tps) = tokens_per_sec {
                     self.screen.record_tokens_per_sec(tps);
