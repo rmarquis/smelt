@@ -1334,11 +1334,13 @@ impl PsDialog {
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                 return Some(self.killed.clone())
             }
-            (KeyCode::Up, _) => self.list.select_prev(),
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                self.list.select_prev();
+            }
             (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                 self.list.select_next(self.procs.len());
             }
-            (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            (KeyCode::Backspace, _) => {
                 if let Some(p) = self.procs.get(self.list.selected) {
                     self.killed.push(p.id.clone());
                     self.procs = Self::fetch_procs(&self.registry, &self.killed);
@@ -1351,7 +1353,11 @@ impl PsDialog {
     }
 
     pub fn draw(&mut self, start_row: u16) {
-        self.procs = Self::fetch_procs(&self.registry, &self.killed);
+        let fresh = Self::fetch_procs(&self.registry, &self.killed);
+        if fresh.len() != self.procs.len() {
+            self.list.set_items(fresh.len().max(1));
+        }
+        self.procs = fresh;
 
         let Some((mut out, w, _)) = self.list.begin_draw(start_row, self.procs.len().max(1))
         else {
@@ -1405,7 +1411,7 @@ impl PsDialog {
 
         crlf(&mut out);
         let _ = out.queue(SetAttribute(Attribute::Dim));
-        let _ = out.queue(Print(" esc: close  k: kill selected"));
+        let _ = out.queue(Print(" esc: close  backspace: kill selected"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
         end_dialog_draw(&mut out);
     }
@@ -1774,7 +1780,12 @@ impl QuestionDialog {
             let _ = out.queue(Print(" enter: confirm"));
         }
         let _ = out.queue(SetAttribute(Attribute::Reset));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+        // Only clear below the dialog if there's viewport space left.
+        // When the dialog fills the full terminal, clearing here wipes
+        // the last visible line.
+        if out.row.is_some_and(|r| r < height) {
+            let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+        }
 
         finish_dialog_frame(&mut out, cursor_pos, editing);
     }
@@ -1898,6 +1909,8 @@ fn truncate_str_local(s: &str, max: usize) -> String {
 
 pub struct HelpDialog {
     list: ListState,
+    /// Total content rows (static, computed once).
+    total_rows: usize,
 }
 
 impl Default for HelpDialog {
@@ -1907,9 +1920,13 @@ impl Default for HelpDialog {
 }
 
 impl HelpDialog {
+    /// Number of content lines in the help sections (3 prefixes + 11 keys + 1 separator).
+    const TOTAL_ROWS: usize = 15;
+
     pub fn new() -> Self {
         Self {
             list: ListState::new(0, None, 3),
+            total_rows: Self::TOTAL_ROWS,
         }
     }
 
@@ -1940,8 +1957,13 @@ impl HelpDialog {
                 false
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.list.scroll_offset += 1;
-                self.list.dirty = true;
+                // Clamp eagerly; draw() will also clamp but this prevents
+                // unbounded accumulation from rapid key presses.
+                let max_scroll = self.total_rows.saturating_sub(self.list.max_visible);
+                if self.list.scroll_offset < max_scroll {
+                    self.list.scroll_offset += 1;
+                    self.list.dirty = true;
+                }
                 false
             }
             _ => false,

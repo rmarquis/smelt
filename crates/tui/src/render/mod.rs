@@ -501,9 +501,9 @@ pub struct Screen {
     /// causes scrollback pollution on some terminals).  The blocks are
     /// rendered by the next `draw_frame` instead.
     defer_pending_render: bool,
-    /// Skip the next `redraw(true)` call.  Set by `clear_dialog_area` so
-    /// that spurious resize events in the same event batch don't re-render
-    /// all blocks in scroll mode (causing scrollback pollution on Ghostty).
+    /// Downgrade the next `redraw(purge=true)` to `redraw(purge=false)`.
+    /// Set by `clear_dialog_area` so that spurious resize events in the
+    /// same event batch don't purge scrollback (causing pollution on Ghostty).
     defer_redraw: bool,
     /// A permission dialog is waiting for the user to stop typing.
     pending_dialog: bool,
@@ -579,7 +579,7 @@ impl Screen {
         self.defer_pending_render = true;
         self.defer_redraw = true;
         self.prompt.anchor_row = Some(clear_from);
-        self.prompt.drawn = true;
+        self.prompt.drawn = false;
         self.prompt.dirty = true;
         self.prompt.prev_rows = 0;
     }
@@ -1109,9 +1109,8 @@ impl Screen {
             self.prompt.drawn = true;
             self.prompt.dirty = false;
 
-            // Leave the synchronized update open — the dialog that
-            // follows will end the sync and flush, so the terminal paints
-            // content + dialog as one atomic frame (no flicker).
+            let _ = out.queue(terminal::EndSynchronizedUpdate);
+            let _ = out.flush();
             content_rows > 0
         }
     }

@@ -184,6 +184,7 @@ impl InputState {
                 from_paste: self.from_paste,
             });
             self.completer = None;
+            self.history_saved_buf = None;
         }
     }
 
@@ -193,6 +194,7 @@ impl InputState {
             self.buf = snap.buf;
             self.cpos = snap.cpos;
             self.attachments = snap.attachments;
+            self.from_paste = snap.from_paste;
         }
     }
 
@@ -436,10 +438,7 @@ impl InputState {
                     vim::Action::Submit => {
                         let display = self.message_display_text();
                         let content = self.build_content();
-                        self.buf.clear();
-                        self.cpos = 0;
-                        self.attachments.clear();
-                        self.completer = None;
+                        self.clear();
                         return Action::Submit { content, display };
                     }
                     vim::Action::HistoryPrev => {
@@ -670,7 +669,7 @@ impl InputState {
             }) => {
                 if let Some(entry) = history.and_then(|h| h.up(&self.buf)) {
                     self.buf = entry.to_string();
-                    self.cpos = self.buf.len();
+                    self.cpos = 0;
                     self.sync_completer();
                     Action::Redraw
                 } else {

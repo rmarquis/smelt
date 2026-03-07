@@ -506,14 +506,23 @@ impl App {
             if deferred_dialog.is_some() && active_dialog.is_none() && agent.is_some() {
                 // Auto-approve deferred confirms in Yolo mode.
                 if self.mode == Mode::Yolo {
-                    if let Some(DeferredDialog::Confirm { request_id, .. }) = deferred_dialog.take()
-                    {
-                        self.screen.set_pending_dialog(false);
-                        self.engine.send(UiCommand::PermissionDecision {
-                            request_id,
-                            approved: true,
-                            message: None,
-                        });
+                    match deferred_dialog.take() {
+                        Some(DeferredDialog::Confirm { request_id, .. }) => {
+                            self.screen.set_pending_dialog(false);
+                            self.engine.send(UiCommand::PermissionDecision {
+                                request_id,
+                                approved: true,
+                                message: None,
+                            });
+                        }
+                        Some(DeferredDialog::AskQuestion { request_id, .. }) => {
+                            self.screen.set_pending_dialog(false);
+                            self.engine.send(UiCommand::QuestionAnswer {
+                                request_id,
+                                answer: None,
+                            });
+                        }
+                        None => {}
                     }
                 }
 
@@ -601,17 +610,25 @@ impl App {
                         }
                     }
 
-                    // If we just switched to Yolo, auto-approve any deferred confirm.
+                    // If we just switched to Yolo, auto-approve any deferred dialog.
                     if self.mode == Mode::Yolo {
-                        if let Some(DeferredDialog::Confirm { request_id, .. }) =
-                            deferred_dialog.take()
-                        {
-                            self.screen.set_pending_dialog(false);
-                            self.engine.send(UiCommand::PermissionDecision {
-                                request_id,
-                                approved: true,
-                                message: None,
-                            });
+                        match deferred_dialog.take() {
+                            Some(DeferredDialog::Confirm { request_id, .. }) => {
+                                self.screen.set_pending_dialog(false);
+                                self.engine.send(UiCommand::PermissionDecision {
+                                    request_id,
+                                    approved: true,
+                                    message: None,
+                                });
+                            }
+                            Some(DeferredDialog::AskQuestion { request_id, .. }) => {
+                                self.screen.set_pending_dialog(false);
+                                self.engine.send(UiCommand::QuestionAnswer {
+                                    request_id,
+                                    answer: None,
+                                });
+                            }
+                            None => {}
                         }
                     }
 
@@ -1071,9 +1088,7 @@ impl App {
             // Non-empty prompt → clear it.
             if !self.input.buf.is_empty() {
                 t.last_ctrlc = Some(Instant::now());
-                self.input.buf.clear();
-                self.input.cpos = 0;
-                self.input.attachments.clear();
+                self.input.clear();
                 self.screen.mark_dirty();
                 return EventOutcome::Redraw;
             }
@@ -1262,6 +1277,11 @@ impl App {
                 ..
             })
         ) {
+            // Menu open → dismiss it.
+            if let Some(result) = self.input.dismiss_menu() {
+                self.screen.mark_dirty();
+                return EventOutcome::MenuResult(result);
+            }
             // Completer open → close it.
             if self.input.completer.is_some() {
                 self.input.completer = None;
@@ -1276,16 +1296,7 @@ impl App {
                 self.screen.mark_dirty();
                 return EventOutcome::Noop;
             }
-            // Nothing open → double-tap cancel agent, single clears queued.
-            let double_tap = t
-                .last_ctrlc
-                .is_some_and(|prev| prev.elapsed() < Duration::from_millis(500));
-            if double_tap {
-                t.last_ctrlc = None;
-                self.screen.mark_dirty();
-                return EventOutcome::CancelAgent;
-            }
-            t.last_ctrlc = Some(Instant::now());
+            // Nothing open → cancel agent and clear queued messages.
             self.queued_messages.clear();
             self.screen.mark_dirty();
             return EventOutcome::CancelAgent;
@@ -1602,6 +1613,7 @@ impl App {
         self.input.clear();
         self.engine.processes.clear();
         self.session = session::Session::new();
+        self.pending_title = false;
         // Drain stale engine events so old Messages snapshots don't
         // restore history into the freshly cleared session.
         while self.engine.try_recv().is_ok() {}
@@ -1636,6 +1648,11 @@ impl App {
         self.auto_approved.clear();
         self.queued_messages.clear();
         self.input.clear();
+        self.pending_title = false;
+        self.engine.processes.clear();
+        // Drain stale engine events so old snapshots don't overwrite
+        // the loaded session's state.
+        while self.engine.try_recv().is_ok() {}
     }
 
     pub fn resume_session_before_run(&mut self) {
