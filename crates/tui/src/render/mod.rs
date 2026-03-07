@@ -560,25 +560,25 @@ impl Screen {
     /// at that position on the next tick.
     pub fn clear_dialog_area(&mut self, dialog_anchor: Option<u16>) {
         let anchor = dialog_anchor.unwrap_or(0);
-        log(&format!("clear_dialog_area anchor={anchor}"));
+        let screen_anchor = self.prompt.anchor_row.unwrap_or(anchor);
+        let clear_from = anchor.min(screen_anchor);
+        log(&format!(
+            "clear_dialog_area anchor={anchor} screen_anchor={screen_anchor} clear_from={clear_from}"
+        ));
 
         // Clear each row individually instead of using Clear(FromCursorDown).
         // Some terminals (e.g. Ghostty) push the viewport into scrollback
         // when Clear(FromCursorDown) is issued at row 0.
         let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
         let mut out = RenderOut::scroll();
-        for row in anchor..height {
+        for row in clear_from..height {
             let _ = out.queue(cursor::MoveTo(0, row));
             let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
         }
         let _ = out.flush();
         self.defer_pending_render = true;
         self.defer_redraw = true;
-        // Prefer the saved prompt-section anchor (set by draw_frame) over the
-        // dialog anchor.  The dialog starts *after* the gap between blocks and
-        // prompt, so using it directly would double-count the gap and shift the
-        // prompt down by one row on each open/dismiss cycle.
-        self.prompt.anchor_row = Some(self.prompt.anchor_row.unwrap_or(anchor));
+        self.prompt.anchor_row = Some(clear_from);
         self.prompt.drawn = true;
         self.prompt.dirty = true;
         self.prompt.prev_rows = 0;
@@ -758,6 +758,10 @@ impl Screen {
             let _ = out.queue(terminal::ScrollUp(rows_to_scroll));
             let _ = out.flush();
             self.prompt.anchor_row = Some(0);
+            self.prompt.prev_dialog_row = self
+                .prompt
+                .prev_dialog_row
+                .map(|r| r.saturating_sub(rows_to_scroll));
             self.prompt.drawn = false;
             self.prompt.dirty = true;
             self.has_scrollback = true;
@@ -765,8 +769,9 @@ impl Screen {
     }
 
     /// Convert active tool to a history block without rendering.
-    /// Call before `finish_turn` when dismissing a dialog so that
-    /// `flush_blocks` won't re-render the tool in scroll mode.
+    /// The block remains unflushed so that `draw_frame(None)` will render
+    /// it (along with any preceding reasoning blocks) before the dialog
+    /// paints on top.
     pub fn commit_active_tool(&mut self) {
         if let Some(tool) = self.active_tool.take() {
             let elapsed = tool.elapsed();
@@ -779,8 +784,6 @@ impl Screen {
                 output: tool.output,
                 user_message: tool.user_message,
             });
-            // Mark as flushed so render_pending_blocks won't render it.
-            self.history.flushed = self.history.blocks.len();
         }
     }
 

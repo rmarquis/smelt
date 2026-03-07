@@ -228,7 +228,7 @@ impl ActiveDialog {
         }
     }
 
-    fn handle_resize(&mut self, _w: u16, h: u16) {
+    fn handle_resize(&mut self, _w: u16, _h: u16) {
         match self {
             ActiveDialog::Confirm { dialog, .. } => {
                 dialog.anchor_row = None;
@@ -238,9 +238,9 @@ impl ActiveDialog {
                 dialog.anchor_row = None;
                 dialog.mark_dirty();
             }
-            ActiveDialog::Ps(d) => d.handle_resize(h),
-            ActiveDialog::Rewind(d) => d.handle_resize(h),
-            ActiveDialog::Resume(d) => d.handle_resize(h),
+            ActiveDialog::Ps(d) => d.handle_resize(),
+            ActiveDialog::Rewind(d) => d.handle_resize(),
+            ActiveDialog::Resume(d) => d.handle_resize(),
             ActiveDialog::Help(d) => d.handle_resize(),
         }
     }
@@ -250,10 +250,10 @@ impl ActiveDialog {
         match self {
             ActiveDialog::Confirm { dialog, .. } => dialog.anchor_row,
             ActiveDialog::AskQuestion { dialog, .. } => dialog.anchor_row,
-            ActiveDialog::Ps(d) => d.anchor_row,
-            ActiveDialog::Rewind(d) => d.anchor_row,
-            ActiveDialog::Resume(d) => d.anchor_row,
-            ActiveDialog::Help(d) => d.anchor_row,
+            ActiveDialog::Ps(d) => d.anchor_row(),
+            ActiveDialog::Rewind(d) => d.anchor_row(),
+            ActiveDialog::Resume(d) => d.anchor_row(),
+            ActiveDialog::Help(d) => d.anchor_row(),
         }
     }
 }
@@ -543,7 +543,7 @@ impl App {
                                     message: None,
                                 });
                             } else {
-                                self.screen.flush_history_to_scrollback();
+                                self.screen.commit_active_tool();
                                 self.screen.set_active_status(ToolStatus::Confirm);
                                 active_dialog = Some(ActiveDialog::Confirm {
                                     dialog: ConfirmDialog::new(
@@ -559,7 +559,7 @@ impl App {
                             }
                         }
                         DeferredDialog::AskQuestion { args, request_id } => {
-                            self.screen.flush_history_to_scrollback();
+                            self.screen.commit_active_tool();
                             let questions = render::parse_questions(&args);
                             active_dialog = Some(ActiveDialog::AskQuestion {
                                 dialog: QuestionDialog::new(questions),
@@ -800,7 +800,7 @@ impl App {
                 match active_dialog.take().unwrap() {
                     ActiveDialog::Ps(mut d) => {
                         if let Some(_killed) = d.handle_key(code, modifiers) {
-                            self.screen.clear_dialog_area(d.anchor_row);
+                            self.screen.clear_dialog_area(d.anchor_row());
                         } else {
                             *active_dialog = Some(ActiveDialog::Ps(d));
                         }
@@ -816,7 +816,7 @@ impl App {
                             } else if restore {
                                 self.input.set_vim_mode(vim::ViMode::Insert);
                             }
-                            self.screen.clear_dialog_area(d.anchor_row);
+                            self.screen.clear_dialog_area(d.anchor_row());
                         } else {
                             *active_dialog = Some(ActiveDialog::Rewind(d));
                         }
@@ -837,7 +837,7 @@ impl App {
                                 }
                             }
                             if clear {
-                                self.screen.clear_dialog_area(d.anchor_row);
+                                self.screen.clear_dialog_area(d.anchor_row());
                             }
                         } else {
                             *active_dialog = Some(ActiveDialog::Resume(d));
@@ -886,7 +886,7 @@ impl App {
                     }
                     ActiveDialog::Help(mut d) => {
                         if d.handle_key(code, modifiers) {
-                            self.screen.clear_dialog_area(d.anchor_row);
+                            self.screen.clear_dialog_area(d.anchor_row());
                         } else {
                             *active_dialog = Some(ActiveDialog::Help(d));
                         }
@@ -1143,7 +1143,11 @@ impl App {
                     self.screen.erase_prompt();
                     let restore_vim_insert = restore_mode == Some(vim::ViMode::Insert);
                     return EventOutcome::OpenDialog(Box::new(ActiveDialog::Rewind(
-                        render::RewindDialog::new(turns, restore_vim_insert),
+                        render::RewindDialog::new(
+                            turns,
+                            restore_vim_insert,
+                            Some(terminal::size().map(|(_, h)| h / 2).unwrap_or(12)),
+                        ),
                     )));
                 }
                 // Single Esc in normal mode — start timer.
@@ -1463,7 +1467,11 @@ impl App {
                         .and_then(|p| p.to_str().map(String::from))
                         .unwrap_or_default();
                     CommandAction::OpenDialog(Box::new(ActiveDialog::Resume(
-                        render::ResumeDialog::new(entries, cwd),
+                        render::ResumeDialog::new(
+                            entries,
+                            cwd,
+                            Some(terminal::size().map(|(_, h)| h / 2).unwrap_or(12)),
+                        ),
                     )))
                 }
             }
@@ -1487,6 +1495,7 @@ impl App {
                 } else {
                     CommandAction::OpenDialog(Box::new(ActiveDialog::Ps(render::PsDialog::new(
                         self.engine.processes.clone(),
+                        None,
                     ))))
                 }
             }
@@ -1640,7 +1649,11 @@ impl App {
             .ok()
             .and_then(|p| p.to_str().map(String::from))
             .unwrap_or_default();
-        let mut dialog = render::ResumeDialog::new(entries, cwd);
+        let mut dialog = render::ResumeDialog::new(
+            entries,
+            cwd,
+            Some(terminal::size().map(|(_, h)| h / 2).unwrap_or(12)),
+        );
         terminal::enable_raw_mode().ok();
         loop {
             dialog.draw(0);
@@ -1658,8 +1671,8 @@ impl App {
                         return;
                     }
                 }
-                Ok(Event::Resize(_, h)) => {
-                    dialog.handle_resize(h);
+                Ok(Event::Resize(..)) => {
+                    dialog.handle_resize();
                 }
                 _ => {}
             }
@@ -2313,9 +2326,7 @@ impl App {
                 if let Some(prev) = active_dialog.take() {
                     self.screen.clear_dialog_area(prev.dialog_anchor());
                 }
-                // Flush pending blocks in scroll mode so they enter
-                // scrollback before the dialog takes over rendering.
-                self.screen.flush_history_to_scrollback();
+                self.screen.commit_active_tool();
                 self.screen.set_active_status(ToolStatus::Confirm);
                 *active_dialog = Some(ActiveDialog::Confirm {
                     dialog: ConfirmDialog::new(
@@ -2344,7 +2355,7 @@ impl App {
                 if let Some(prev) = active_dialog.take() {
                     self.screen.clear_dialog_area(prev.dialog_anchor());
                 }
-                self.screen.flush_history_to_scrollback();
+                self.screen.commit_active_tool();
                 let questions = render::parse_questions(&args);
                 *active_dialog = Some(ActiveDialog::AskQuestion {
                     dialog: QuestionDialog::new(questions),

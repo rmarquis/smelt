@@ -16,15 +16,141 @@ use super::blocks::wrap_line;
 use super::highlight::{count_inline_diff_rows, print_inline_diff, print_syntax_file};
 use super::{chunk_line, crlf, draw_bar, ConfirmChoice, RenderOut, ResumeEntry};
 
-/// Maximum number of scrollable list items in a dialog.
-/// Subtracts 4 rows of overhead (bar, title, blank, footer).
-fn max_dialog_items(start_row: u16, height: u16) -> usize {
-    max_dialog_height(start_row, height).saturating_sub(4)
+// ── ListState ────────────────────────────────────────────────────────────────
+
+/// Shared state for scrollable list dialogs.
+pub(super) struct ListState {
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub max_visible: usize,
+    max_height: Option<u16>,
+    overhead: u16,
+    pub anchor_row: Option<u16>,
+    pub dirty: bool,
 }
 
-/// Maximum total rows a dialog may occupy. Capped at half the terminal height.
-fn max_dialog_height(_start_row: u16, height: u16) -> usize {
-    (height / 2) as usize
+impl ListState {
+    fn new(item_count: usize, max_height: Option<u16>, overhead: u16) -> Self {
+        let max_visible = Self::cap(max_height, overhead, item_count);
+        Self {
+            selected: 0,
+            scroll_offset: 0,
+            max_visible,
+            max_height,
+            overhead,
+            anchor_row: None,
+            dirty: true,
+        }
+    }
+
+    fn cap(max_height: Option<u16>, overhead: u16, item_count: usize) -> usize {
+        max_height
+            .map(|h| (h as usize).saturating_sub(overhead as usize))
+            .unwrap_or(usize::MAX)
+            .min(item_count)
+    }
+
+    /// Recompute after the item list changes.
+    pub fn set_items(&mut self, count: usize) {
+        self.max_visible = Self::cap(self.max_height, self.overhead, count);
+        if count == 0 {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.selected = self.selected.min(count - 1);
+            self.scroll_offset = self
+                .scroll_offset
+                .min(count.saturating_sub(self.max_visible));
+        }
+        self.dirty = true;
+    }
+
+    pub fn handle_resize(&mut self) {
+        self.anchor_row = None;
+        self.dirty = true;
+    }
+
+    pub fn select_prev(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+            if self.selected < self.scroll_offset {
+                self.scroll_offset = self.selected;
+            }
+            self.dirty = true;
+        }
+    }
+
+    pub fn select_next(&mut self, item_count: usize) {
+        if self.selected + 1 < item_count {
+            self.selected += 1;
+            if self.selected >= self.scroll_offset + self.max_visible {
+                self.scroll_offset = self.selected + 1 - self.max_visible;
+            }
+            self.dirty = true;
+        }
+    }
+
+    pub fn page_up(&mut self) {
+        let half = self.max_visible / 2;
+        self.selected = self.selected.saturating_sub(half.max(1));
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
+        self.dirty = true;
+    }
+
+    pub fn page_down(&mut self, item_count: usize) {
+        let half = self.max_visible / 2;
+        self.selected = (self.selected + half.max(1)).min(item_count.saturating_sub(1));
+        if self.selected >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = self.selected + 1 - self.max_visible;
+        }
+        self.dirty = true;
+    }
+
+    /// Begin drawing. Returns `(RenderOut, width, bar_row)` or `None` if not dirty.
+    pub fn begin_draw(
+        &mut self,
+        start_row: u16,
+        item_count: usize,
+    ) -> Option<(RenderOut, usize, u16)> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+
+        let mut out = RenderOut::scroll();
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+
+        let wanted_rows = (item_count as u16).saturating_add(self.overhead);
+        let (bar_row, granted) = begin_dialog_draw(
+            &mut out,
+            start_row,
+            wanted_rows,
+            height,
+            self.max_height,
+            &mut self.anchor_row,
+        );
+        self.max_visible = (granted as usize)
+            .saturating_sub(self.overhead as usize)
+            .min(item_count);
+        if item_count == 0 {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.selected = self.selected.min(item_count - 1);
+            self.scroll_offset = self
+                .scroll_offset
+                .min(item_count.saturating_sub(self.max_visible));
+        }
+
+        Some((out, width as usize, bar_row))
+    }
+
+    pub fn visible_range(&self, item_count: usize) -> std::ops::Range<usize> {
+        let end = (self.scroll_offset + self.max_visible).min(item_count);
+        self.scroll_offset..end
+    }
 }
 
 // ── TextArea ──────────────────────────────────────────────────────────────────
@@ -248,28 +374,49 @@ fn render_inline_textarea(
 /// Begin a dialog frame: compute where the dialog starts, position the
 /// cursor there, and switch to overlay mode.
 ///
-/// When the dialog is taller than the space below `start_row`, it expands
-/// upward, overlaying conversation content that will be restored when the
-/// dialog closes.
+/// `content_rows` is the number of rows the dialog actually needs.
+/// `max_rows` is an optional cap (e.g. `Some(height/2)` for scrollable list
+/// dialogs).  When `None`, the dialog uses its full content height.
+///
+/// If the (possibly capped) height fits below `start_row`, the dialog draws
+/// at the prompt row.  Otherwise lines are pushed into scrollback via
+/// `ScrollUp` to make room.
+///
+/// Returns `(bar_row, granted_rows)` — the row where the dialog starts and
+/// how many rows it may use.
 fn begin_dialog_draw(
     out: &mut RenderOut,
     start_row: u16,
-    total_rows: u16,
+    content_rows: u16,
     height: u16,
+    max_rows: Option<u16>,
     anchor_row: &mut Option<u16>,
-) -> u16 {
+) -> (u16, u16) {
     let _ = out.queue(terminal::BeginSynchronizedUpdate);
     let _ = out.queue(cursor::Hide);
+
+    // Apply cap.
+    let granted = if let Some(cap) = max_rows {
+        content_rows.min(cap)
+    } else {
+        content_rows
+    };
+    // Never exceed terminal height.
+    let granted = granted.min(height);
 
     let bar_row = if let Some(anchor) = *anchor_row {
         anchor
     } else {
         // First draw: compute where the dialog starts.
-        let space_below = height.saturating_sub(start_row);
-        let row = if total_rows > space_below {
-            height.saturating_sub(total_rows)
-        } else {
+        let available = height.saturating_sub(start_row);
+        let row = if granted <= available {
+            // Dialog fits below prompt — draw at prompt row.
             start_row
+        } else {
+            // Doesn't fit: push lines into scrollback to make room.
+            let deficit = granted.saturating_sub(available);
+            let _ = out.queue(terminal::ScrollUp(deficit));
+            height.saturating_sub(granted)
         };
         *anchor_row = Some(row);
         row
@@ -277,7 +424,7 @@ fn begin_dialog_draw(
 
     let _ = out.queue(cursor::MoveTo(0, bar_row));
     out.row = Some(bar_row);
-    bar_row
+    (bar_row, granted)
 }
 
 /// End a dialog frame: clear remainder, end sync update, flush.
@@ -617,11 +764,12 @@ impl ConfirmDialog {
 
         let total_rows = fixed_rows + viewport_rows;
 
-        let bar_row = begin_dialog_draw(
+        let (bar_row, _) = begin_dialog_draw(
             &mut out,
             start_row,
             total_rows,
             height,
+            None,
             &mut self.anchor_row,
         );
 
@@ -806,97 +954,55 @@ impl ConfirmDialog {
 
 pub struct RewindDialog {
     turns: Vec<(usize, String)>,
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
-    dirty: bool,
+    list: ListState,
     pub restore_vim_insert: bool,
-    /// The anchor row where this dialog is positioned. None on first draw.
-    pub anchor_row: Option<u16>,
 }
 
 impl RewindDialog {
-    pub fn new(turns: Vec<(usize, String)>, restore_vim_insert: bool) -> Self {
-        let (_, height) = terminal::size().unwrap_or((80, 24));
-        let max_visible = max_dialog_items(height, height).min(turns.len());
-        let selected = turns.len().saturating_sub(1);
-        let scroll_offset = turns.len().saturating_sub(max_visible);
+    pub fn new(
+        turns: Vec<(usize, String)>,
+        restore_vim_insert: bool,
+        max_height: Option<u16>,
+    ) -> Self {
+        let mut list = ListState::new(turns.len(), max_height, 4);
+        list.selected = turns.len().saturating_sub(1);
+        list.scroll_offset = turns.len().saturating_sub(list.max_visible);
         Self {
             turns,
-            selected,
-            scroll_offset,
-            max_visible,
-            dirty: true,
+            list,
             restore_vim_insert,
-            anchor_row: None,
         }
     }
 
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.list.dirty = true;
     }
 
-    pub fn handle_resize(&mut self, h: u16) {
-        self.max_visible = max_dialog_items(h, h).min(self.turns.len());
-        self.scroll_offset = self
-            .scroll_offset
-            .min(self.turns.len().saturating_sub(self.max_visible));
-        self.anchor_row = None;
-        self.dirty = true;
+    pub fn anchor_row(&self) -> Option<u16> {
+        self.list.anchor_row
+    }
+
+    pub fn handle_resize(&mut self) {
+        self.list.handle_resize();
     }
 
     /// Returns `Some(Some(idx))` when the user selects an entry, `Some(None)` on cancel.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Option<usize>> {
         match code {
-            KeyCode::Enter => return Some(Some(self.turns[self.selected].0)),
+            KeyCode::Enter => return Some(Some(self.turns[self.list.selected].0)),
             KeyCode::Esc => return Some(None),
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return Some(None),
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
-                    }
-                    self.dirty = true;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected + 1 < self.turns.len() {
-                    self.selected += 1;
-                    if self.selected >= self.scroll_offset + self.max_visible {
-                        self.scroll_offset = self.selected + 1 - self.max_visible;
-                    }
-                    self.dirty = true;
-                }
-            }
+            KeyCode::Up | KeyCode::Char('k') => self.list.select_prev(),
+            KeyCode::Down | KeyCode::Char('j') => self.list.select_next(self.turns.len()),
             _ => {}
         }
         None
     }
 
     pub fn draw(&mut self, start_row: u16) {
-        if !self.dirty {
+        let Some((mut out, w, _)) = self.list.begin_draw(start_row, self.turns.len()) else {
             return;
-        }
-        self.dirty = false;
-
-        let mut out = RenderOut::scroll();
-        let (width, height) = terminal::size().unwrap_or((80, 24));
-        let w = width as usize;
-
-        self.max_visible = max_dialog_items(start_row, height).min(self.turns.len());
-        self.scroll_offset = self
-            .scroll_offset
-            .min(self.turns.len().saturating_sub(self.max_visible));
-
-        let total_rows = (self.max_visible + 4) as u16; // bar + title + items + footer-blank + footer
-        begin_dialog_draw(
-            &mut out,
-            start_row,
-            total_rows,
-            height,
-            &mut self.anchor_row,
-        );
+        };
 
         draw_bar(&mut out, w, None, None, theme::accent());
         crlf(&mut out);
@@ -906,20 +1012,19 @@ impl RewindDialog {
         let _ = out.queue(SetAttribute(Attribute::Reset));
         crlf(&mut out);
 
-        let end = (self.scroll_offset + self.max_visible).min(self.turns.len());
         for (i, (_, ref full_text)) in self
             .turns
             .iter()
             .enumerate()
-            .take(end)
-            .skip(self.scroll_offset)
+            .take(self.list.visible_range(self.turns.len()).end)
+            .skip(self.list.visible_range(self.turns.len()).start)
         {
             let label = full_text.lines().next().unwrap_or("");
             let num = i + 1;
             let max_label = w.saturating_sub(8);
             let truncated = truncate_str_local(label, max_label);
             let _ = out.queue(Print("  "));
-            if i == self.selected {
+            if i == self.list.selected {
                 let _ = out.queue(SetAttribute(Attribute::Dim));
                 let _ = out.queue(Print(format!("{}.", num)));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
@@ -952,75 +1057,57 @@ pub struct ResumeDialog {
     query: String,
     workspace_only: bool,
     filtered: Vec<ResumeEntry>,
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
-    dirty: bool,
+    list: ListState,
     pending_d: bool,
     last_drawn: Instant,
-    /// The anchor row where this dialog is positioned. None on first draw.
-    pub anchor_row: Option<u16>,
 }
 
 impl ResumeDialog {
-    pub fn new(entries: Vec<ResumeEntry>, current_cwd: String) -> Self {
-        let (_, height) = terminal::size().unwrap_or((80, 24));
+    pub fn new(entries: Vec<ResumeEntry>, current_cwd: String, max_height: Option<u16>) -> Self {
         let filtered = filter_resume_entries(&entries, "", true, &current_cwd);
-        let max_visible = max_dialog_items(height, height).min(filtered.len().max(1));
+        let list = ListState::new(filtered.len().max(1), max_height, 4);
         Self {
             entries,
             current_cwd,
             query: String::new(),
             workspace_only: true,
             filtered,
-            selected: 0,
-            scroll_offset: 0,
-            max_visible,
-            dirty: true,
+            list,
             pending_d: false,
             last_drawn: Instant::now(),
-            anchor_row: None,
         }
     }
 
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.list.dirty = true;
     }
 
-    fn recalculate_layout(&mut self, height: u16) {
+    pub fn anchor_row(&self) -> Option<u16> {
+        self.list.anchor_row
+    }
+
+    fn refilter(&mut self) {
         self.filtered = filter_resume_entries(
             &self.entries,
             &self.query,
             self.workspace_only,
             &self.current_cwd,
         );
-        self.max_visible = max_dialog_items(height, height).min(self.filtered.len().max(1));
-        if self.filtered.is_empty() {
-            self.selected = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
-            self.scroll_offset = self
-                .scroll_offset
-                .min(self.filtered.len().saturating_sub(self.max_visible));
-        }
-        self.dirty = true;
+        self.list.set_items(self.filtered.len().max(1));
     }
 
-    pub fn handle_resize(&mut self, h: u16) {
-        self.anchor_row = None;
-        self.recalculate_layout(h);
+    pub fn handle_resize(&mut self) {
+        self.list.handle_resize();
+        self.refilter();
     }
 
     /// Returns `Some(Some(id))` on selection, `Some(None)` on cancel.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Option<String>> {
-        let (_, height) = terminal::size().unwrap_or((80, 24));
-
         // Check for DD completion before anything else.
         if self.pending_d {
             self.pending_d = false;
             if code == KeyCode::Char('d') && mods == KeyModifiers::NONE {
-                self.delete_selected(height);
+                self.delete_selected();
                 return None;
             }
             // 'd' followed by something else: insert both as query chars.
@@ -1030,42 +1117,29 @@ impl ResumeDialog {
 
         match (code, mods) {
             (KeyCode::Enter, _) => {
-                return Some(self.filtered.get(self.selected).map(|e| e.id.clone()));
+                return Some(self.filtered.get(self.list.selected).map(|e| e.id.clone()));
             }
             (KeyCode::Esc, _) => return Some(None),
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => return Some(None),
             (KeyCode::Char('w'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.workspace_only = !self.workspace_only;
-                self.recalculate_layout(height);
+                self.refilter();
             }
-            // Ctrl+U: half-page up
             (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
                 if !self.filtered.is_empty() {
-                    let half = self.max_visible / 2;
-                    self.selected = self.selected.saturating_sub(half.max(1));
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
-                    }
-                    self.dirty = true;
+                    self.list.page_up();
                 }
             }
-            // Ctrl+D: half-page down
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                 if !self.filtered.is_empty() {
-                    let half = self.max_visible / 2;
-                    self.selected =
-                        (self.selected + half.max(1)).min(self.filtered.len().saturating_sub(1));
-                    if self.selected >= self.scroll_offset + self.max_visible {
-                        self.scroll_offset = self.selected + 1 - self.max_visible;
-                    }
-                    self.dirty = true;
+                    self.list.page_down(self.filtered.len());
                 }
             }
             (KeyCode::Backspace, m)
                 if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
             {
                 if self.query.is_empty() {
-                    self.delete_selected(height);
+                    self.delete_selected();
                 } else {
                     let len = self.query.len();
                     let target = crate::vim::word_backward_pos(
@@ -1074,59 +1148,47 @@ impl ResumeDialog {
                         crate::vim::CharClass::Word,
                     );
                     self.query.truncate(target);
-                    self.recalculate_layout(height);
+                    self.refilter();
                 }
             }
             (KeyCode::Backspace, _) => {
                 if self.query.is_empty() {
-                    self.delete_selected(height);
+                    self.delete_selected();
                 } else {
                     self.query.pop();
-                    self.recalculate_layout(height);
+                    self.refilter();
                 }
             }
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
-                    }
-                    self.dirty = true;
-                }
+                self.list.select_prev();
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                if self.selected + 1 < self.filtered.len() {
-                    self.selected += 1;
-                    if self.selected >= self.scroll_offset + self.max_visible {
-                        self.scroll_offset = self.selected + 1 - self.max_visible;
-                    }
-                    self.dirty = true;
-                }
+                self.list.select_next(self.filtered.len());
             }
             (KeyCode::Char('d'), KeyModifiers::NONE) if self.query.is_empty() => {
                 self.pending_d = true;
-                self.dirty = true;
+                self.list.dirty = true;
             }
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 self.query.push(c);
-                self.recalculate_layout(height);
+                self.refilter();
             }
             _ => {}
         }
         None
     }
 
-    fn delete_selected(&mut self, height: u16) {
-        if let Some(entry) = self.filtered.get(self.selected) {
+    fn delete_selected(&mut self) {
+        if let Some(entry) = self.filtered.get(self.list.selected) {
             let id = entry.id.clone();
             session::delete(&id);
             self.entries.retain(|e| e.id != id);
-            self.recalculate_layout(height);
+            self.refilter();
         }
     }
 
     pub fn draw(&mut self, start_row: u16) {
-        if !self.dirty {
+        if !self.list.dirty {
             let freshest = self.filtered.iter().map(resume_ts).max().unwrap_or(0);
             let age_s = session::now_ms().saturating_sub(freshest) / 1000;
             let interval = if age_s < 60 {
@@ -1137,38 +1199,19 @@ impl ResumeDialog {
                 60
             };
             if self.last_drawn.elapsed().as_secs() >= interval {
-                self.dirty = true;
+                self.list.dirty = true;
             }
         }
-        if !self.dirty {
+        if !self.list.dirty {
             return;
         }
-        self.dirty = false;
         self.last_drawn = Instant::now();
 
-        let mut out = RenderOut::scroll();
-        let (width, height) = terminal::size().unwrap_or((80, 24));
-        let w = width as usize;
-
-        self.max_visible = max_dialog_items(start_row, height).min(self.filtered.len().max(1));
-        if self.filtered.is_empty() {
-            self.selected = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
-            self.scroll_offset = self
-                .scroll_offset
-                .min(self.filtered.len().saturating_sub(self.max_visible));
-        }
-
-        let total_rows = (self.max_visible + 4) as u16;
-        begin_dialog_draw(
-            &mut out,
-            start_row,
-            total_rows,
-            height,
-            &mut self.anchor_row,
-        );
+        let Some((mut out, w, _)) =
+            self.list.begin_draw(start_row, self.filtered.len().max(1))
+        else {
+            return;
+        };
 
         let now_ms = session::now_ms();
 
@@ -1192,13 +1235,13 @@ impl ResumeDialog {
             let _ = out.queue(SetAttribute(Attribute::Reset));
             crlf(&mut out);
         } else {
-            let end = (self.scroll_offset + self.max_visible).min(self.filtered.len());
+            let range = self.list.visible_range(self.filtered.len());
             for (i, entry) in self
                 .filtered
                 .iter()
                 .enumerate()
-                .take(end)
-                .skip(self.scroll_offset)
+                .take(range.end)
+                .skip(range.start)
             {
                 let title = resume_title(entry);
                 let time_ago = session::time_ago(resume_ts(entry), now_ms);
@@ -1207,7 +1250,7 @@ impl ResumeDialog {
                 let indent_str = " ".repeat(indent);
                 let max_label = w.saturating_sub(time_len + indent + 2);
                 let truncated = truncate_str_local(&title, max_label);
-                if i == self.selected {
+                if i == self.list.selected {
                     let _ = out.queue(Print(&indent_str));
                     let _ = out.queue(SetForegroundColor(theme::accent()));
                     let _ = out.queue(Print(&truncated));
@@ -1245,29 +1288,19 @@ impl ResumeDialog {
 pub struct PsDialog {
     registry: engine::tools::ProcessRegistry,
     procs: Vec<ProcessInfo>,
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
-    dirty: bool,
+    list: ListState,
     killed: Vec<String>,
-    /// The anchor row where this dialog is positioned. None on first draw.
-    pub anchor_row: Option<u16>,
 }
 
 impl PsDialog {
-    pub fn new(registry: engine::tools::ProcessRegistry) -> Self {
+    pub fn new(registry: engine::tools::ProcessRegistry, max_height: Option<u16>) -> Self {
         let procs = Self::fetch_procs(&registry, &[]);
-        let (_, height) = terminal::size().unwrap_or((80, 24));
-        let max_visible = max_dialog_items(height, height).min(procs.len().max(1));
+        let list = ListState::new(procs.len().max(1), max_height, 4);
         Self {
             registry,
             procs,
-            selected: 0,
-            scroll_offset: 0,
-            max_visible,
-            dirty: true,
+            list,
             killed: Vec::new(),
-            anchor_row: None,
         }
     }
 
@@ -1283,22 +1316,15 @@ impl PsDialog {
     }
 
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.list.dirty = true;
     }
 
-    pub fn handle_resize(&mut self, h: u16) {
-        self.anchor_row = None;
-        self.max_visible = max_dialog_items(h, h).min(self.procs.len().max(1));
-        if self.procs.is_empty() {
-            self.selected = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.selected = self.selected.min(self.procs.len().saturating_sub(1));
-            self.scroll_offset = self
-                .scroll_offset
-                .min(self.procs.len().saturating_sub(self.max_visible));
-        }
-        self.dirty = true;
+    pub fn anchor_row(&self) -> Option<u16> {
+        self.list.anchor_row
+    }
+
+    pub fn handle_resize(&mut self) {
+        self.list.handle_resize();
     }
 
     /// Returns `Some(killed_ids)` when the user closes the dialog (may be empty).
@@ -1308,36 +1334,15 @@ impl PsDialog {
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                 return Some(self.killed.clone())
             }
-            (KeyCode::Up, _) => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
-                    }
-                    self.dirty = true;
-                }
-            }
+            (KeyCode::Up, _) => self.list.select_prev(),
             (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                if self.selected + 1 < self.procs.len() {
-                    self.selected += 1;
-                    if self.selected >= self.scroll_offset + self.max_visible {
-                        self.scroll_offset = self.selected + 1 - self.max_visible;
-                    }
-                    self.dirty = true;
-                }
+                self.list.select_next(self.procs.len());
             }
             (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                if let Some(p) = self.procs.get(self.selected) {
+                if let Some(p) = self.procs.get(self.list.selected) {
                     self.killed.push(p.id.clone());
                     self.procs = Self::fetch_procs(&self.registry, &self.killed);
-                    if !self.procs.is_empty() {
-                        self.selected = self.selected.min(self.procs.len().saturating_sub(1));
-                    } else {
-                        self.selected = 0;
-                    }
-                    let (_, h) = terminal::size().unwrap_or((80, 24));
-                    self.max_visible = max_dialog_items(h, h).min(self.procs.len().max(1));
-                    self.dirty = true;
+                    self.list.set_items(self.procs.len().max(1));
                 }
             }
             _ => {}
@@ -1346,37 +1351,13 @@ impl PsDialog {
     }
 
     pub fn draw(&mut self, start_row: u16) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
         self.procs = Self::fetch_procs(&self.registry, &self.killed);
+
+        let Some((mut out, w, _)) = self.list.begin_draw(start_row, self.procs.len().max(1))
+        else {
+            return;
+        };
         let now = std::time::Instant::now();
-
-        let mut out = RenderOut::scroll();
-        let (width, height) = terminal::size().unwrap_or((80, 24));
-        let w = width as usize;
-
-        self.max_visible = max_dialog_items(start_row, height).min(self.procs.len().max(1));
-        if self.procs.is_empty() {
-            self.selected = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.selected = self.selected.min(self.procs.len().saturating_sub(1));
-            self.scroll_offset = self
-                .scroll_offset
-                .min(self.procs.len().saturating_sub(self.max_visible));
-        }
-
-        let total_rows = (self.max_visible + 4) as u16;
-        begin_dialog_draw(
-            &mut out,
-            start_row,
-            total_rows,
-            height,
-            &mut self.anchor_row,
-        );
 
         draw_bar(&mut out, w, None, None, theme::accent());
         crlf(&mut out);
@@ -1392,20 +1373,20 @@ impl PsDialog {
             let _ = out.queue(SetAttribute(Attribute::Reset));
             crlf(&mut out);
         } else {
-            let end = (self.scroll_offset + self.max_visible).min(self.procs.len());
+            let range = self.list.visible_range(self.procs.len());
             for (i, proc) in self
                 .procs
                 .iter()
                 .enumerate()
-                .take(end)
-                .skip(self.scroll_offset)
+                .take(range.end)
+                .skip(range.start)
             {
                 let time = format_duration(now.duration_since(proc.started_at).as_secs());
                 let meta = format!(" {time} {}", proc.id);
                 let meta_len = meta.chars().count() + 1;
                 let max_cmd = w.saturating_sub(meta_len + 4);
                 let cmd_display = truncate_str_local(&proc.command, max_cmd);
-                if i == self.selected {
+                if i == self.list.selected {
                     let _ = out.queue(Print("  "));
                     let _ = out.queue(SetForegroundColor(theme::accent()));
                     let _ = out.queue(Print(&cmd_display));
@@ -1596,13 +1577,32 @@ impl QuestionDialog {
 
         let q = &self.questions[self.active_tab];
 
-        // Estimate total rows (capped at half terminal height).
-        let total_rows = max_dialog_height(start_row, height) as u16;
-        let bar_row = begin_dialog_draw(
+        // Compute actual content height.
+        let ta_extra: u16 = if ta_visible {
+            self.other_areas[self.active_tab]
+                .visual_row_count(other_wrap_w)
+                .saturating_sub(1)
+        } else {
+            0
+        };
+        let q_segments = wrap_line(&q.question, w.saturating_sub(1)).len() as u16;
+        // bar(1) + tabs?(1) + blank(1) + question + blank(1) + options + other(1) + ta_extra + blank(1) + footer(1)
+        let content_rows: u16 = 1
+            + if self.has_tabs { 1 } else { 0 }
+            + 1
+            + q_segments
+            + 1
+            + q.options.len() as u16
+            + 1
+            + ta_extra
+            + 1
+            + 1;
+        let (bar_row, _) = begin_dialog_draw(
             &mut out,
             start_row,
-            total_rows,
+            content_rows,
             height,
+            None,
             &mut self.anchor_row,
         );
         let mut row = bar_row;
@@ -1897,10 +1897,7 @@ fn truncate_str_local(s: &str, max: usize) -> String {
 // ── HelpDialog ────────────────────────────────────────────────────────────────
 
 pub struct HelpDialog {
-    dirty: bool,
-    scroll_offset: usize,
-    /// The anchor row where this dialog is positioned. None on first draw.
-    pub anchor_row: Option<u16>,
+    list: ListState,
 }
 
 impl Default for HelpDialog {
@@ -1912,19 +1909,20 @@ impl Default for HelpDialog {
 impl HelpDialog {
     pub fn new() -> Self {
         Self {
-            dirty: true,
-            scroll_offset: 0,
-            anchor_row: None,
+            list: ListState::new(0, None, 3),
         }
     }
 
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.list.dirty = true;
+    }
+
+    pub fn anchor_row(&self) -> Option<u16> {
+        self.list.anchor_row
     }
 
     pub fn handle_resize(&mut self) {
-        self.anchor_row = None;
-        self.dirty = true;
+        self.list.handle_resize();
     }
 
     /// Returns true when the dialog should close.
@@ -1935,15 +1933,15 @@ impl HelpDialog {
         match code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => true,
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.scroll_offset > 0 {
-                    self.scroll_offset -= 1;
-                    self.dirty = true;
+                if self.list.scroll_offset > 0 {
+                    self.list.scroll_offset -= 1;
+                    self.list.dirty = true;
                 }
                 false
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll_offset += 1;
-                self.dirty = true;
+                self.list.scroll_offset += 1;
+                self.list.dirty = true;
                 false
             }
             _ => false,
@@ -1951,15 +1949,6 @@ impl HelpDialog {
     }
 
     pub fn draw(&mut self, start_row: u16) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
-        let mut out = RenderOut::scroll();
-        let (width, height) = terminal::size().unwrap_or((80, 24));
-        let w = width as usize;
-
         // Each section renders as a heading row followed by entry rows.
         let sections: &[(&str, &[(&str, &str)])] = &[
             (
@@ -2010,24 +1999,14 @@ impl HelpDialog {
         }
         let total_content = content_lines.len();
 
-        // fixed rows: bar(1) + title(1) + blank(1) + footer(1) = 4
-        let fixed = 4usize;
-        let available = max_dialog_height(start_row, height);
-        let max_visible = available.saturating_sub(fixed);
-        let max_visible = max_visible.max(1).min(total_content);
+        let Some((mut out, w, _)) = self.list.begin_draw(start_row, total_content) else {
+            return;
+        };
+        let max_visible = self.list.max_visible;
 
         // Clamp scroll
         let max_scroll = total_content.saturating_sub(max_visible);
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
-
-        let total_rows = (fixed + max_visible) as u16;
-        begin_dialog_draw(
-            &mut out,
-            start_row,
-            total_rows,
-            height,
-            &mut self.anchor_row,
-        );
+        self.list.scroll_offset = self.list.scroll_offset.min(max_scroll);
 
         draw_bar(&mut out, w, None, None, super::theme::accent());
         crlf(&mut out);
@@ -2040,7 +2019,7 @@ impl HelpDialog {
 
         for &(label, detail) in content_lines
             .iter()
-            .skip(self.scroll_offset)
+            .skip(self.list.scroll_offset)
             .take(max_visible)
         {
             if label.is_empty() && detail.is_empty() {
@@ -2059,9 +2038,6 @@ impl HelpDialog {
             }
         }
 
-        let _ = out.queue(SetAttribute(Attribute::Dim));
-        let _ = out.queue(Print(" esc: close"));
-        let _ = out.queue(SetAttribute(Attribute::Reset));
         end_dialog_draw(&mut out);
     }
 }
