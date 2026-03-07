@@ -30,6 +30,10 @@ impl RewindDialog {
 }
 
 impl super::Dialog for RewindDialog {
+    fn height(&self) -> u16 {
+        self.list.height(self.turns.len())
+    }
+
     fn mark_dirty(&mut self) {
         self.list.dirty = true;
     }

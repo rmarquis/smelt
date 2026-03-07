@@ -31,6 +31,10 @@ impl HelpDialog {
 }
 
 impl super::Dialog for HelpDialog {
+    fn height(&self) -> u16 {
+        self.list.height(self.total_rows)
+    }
+
     fn mark_dirty(&mut self) {
         self.list.dirty = true;
     }

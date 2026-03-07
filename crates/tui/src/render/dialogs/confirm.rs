@@ -64,6 +64,14 @@ fn render_confirm_preview(
     }
 }
 
+struct ConfirmLayout {
+    title_rows: u16,
+    summary_rows: u16,
+    has_preview: bool,
+    viewport_rows: u16,
+    total_rows: u16,
+}
+
 /// Non-blocking confirm dialog state machine.
 pub struct ConfirmDialog {
     tool_name: String,
@@ -129,9 +137,64 @@ impl ConfirmDialog {
     }
 }
 
+impl ConfirmDialog {
+    fn layout(&self, width: u16, height: u16) -> ConfirmLayout {
+        let w = width as usize;
+        let ta_visible = self.editing || !self.textarea.is_empty();
+        let (selected_label, _) = &self.options[self.selected];
+        let digits = format!("{}", self.selected + 1).len();
+        let text_indent = (2 + digits + 2 + selected_label.len() + 2) as u16;
+        let wrap_w = width.saturating_sub(text_indent) as usize;
+        let ta_extra: u16 = if ta_visible {
+            self.textarea.visual_row_count(wrap_w).saturating_sub(1)
+        } else {
+            0
+        };
+
+        let prefix_len = 1 + self.tool_name.len() + 2;
+        let title_rows = wrap_line(&self.desc, w.saturating_sub(prefix_len)).len() as u16;
+        let summary_rows: u16 = self
+            .summary
+            .as_ref()
+            .map(|s| wrap_line(s, w.saturating_sub(1)).len() as u16)
+            .unwrap_or(0);
+        let has_preview = self.total_preview > 0;
+        // bar + title + summary + separators(if preview) +
+        // "Allow?" + options + ta_extra + blank + hint
+        let fixed_rows: u16 = 1
+            + title_rows
+            + summary_rows
+            + if has_preview { 2 } else { 0 }
+            + 1
+            + self.options.len() as u16
+            + ta_extra
+            + 2;
+
+        let viewport_rows: u16 = if has_preview {
+            let space = height.saturating_sub(fixed_rows);
+            space.max(1).min(self.total_preview)
+        } else {
+            0
+        };
+
+        ConfirmLayout {
+            title_rows,
+            summary_rows,
+            has_preview,
+            viewport_rows,
+            total_rows: fixed_rows + viewport_rows,
+        }
+    }
+}
+
 impl super::Dialog for ConfirmDialog {
     fn blocks_agent(&self) -> bool {
         true
+    }
+
+    fn height(&self) -> u16 {
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+        self.layout(width, height).total_rows
     }
 
     fn mark_dirty(&mut self) {
@@ -272,56 +335,17 @@ impl super::Dialog for ConfirmDialog {
             &"",
         );
 
+        let ly = self.layout(width, height);
         let ta_visible = self.editing || !self.textarea.is_empty();
-        // Pre-compute text indent for the selected option to get wrap width
-        let (selected_label, _) = &self.options[self.selected];
-        let digits = format!("{}", self.selected + 1).len();
-        let text_indent = (2 + digits + 2 + selected_label.len() + 2) as u16;
-        let wrap_w = width.saturating_sub(text_indent) as usize;
-        let ta_extra: u16 = if ta_visible {
-            self.textarea.visual_row_count(wrap_w).saturating_sub(1)
-        } else {
-            0
-        };
-
-        let prefix_len = 1 + self.tool_name.len() + 2; // " tool: "
-        let title_rows = wrap_line(&self.desc, w.saturating_sub(prefix_len)).len() as u16;
-        let summary_rows: u16 = self
-            .summary
-            .as_ref()
-            .map(|s| wrap_line(s, w.saturating_sub(1)).len() as u16)
-            .unwrap_or(0);
-        let has_preview = self.total_preview > 0;
-        // Fixed rows: bar + title + summary + separators(if preview) +
-        //             "Allow?" + options + ta_extra + blank + hint
-        let fixed_rows: u16 = 1
-            + title_rows
-            + summary_rows
-            + if has_preview { 2 } else { 0 }
-            + 1
-            + self.options.len() as u16
-            + ta_extra
-            + 2;
-
-        // When there is preview content, allow the dialog to use the full
-        // terminal height by scrolling conversation content into scrollback.
-        let viewport_rows: u16 = if has_preview {
-            let space = height.saturating_sub(fixed_rows);
-            space.max(1).min(self.total_preview)
-        } else {
-            0
-        };
 
         // Clamp scroll
-        let max_scroll = (self.total_preview as usize).saturating_sub(viewport_rows as usize);
+        let max_scroll = (self.total_preview as usize).saturating_sub(ly.viewport_rows as usize);
         self.preview_scroll = self.preview_scroll.min(max_scroll);
-
-        let total_rows = fixed_rows + viewport_rows;
 
         let (bar_row, _) = begin_dialog_draw(
             &mut out,
             start_row,
-            total_rows,
+            ly.total_rows,
             height,
             None,
             &mut self.anchor_row,
@@ -330,8 +354,8 @@ impl super::Dialog for ConfirmDialog {
         engine::log::entry(
             engine::log::Level::Debug,
             &format!(
-                "ConfirmDialog: bar_row={bar_row} total_rows={total_rows} fixed={fixed_rows} viewport={viewport_rows} preview={}"
-                , self.total_preview
+                "ConfirmDialog: bar_row={bar_row} total_rows={} viewport={} preview={}",
+                ly.total_rows, ly.viewport_rows, self.total_preview
             ),
             &"",
         );
@@ -339,9 +363,9 @@ impl super::Dialog for ConfirmDialog {
         // Where the options section should begin in the current layout.
         let expected_options_row = bar_row
             + 1
-            + title_rows
-            + summary_rows
-            + if has_preview { 2 + viewport_rows } else { 0 }
+            + ly.title_rows
+            + ly.summary_rows
+            + if ly.has_preview { 2 + ly.viewport_rows } else { 0 }
             + 1;
 
         // Partial redraw: when editing and the layout above the options
@@ -395,7 +419,7 @@ impl super::Dialog for ConfirmDialog {
                 }
             }
 
-            if has_preview {
+            if ly.has_preview {
                 let separator: String = "\u{254c}".repeat(w);
                 // Top separator -- show scroll position when clipped
                 let _ = out.queue(SetForegroundColor(theme::BAR));
@@ -408,15 +432,15 @@ impl super::Dialog for ConfirmDialog {
                     &self.tool_name,
                     &self.args,
                     self.preview_scroll as u16,
-                    viewport_rows,
+                    ly.viewport_rows,
                 );
-                row += viewport_rows;
+                row += ly.viewport_rows;
                 // Bottom separator -- show scroll indicator when content is clipped
                 let _ = out.queue(SetForegroundColor(theme::BAR));
-                if self.total_preview > viewport_rows {
+                if self.total_preview > ly.viewport_rows {
                     let pos = format!(
                         " [{}/{}]",
-                        self.preview_scroll + viewport_rows as usize,
+                        self.preview_scroll + ly.viewport_rows as usize,
                         self.total_preview
                     );
                     let sep_len = w.saturating_sub(pos.len());

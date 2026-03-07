@@ -39,6 +39,10 @@ impl PsDialog {
 }
 
 impl super::Dialog for PsDialog {
+    fn height(&self) -> u16 {
+        self.list.height(self.procs.len().max(1))
+    }
+
     fn mark_dirty(&mut self) {
         self.list.dirty = true;
     }

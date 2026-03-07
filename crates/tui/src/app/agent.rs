@@ -515,17 +515,15 @@ impl App {
                     self.screen.clear_dialog_area(prev.anchor_row());
                 }
                 self.screen.set_active_status(ToolStatus::Confirm);
-                // Show the tool above the dialog only if both fit on screen.
-                let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
-                self.screen.set_show_tool_in_dialog(height >= 14);
-                *active_dialog = Some(Box::new(ConfirmDialog::new(
+                let dialog = Box::new(ConfirmDialog::new(
                     &tool_name,
                     &desc,
                     &args,
                     approval_pattern.as_deref(),
                     summary.as_deref(),
                     request_id,
-                )));
+                ));
+                self.open_blocking_dialog(dialog, active_dialog);
                 LoopAction::Continue
             }
             SessionControl::NeedsAskQuestion { args, request_id } => {
@@ -543,10 +541,9 @@ impl App {
                     self.screen.clear_dialog_area(prev.anchor_row());
                 }
                 self.screen.set_active_status(ToolStatus::Confirm);
-                let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
-                self.screen.set_show_tool_in_dialog(height >= 14);
                 let questions = render::parse_questions(&args);
-                *active_dialog = Some(Box::new(QuestionDialog::new(questions, request_id)));
+                let dialog = Box::new(QuestionDialog::new(questions, request_id));
+                self.open_blocking_dialog(dialog, active_dialog);
                 LoopAction::Continue
             }
         }

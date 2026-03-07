@@ -98,6 +98,39 @@ impl QuestionDialog {
         }
     }
 
+    fn content_rows(&self, width: u16) -> u16 {
+        let w = width as usize;
+        let ta = &self.other_areas[self.active_tab];
+        let ta_visible = self.editing_other[self.active_tab] || !ta.is_empty();
+        let q_other_idx = self.questions[self.active_tab].options.len();
+        let other_text_col: u16 = if self.questions[self.active_tab].multi_select {
+            2 + 2 + 5 + 2
+        } else {
+            let digits = format!("{}", q_other_idx + 1).len();
+            (2 + digits + 2 + 5 + 2) as u16
+        };
+        let other_wrap_w = width.saturating_sub(other_text_col) as usize;
+        let q = &self.questions[self.active_tab];
+        let ta_extra: u16 = if ta_visible {
+            self.other_areas[self.active_tab]
+                .visual_row_count(other_wrap_w)
+                .saturating_sub(1)
+        } else {
+            0
+        };
+        let q_segments = wrap_line(&q.question, w.saturating_sub(1)).len() as u16;
+        // bar(1) + tabs?(1) + blank(1) + question + blank(1) + options + other(1) + ta_extra + blank(1) + footer(1)
+        1 + if self.has_tabs { 1 } else { 0 }
+            + 1
+            + q_segments
+            + 1
+            + q.options.len() as u16
+            + 1
+            + ta_extra
+            + 1
+            + 1
+    }
+
     fn build_answer(&self) -> String {
         let mut answers = serde_json::Map::new();
         for (i, q) in self.questions.iter().enumerate() {
@@ -142,6 +175,11 @@ impl QuestionDialog {
 impl super::Dialog for QuestionDialog {
     fn blocks_agent(&self) -> bool {
         true
+    }
+
+    fn height(&self) -> u16 {
+        let (width, _) = terminal::size().unwrap_or((80, 24));
+        self.content_rows(width)
     }
 
     fn mark_dirty(&mut self) {
@@ -275,6 +313,8 @@ impl super::Dialog for QuestionDialog {
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let w = width as usize;
 
+        let content_rows = self.content_rows(width);
+
         let ta = &self.other_areas[self.active_tab];
         let ta_visible = self.editing_other[self.active_tab] || !ta.is_empty();
         let q_other_idx = self.questions[self.active_tab].options.len();
@@ -288,26 +328,6 @@ impl super::Dialog for QuestionDialog {
 
         let q = &self.questions[self.active_tab];
 
-        // Compute actual content height.
-        let ta_extra: u16 = if ta_visible {
-            self.other_areas[self.active_tab]
-                .visual_row_count(other_wrap_w)
-                .saturating_sub(1)
-        } else {
-            0
-        };
-        let q_segments = wrap_line(&q.question, w.saturating_sub(1)).len() as u16;
-        // bar(1) + tabs?(1) + blank(1) + question + blank(1) + options + other(1) + ta_extra + blank(1) + footer(1)
-        let content_rows: u16 = 1
-            + if self.has_tabs { 1 } else { 0 }
-            + 1
-            + q_segments
-            + 1
-            + q.options.len() as u16
-            + 1
-            + ta_extra
-            + 1
-            + 1;
         let (bar_row, _) = begin_dialog_draw(
             &mut out,
             start_row,

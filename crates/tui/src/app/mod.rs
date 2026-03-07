@@ -522,26 +522,23 @@ impl App {
                                 });
                             } else {
                                 self.screen.set_active_status(ToolStatus::Confirm);
-                                let height =
-                                    crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-                                self.screen.set_show_tool_in_dialog(height >= 14);
-                                active_dialog = Some(Box::new(ConfirmDialog::new(
+                                let dialog = Box::new(ConfirmDialog::new(
                                     &tool_name,
                                     &desc,
                                     &args,
                                     approval_pattern.as_deref(),
                                     summary.as_deref(),
                                     request_id,
-                                )));
+                                ));
+                                self.open_blocking_dialog(dialog, &mut active_dialog);
                             }
                         }
                         DeferredDialog::AskQuestion { args, request_id } => {
                             self.screen.set_active_status(ToolStatus::Confirm);
-                            let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-                            self.screen.set_show_tool_in_dialog(height >= 14);
                             let questions = render::parse_questions(&args);
-                            active_dialog =
-                                Some(Box::new(QuestionDialog::new(questions, request_id)));
+                            let dialog =
+                                Box::new(QuestionDialog::new(questions, request_id));
+                            self.open_blocking_dialog(dialog, &mut active_dialog);
                         }
                     }
                 }
@@ -749,6 +746,20 @@ impl App {
 
         // Ensure output ends with a newline.
         println!();
+    }
+
+    fn open_blocking_dialog(
+        &mut self,
+        dialog: Box<dyn render::Dialog>,
+        active_dialog: &mut Option<Box<dyn render::Dialog>>,
+    ) {
+        let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+        let fits = self.screen.active_tool_rows() + dialog.height() <= height;
+        if !fits {
+            self.screen.erase_prompt();
+        }
+        self.screen.set_show_tool_in_dialog(fits);
+        *active_dialog = Some(dialog);
     }
 }
 

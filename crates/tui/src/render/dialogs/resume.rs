@@ -55,6 +55,10 @@ impl ResumeDialog {
 }
 
 impl super::Dialog for ResumeDialog {
+    fn height(&self) -> u16 {
+        self.list.height(self.filtered.len().max(1))
+    }
+
     fn mark_dirty(&mut self) {
         self.list.dirty = true;
     }

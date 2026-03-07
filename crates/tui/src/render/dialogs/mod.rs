@@ -45,6 +45,7 @@ pub trait Dialog {
     fn blocks_agent(&self) -> bool {
         false
     }
+    fn height(&self) -> u16;
     fn mark_dirty(&mut self);
     fn draw(&mut self, start_row: u16);
     fn handle_resize(&mut self);
@@ -81,6 +82,15 @@ impl ListState {
             .map(|h| (h as usize).saturating_sub(overhead as usize))
             .unwrap_or(usize::MAX)
             .min(item_count)
+    }
+
+    pub fn height(&self, item_count: usize) -> u16 {
+        let wanted = (item_count as u16).saturating_add(self.overhead);
+        if let Some(cap) = self.max_height {
+            wanted.min(cap)
+        } else {
+            wanted
+        }
     }
 
     pub fn set_items(&mut self, count: usize) {

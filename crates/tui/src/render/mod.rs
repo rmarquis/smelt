@@ -548,6 +548,27 @@ impl Screen {
         self.prompt.dirty = true;
     }
 
+    /// Rows the active tool would occupy if rendered (including gap above).
+    pub fn active_tool_rows(&self) -> u16 {
+        let Some(ref tool) = self.active_tool else {
+            return 0;
+        };
+        let gap = if let Some(last) = self.history.blocks.last() {
+            blocks::gap_between(&blocks::Element::Block(last), &blocks::Element::ActiveTool)
+        } else {
+            0
+        };
+        let w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+        // At confirm time there's no output yet, so tool rows = 1 + optional web_fetch prompt
+        let mut rows = 1u16;
+        if tool.name == "web_fetch" {
+            if let Some(prompt) = tool.args.get("prompt").and_then(|v| v.as_str()) {
+                rows += blocks::wrap_line(prompt, w.saturating_sub(4)).len() as u16;
+            }
+        }
+        gap + rows
+    }
+
     pub fn clear_context_tokens(&mut self) {
         self.context_tokens = None;
         self.prompt.dirty = true;
