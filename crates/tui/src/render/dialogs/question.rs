@@ -1,0 +1,498 @@
+use crate::render::blocks::wrap_line;
+use crate::render::{crlf, draw_bar, RenderOut};
+use crate::theme;
+use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::style::{Attribute, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::terminal;
+use crossterm::QueueableCommand;
+use std::collections::HashMap;
+use super::{
+    begin_dialog_draw, finish_dialog_frame, render_inline_textarea, DialogResult,
+    TextArea,
+};
+
+#[derive(Clone)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Clone)]
+pub struct Question {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+/// Parse questions from tool call args JSON.
+pub fn parse_questions(args: &HashMap<String, serde_json::Value>) -> Vec<Question> {
+    let Some(qs) = args.get("questions").and_then(|v| v.as_array()) else {
+        return vec![];
+    };
+    qs.iter()
+        .filter_map(|q| {
+            let question = q.get("question")?.as_str()?.to_string();
+            let header = q.get("header")?.as_str()?.to_string();
+            let multi_select = q
+                .get("multiSelect")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let options = q
+                .get("options")?
+                .as_array()?
+                .iter()
+                .filter_map(|o| {
+                    Some(QuestionOption {
+                        label: o.get("label")?.as_str()?.to_string(),
+                        description: o.get("description")?.as_str()?.to_string(),
+                    })
+                })
+                .collect();
+            Some(Question {
+                question,
+                header,
+                options,
+                multi_select,
+            })
+        })
+        .collect()
+}
+
+/// Non-blocking question dialog state machine.
+pub struct QuestionDialog {
+    questions: Vec<Question>,
+    has_tabs: bool,
+    active_tab: usize,
+    selections: Vec<usize>,
+    multi_toggles: Vec<Vec<bool>>,
+    other_areas: Vec<TextArea>,
+    editing_other: Vec<bool>,
+    visited: Vec<bool>,
+    answered: Vec<bool>,
+    dirty: bool,
+    request_id: u64,
+    /// The anchor row where this dialog is positioned. None on first draw.
+    pub anchor_row: Option<u16>,
+}
+
+impl QuestionDialog {
+    pub fn new(questions: Vec<Question>, request_id: u64) -> Self {
+        let n = questions.len();
+        let has_tabs = n > 1;
+        Self {
+            multi_toggles: questions
+                .iter()
+                .map(|q| vec![false; q.options.len() + 1])
+                .collect(),
+            questions,
+            has_tabs,
+            active_tab: 0,
+            selections: vec![0; n],
+            other_areas: (0..n).map(|_| TextArea::new()).collect(),
+            editing_other: vec![false; n],
+            visited: vec![false; n],
+            answered: vec![false; n],
+            dirty: true,
+            anchor_row: None,
+            request_id,
+        }
+    }
+
+    fn build_answer(&self) -> String {
+        let mut answers = serde_json::Map::new();
+        for (i, q) in self.questions.iter().enumerate() {
+            let other_idx = q.options.len();
+            let other_text = self.other_areas[i].text();
+            let answer = if q.multi_select {
+                let mut selected: Vec<String> = Vec::new();
+                for (j, toggled) in self.multi_toggles[i].iter().enumerate() {
+                    if *toggled {
+                        if j == other_idx {
+                            selected.push(format!("Other: {other_text}"));
+                        } else {
+                            selected.push(q.options[j].label.clone());
+                        }
+                    }
+                }
+                if selected.is_empty() {
+                    if self.selections[i] == other_idx {
+                        serde_json::Value::String(format!("Other: {other_text}"))
+                    } else {
+                        serde_json::Value::String(q.options[self.selections[i]].label.clone())
+                    }
+                } else {
+                    serde_json::Value::Array(
+                        selected
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    )
+                }
+            } else if self.selections[i] == other_idx {
+                serde_json::Value::String(format!("Other: {other_text}"))
+            } else {
+                serde_json::Value::String(q.options[self.selections[i]].label.clone())
+            };
+            answers.insert(q.question.clone(), answer);
+        }
+        serde_json::Value::Object(answers).to_string()
+    }
+}
+
+impl super::Dialog for QuestionDialog {
+    fn blocks_agent(&self) -> bool {
+        true
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn handle_resize(&mut self) {
+        self.anchor_row = None;
+        self.dirty = true;
+    }
+
+    fn anchor_row(&self) -> Option<u16> {
+        self.anchor_row
+    }
+
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<DialogResult> {
+        self.dirty = true;
+        let q = &self.questions[self.active_tab];
+        let other_idx = q.options.len();
+
+        if self.editing_other[self.active_tab] {
+            match (code, modifiers) {
+                (KeyCode::Esc, _) => {
+                    self.editing_other[self.active_tab] = false;
+                }
+                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.other_areas[self.active_tab].is_empty() {
+                        return Some(DialogResult::Question {
+                            answer: None,
+                            request_id: self.request_id,
+                        });
+                    }
+                    self.other_areas[self.active_tab].clear();
+                    self.editing_other[self.active_tab] = false;
+                    if q.multi_select {
+                        self.multi_toggles[self.active_tab][other_idx] = false;
+                    }
+                }
+                _ => {
+                    self.other_areas[self.active_tab].handle_key(code, modifiers);
+                }
+            }
+            return None;
+        }
+
+        match (code, modifiers) {
+            (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                return Some(DialogResult::Question {
+                    answer: None,
+                    request_id: self.request_id,
+                });
+            }
+            (KeyCode::Enter, _) => {
+                self.answered[self.active_tab] = true;
+                if let Some(next) = (0..self.questions.len()).find(|&i| !self.answered[i]) {
+                    self.active_tab = next;
+                } else {
+                    return Some(DialogResult::Question {
+                        answer: Some(self.build_answer()),
+                        request_id: self.request_id,
+                    });
+                }
+            }
+            (KeyCode::Tab, _) => {
+                if self.selections[self.active_tab] == other_idx {
+                    self.editing_other[self.active_tab] = true;
+                    if q.multi_select {
+                        self.multi_toggles[self.active_tab][other_idx] = true;
+                    }
+                }
+            }
+            (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+                if self.has_tabs {
+                    self.visited[self.active_tab] = true;
+                    self.active_tab = (self.active_tab + 1) % self.questions.len();
+                }
+            }
+            (KeyCode::BackTab, _) | (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+                if self.has_tabs {
+                    self.visited[self.active_tab] = true;
+                    self.active_tab = if self.active_tab == 0 {
+                        self.questions.len() - 1
+                    } else {
+                        self.active_tab - 1
+                    };
+                }
+            }
+            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                self.selections[self.active_tab] = if self.selections[self.active_tab] == 0 {
+                    other_idx
+                } else {
+                    self.selections[self.active_tab] - 1
+                };
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                self.selections[self.active_tab] =
+                    (self.selections[self.active_tab] + 1) % (other_idx + 1);
+            }
+            (KeyCode::Char(' '), _) if q.multi_select => {
+                let idx = self.selections[self.active_tab];
+                if idx == other_idx && self.other_areas[self.active_tab].is_empty() {
+                    self.editing_other[self.active_tab] = true;
+                } else {
+                    self.multi_toggles[self.active_tab][idx] =
+                        !self.multi_toggles[self.active_tab][idx];
+                }
+            }
+            (KeyCode::Char(c), _) if c.is_ascii_digit() => {
+                let num = c.to_digit(10).unwrap_or(0) as usize;
+                if num >= 1 && num <= other_idx + 1 {
+                    if q.multi_select {
+                        self.multi_toggles[self.active_tab][num - 1] =
+                            !self.multi_toggles[self.active_tab][num - 1];
+                    } else {
+                        self.selections[self.active_tab] = num - 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn draw(&mut self, start_row: u16) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
+
+        let mut out = RenderOut::scroll();
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+        let w = width as usize;
+
+        let ta = &self.other_areas[self.active_tab];
+        let ta_visible = self.editing_other[self.active_tab] || !ta.is_empty();
+        let q_other_idx = self.questions[self.active_tab].options.len();
+        let other_text_col: u16 = if self.questions[self.active_tab].multi_select {
+            2 + 2 + 5 + 2
+        } else {
+            let digits = format!("{}", q_other_idx + 1).len();
+            (2 + digits + 2 + 5 + 2) as u16
+        };
+        let other_wrap_w = width.saturating_sub(other_text_col) as usize;
+
+        let q = &self.questions[self.active_tab];
+
+        // Compute actual content height.
+        let ta_extra: u16 = if ta_visible {
+            self.other_areas[self.active_tab]
+                .visual_row_count(other_wrap_w)
+                .saturating_sub(1)
+        } else {
+            0
+        };
+        let q_segments = wrap_line(&q.question, w.saturating_sub(1)).len() as u16;
+        // bar(1) + tabs?(1) + blank(1) + question + blank(1) + options + other(1) + ta_extra + blank(1) + footer(1)
+        let content_rows: u16 = 1
+            + if self.has_tabs { 1 } else { 0 }
+            + 1
+            + q_segments
+            + 1
+            + q.options.len() as u16
+            + 1
+            + ta_extra
+            + 1
+            + 1;
+        let (bar_row, _) = begin_dialog_draw(
+            &mut out,
+            start_row,
+            content_rows,
+            height,
+            None,
+            &mut self.anchor_row,
+        );
+        let mut row = bar_row;
+
+        draw_bar(&mut out, w, None, None, theme::accent());
+        crlf(&mut out);
+        row += 1;
+
+        if self.has_tabs {
+            let _ = out.queue(Print(" "));
+            for (i, q) in self.questions.iter().enumerate() {
+                let bullet = if self.answered[i] || self.visited[i] {
+                    "\u{25a0}"
+                } else {
+                    "\u{25a1}"
+                };
+                if i == self.active_tab {
+                    let _ = out.queue(SetForegroundColor(theme::accent()));
+                    let _ = out.queue(SetAttribute(Attribute::Bold));
+                    let _ = out.queue(Print(format!(" {} {} ", bullet, q.header)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                    let _ = out.queue(ResetColor);
+                } else if self.answered[i] {
+                    let _ = out.queue(SetForegroundColor(theme::SUCCESS));
+                    let _ = out.queue(Print(format!(" {}", bullet)));
+                    let _ = out.queue(ResetColor);
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                    let _ = out.queue(Print(format!(" {} ", q.header)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                } else {
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                    let _ = out.queue(Print(format!(" {} {} ", bullet, q.header)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                }
+            }
+            crlf(&mut out);
+            row += 1;
+        }
+
+        let sel = self.selections[self.active_tab];
+        let is_multi = q.multi_select;
+        let other_idx = q.options.len();
+
+        crlf(&mut out);
+        row += 1;
+
+        let suffix = if is_multi { " (space to toggle)" } else { "" };
+        let q_max = w.saturating_sub(1 + suffix.len());
+        let segments = wrap_line(&q.question, q_max);
+        for (i, seg) in segments.iter().enumerate() {
+            let _ = out.queue(Print(" "));
+            let _ = out.queue(SetAttribute(Attribute::Bold));
+            let _ = out.queue(Print(seg));
+            let _ = out.queue(SetAttribute(Attribute::Reset));
+            if i == 0 && !suffix.is_empty() {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+                let _ = out.queue(Print(suffix));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+            }
+            crlf(&mut out);
+            row += 1;
+        }
+
+        crlf(&mut out);
+        row += 1;
+
+        for (i, opt) in q.options.iter().enumerate() {
+            let _ = out.queue(Print("  "));
+            let is_current = sel == i;
+            let is_toggled = is_multi && self.multi_toggles[self.active_tab][i];
+
+            if is_multi {
+                let check = if is_toggled { "\u{25c9}" } else { "\u{25cb}" };
+                if is_current {
+                    let _ = out.queue(SetForegroundColor(theme::accent()));
+                    let _ = out.queue(Print(format!("{} ", check)));
+                    let _ = out.queue(Print(&opt.label));
+                    let _ = out.queue(ResetColor);
+                } else {
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                    let _ = out.queue(Print(format!("{} ", check)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                    let _ = out.queue(Print(&opt.label));
+                }
+            } else {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+                let _ = out.queue(Print(format!("{}.", i + 1)));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                let _ = out.queue(Print(" "));
+                if is_current {
+                    let _ = out.queue(SetForegroundColor(theme::accent()));
+                    let _ = out.queue(Print(&opt.label));
+                    let _ = out.queue(ResetColor);
+                } else {
+                    let _ = out.queue(Print(&opt.label));
+                }
+            }
+
+            if is_current && !opt.description.is_empty() {
+                let prefix_len = if is_multi {
+                    2 + 2 // "  \u{25c9} "
+                } else {
+                    2 + format!("{}.", i + 1).len() + 1 // "  N. "
+                };
+                let used = prefix_len + opt.label.chars().count() + 2; // "  " gap
+                let remaining = w.saturating_sub(used);
+                if remaining > 3 {
+                    let desc: String = opt.description.chars().take(remaining).collect();
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                    let _ = out.queue(Print(format!("  {desc}")));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                }
+            }
+            crlf(&mut out);
+            row += 1;
+        }
+
+        // "Other" option with inline textarea
+        let _ = out.queue(Print("  "));
+        let is_other_current = sel == other_idx;
+        let is_other_toggled = is_multi && self.multi_toggles[self.active_tab][other_idx];
+
+        if is_multi {
+            let check = if is_other_toggled { "\u{25c9}" } else { "\u{25cb}" };
+            if is_other_current {
+                let _ = out.queue(SetForegroundColor(theme::accent()));
+                let _ = out.queue(Print(format!("{} Other", check)));
+                let _ = out.queue(ResetColor);
+            } else {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+                let _ = out.queue(Print(format!("{} ", check)));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                let _ = out.queue(Print("Other"));
+            }
+        } else {
+            let _ = out.queue(SetAttribute(Attribute::Dim));
+            let _ = out.queue(Print(format!("{}.", other_idx + 1)));
+            let _ = out.queue(SetAttribute(Attribute::Reset));
+            let _ = out.queue(Print(" "));
+            if is_other_current {
+                let _ = out.queue(SetForegroundColor(theme::accent()));
+                let _ = out.queue(Print("Other"));
+                let _ = out.queue(ResetColor);
+            } else {
+                let _ = out.queue(Print("Other"));
+            }
+        }
+
+        let editing = self.editing_other[self.active_tab];
+        let mut cursor_pos = None;
+        if ta_visible {
+            let (new_row, cpos) =
+                render_inline_textarea(&mut out, ta, editing, other_text_col, other_wrap_w, row);
+            row = new_row;
+            cursor_pos = cpos;
+        } else {
+            crlf(&mut out);
+        }
+        let _ = row;
+
+        // Footer
+        crlf(&mut out);
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+        if editing {
+            let _ = out.queue(Print(" esc: done  enter: newline"));
+        } else if self.has_tabs {
+            let _ = out.queue(Print(" tab: next question  enter: confirm"));
+        } else {
+            let _ = out.queue(Print(" enter: confirm"));
+        }
+        let _ = out.queue(SetAttribute(Attribute::Reset));
+        // Only clear below the dialog if there's viewport space left.
+        // When the dialog fills the full terminal, clearing here wipes
+        // the last visible line.
+        if out.row.is_some_and(|r| r < height) {
+            let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+        }
+
+        finish_dialog_frame(&mut out, cursor_pos, editing);
+    }
+}
