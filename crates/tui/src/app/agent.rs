@@ -34,6 +34,15 @@ impl App {
         }
     }
 
+    /// Lightweight cancel: stop the engine turn without saving session,
+    /// generating titles, or triggering auto-compact. Used before rewind/clear
+    /// where the history will be mutated immediately after.
+    pub(super) fn cancel_agent(&mut self) {
+        self.engine.send(UiCommand::Cancel);
+        self.screen.set_throbber(render::Throbber::Interrupted);
+        self.queued_messages.clear();
+    }
+
     pub(super) fn finish_turn(&mut self, cancelled: bool) {
         self.screen.flush_blocks();
         if cancelled {
@@ -178,6 +187,10 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::CompactionComplete { messages } => {
+                if self.pending_compact_epoch != self.compact_epoch {
+                    self.screen.set_throbber(render::Throbber::Done);
+                    return SessionControl::Continue;
+                }
                 self.history = messages;
                 self.save_session();
                 self.screen.push(Block::Text {
@@ -228,6 +241,10 @@ impl App {
             EngineEvent::Messages { .. } => {}
             EngineEvent::TurnComplete { .. } => {}
             EngineEvent::CompactionComplete { messages } => {
+                if self.pending_compact_epoch != self.compact_epoch {
+                    self.screen.set_throbber(render::Throbber::Done);
+                    return;
+                }
                 self.history = messages;
                 self.save_session();
                 self.screen.push(Block::Text {
@@ -291,16 +308,24 @@ impl App {
             } => {
                 if let Some(idx) = block_idx {
                     if agent.is_some() {
-                        self.finish_turn(true);
+                        self.cancel_agent();
                         *agent = None;
                     }
                     if let Some((text, images)) = self.rewind_to(idx) {
                         self.input.restore_from_rewind(text, images);
                     }
-                } else if restore_vim_insert {
-                    self.input.set_vim_mode(vim::ViMode::Insert);
+                    // rewind_to → redraw(true) already purged the screen;
+                    // drain stale engine events and save the truncated state.
+                    while self.engine.try_recv().is_ok() {}
+                    self.save_session();
+                    self.screen.set_show_tool_in_dialog(false);
+                } else {
+                    // Dialog was cancelled — clean up the dialog overlay.
+                    if restore_vim_insert {
+                        self.input.set_vim_mode(vim::ViMode::Insert);
+                    }
+                    self.screen.clear_dialog_area(anchor);
                 }
-                self.screen.clear_dialog_area(anchor);
             }
             render::DialogResult::Resume { session_id } => {
                 let mut clear = true;

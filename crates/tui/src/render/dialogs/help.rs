@@ -76,7 +76,7 @@ impl super::Dialog for HelpDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16) {
+    fn draw(&mut self, start_row: u16, sync_started: bool) {
         // Each section renders as a heading row followed by entry rows.
         let sections: &[(&str, &[(&str, &str)])] = &[
             (
@@ -127,7 +127,8 @@ impl super::Dialog for HelpDialog {
         }
         let total_content = content_lines.len();
 
-        let Some((mut out, w, _)) = self.list.begin_draw(start_row, total_content) else {
+        let Some((mut out, w, _)) = self.list.begin_draw(start_row, total_content, sync_started)
+        else {
             return;
         };
         let max_visible = self.list.max_visible;

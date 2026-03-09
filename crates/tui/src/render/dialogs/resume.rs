@@ -154,7 +154,7 @@ impl super::Dialog for ResumeDialog {
         None
     }
 
-    fn draw(&mut self, start_row: u16) {
+    fn draw(&mut self, start_row: u16, sync_started: bool) {
         if !self.list.dirty {
             let freshest = self.filtered.iter().map(resume_ts).max().unwrap_or(0);
             let age_s = session::now_ms().saturating_sub(freshest) / 1000;
@@ -174,7 +174,9 @@ impl super::Dialog for ResumeDialog {
         }
         self.last_drawn = Instant::now();
 
-        let Some((mut out, w, _)) = self.list.begin_draw(start_row, self.filtered.len().max(1))
+        let Some((mut out, w, _)) =
+            self.list
+                .begin_draw(start_row, self.filtered.len().max(1), sync_started)
         else {
             return;
         };

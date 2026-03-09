@@ -79,14 +79,17 @@ impl super::Dialog for PsDialog {
         None
     }
 
-    fn draw(&mut self, start_row: u16) {
+    fn draw(&mut self, start_row: u16, sync_started: bool) {
         let fresh = Self::fetch_procs(&self.registry, &self.killed);
         if fresh.len() != self.procs.len() {
             self.list.set_items(fresh.len().max(1));
         }
         self.procs = fresh;
 
-        let Some((mut out, w, _)) = self.list.begin_draw(start_row, self.procs.len().max(1)) else {
+        let Some((mut out, w, _)) =
+            self.list
+                .begin_draw(start_row, self.procs.len().max(1), sync_started)
+        else {
             return;
         };
         let now = std::time::Instant::now();

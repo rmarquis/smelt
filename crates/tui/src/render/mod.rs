@@ -74,18 +74,19 @@ impl io::Write for RenderOut {
 /// reposition without scrolling — dialogs use this to avoid polluting
 /// scrollback.
 ///
-/// In overlay mode the clear is issued *after* the `MoveTo` so it erases
-/// stale content on the upcoming row instead of the current one.  This
-/// avoids a terminal quirk where `\x1b[K` in pending-wrap state (cursor at
-/// the rightmost column) erases the last visible character on some emulators.
-/// tmux virtualises terminal state and is immune, but bare terminals are not.
+/// In overlay mode, Clear is issued on the *current* row (after the
+/// content just printed) and then the cursor advances to the next row
+/// *without* clearing it.  The next row's stale content is overwritten
+/// by the subsequent `Print`.  This avoids a visible blank→content
+/// flash on terminals that don't fully support synchronized updates.
 #[track_caller]
 pub(super) fn crlf(out: &mut RenderOut) {
-    if let Some(ref mut r) = out.row {
+    if out.row.is_some() {
+        let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+        let r = out.row.as_mut().unwrap();
         *r += 1;
         let next = *r;
         let _ = out.queue(cursor::MoveTo(0, next));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
     } else {
         let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
         let caller = std::panic::Location::caller();
@@ -314,6 +315,10 @@ pub struct Screen {
     defer_redraw: bool,
     /// A permission dialog is waiting for the user to stop typing.
     pending_dialog: bool,
+    /// Set when `draw_frame` issues `BeginSynchronizedUpdate` in content-only
+    /// mode.  The dialog that follows skips its own `BeginSync`, ensuring a
+    /// single atomic sync block covers both the tool overlay and the dialog.
+    sync_started: bool,
     running_procs: usize,
     show_speed: bool,
     /// Whether to render the active tool above the dialog in content-only
@@ -342,6 +347,7 @@ impl Screen {
             defer_pending_render: false,
             defer_redraw: false,
             pending_dialog: false,
+            sync_started: false,
             running_procs: 0,
             show_speed: true,
             show_tool_in_dialog: false,
@@ -369,6 +375,28 @@ impl Screen {
     /// Row where a dialog should start rendering (lines up with the prompt bar).
     pub fn dialog_row(&self) -> u16 {
         self.prompt.prev_dialog_row.unwrap_or(0)
+    }
+
+    /// Returns true and resets the flag if `draw_frame` already issued
+    /// `BeginSynchronizedUpdate` for this frame (content-only mode).
+    pub fn take_sync_started(&mut self) -> bool {
+        std::mem::take(&mut self.sync_started)
+    }
+
+    /// After a dialog draws (and potentially ScrollUp's), reconcile the
+    /// screen's anchor with the dialog's actual position so subsequent
+    /// `draw_frame` calls render the active tool at the correct row.
+    pub fn sync_dialog_anchor(&mut self, actual: Option<u16>) {
+        let Some(actual) = actual else { return };
+        let expected = self.prompt.prev_dialog_row.unwrap_or(actual);
+        if actual >= expected {
+            return;
+        }
+        let deficit = expected - actual;
+        if let Some(ref mut a) = self.prompt.anchor_row {
+            *a = a.saturating_sub(deficit);
+        }
+        self.prompt.prev_dialog_row = Some(actual);
     }
 
     /// Dismiss a dialog overlay.
@@ -628,6 +656,7 @@ impl Screen {
         self.render_pending_blocks();
     }
 
+
     /// Render unflushed blocks and scroll all viewport content into
     /// scrollback so the dialog gets a clean viewport.
     pub fn flush_history_to_scrollback(&mut self) {
@@ -693,7 +722,7 @@ impl Screen {
         }
     }
 
-    fn render_pending_blocks(&mut self) {
+    pub fn render_pending_blocks(&mut self) {
         if self.defer_pending_render {
             self.defer_pending_render = false;
             return;
@@ -890,14 +919,18 @@ impl Screen {
             .take()
             .unwrap_or_else(|| cursor::position().map(|(_, y)| y).unwrap_or(0));
 
+        // Always issue BeginSync.  In content-only mode the dialog that
+        // follows will skip its own BeginSync and close this one with
+        // EndSync, so the entire frame (tool overlay + dialog) is painted
+        // as a single atomic update.
         let _ = out.queue(terminal::BeginSynchronizedUpdate);
+        if is_dialog {
+            self.sync_started = true;
+        }
         let _ = out.queue(cursor::Hide);
         if self.prompt.drawn {
             let _ = out.queue(cursor::MoveTo(0, draw_start_row));
         }
-        // In content-only mode (dialog overlay), use overlay rendering so
-        // block output uses MoveTo instead of \r\n — preventing scrollback
-        // pollution before the dialog paints on top.
         if is_dialog {
             out.row = Some(draw_start_row);
         }
@@ -993,12 +1026,18 @@ impl Screen {
             // `anchor_row`, pushing conversation up via terminal scroll
             // rather than overlaying it.
             let gap: u16 = if block_rows > 0 || active_rows > 0 {
-                crlf(&mut out);
+                // Clear the gap row (stale prompt content may linger) and
+                // advance past it.  crlf no longer clears the next row, so
+                // we handle it explicitly here.  The dialog bar row (after
+                // the gap) is left untouched — the dialog overwrites it.
+                if out.row.is_some() {
+                    let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+                    *out.row.as_mut().unwrap() += 1;
+                }
                 1
             } else {
                 0
             };
-            let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
 
             let content_rows = block_rows + active_rows + gap;
             let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
@@ -1016,9 +1055,9 @@ impl Screen {
             self.prompt.drawn = true;
             self.prompt.dirty = false;
 
-            // Leave the synchronized update open — the dialog that
-            // follows will end the sync and flush, so the terminal paints
-            // content + dialog as one atomic frame (no flicker).
+            // The BeginSync issued at the top of draw_frame stays open.
+            // The dialog's EndSync + flush closes it, so the terminal
+            // paints tool overlay + dialog as one atomic frame.
             content_rows > 0
         }
     }

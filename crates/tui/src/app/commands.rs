@@ -6,10 +6,7 @@ impl App {
     pub(super) fn handle_command(&mut self, input: &str) -> CommandAction {
         match input {
             "/exit" | "/quit" | ":q" | ":qa" | ":wq" | ":wqa" => CommandAction::Quit,
-            "/clear" | "/new" => {
-                self.reset_session();
-                CommandAction::CancelAndClear
-            }
+            "/clear" | "/new" => CommandAction::CancelAndClear,
             "/compact" => CommandAction::Compact,
             "/resume" => {
                 let entries = self.resume_entries();

@@ -34,6 +34,7 @@ impl App {
         self.engine.processes.clear();
         self.session = session::Session::new();
         self.pending_title = false;
+        self.compact_epoch += 1;
         // Drain stale engine events so old Messages snapshots don't
         // restore history into the freshly cleared session.
         while self.engine.try_recv().is_ok() {}
@@ -70,6 +71,7 @@ impl App {
         self.input.clear();
         self.pending_title = false;
         self.engine.processes.clear();
+        self.compact_epoch += 1;
         // Drain stale engine events so old snapshots don't overwrite
         // the loaded session's state.
         while self.engine.try_recv().is_ok() {}
@@ -93,7 +95,7 @@ impl App {
         );
         terminal::enable_raw_mode().ok();
         loop {
-            dialog.draw(0);
+            dialog.draw(0, false);
             match event::read() {
                 Ok(Event::Key(KeyEvent {
                     code, modifiers, ..
@@ -258,6 +260,7 @@ impl App {
     }
 
     pub fn compact_history(&mut self) {
+        self.pending_compact_epoch = self.compact_epoch;
         self.screen.set_throbber(render::Throbber::Compacting);
         self.engine.send(UiCommand::Compact {
             keep_turns: 3,
@@ -333,6 +336,7 @@ impl App {
         self.screen.truncate_to(block_idx);
         self.screen.clear_context_tokens();
         self.auto_approved.clear();
+        self.compact_epoch += 1;
 
         turn_text.map(|t| (t, images))
     }
@@ -345,28 +349,4 @@ impl App {
         });
     }
 
-    pub fn push_user_message(&mut self, content: Content) {
-        // Expand @file references in the text portion
-        let content = match content {
-            Content::Text(s) => Content::text(crate::expand_at_refs(&s)),
-            Content::Parts(parts) => Content::Parts(
-                parts
-                    .into_iter()
-                    .map(|p| match p {
-                        protocol::ContentPart::Text { text } => protocol::ContentPart::Text {
-                            text: crate::expand_at_refs(&text),
-                        },
-                        other => other,
-                    })
-                    .collect(),
-            ),
-        };
-        self.history.push(Message {
-            role: Role::User,
-            content: Some(content),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: None,
-        });
-    }
 }

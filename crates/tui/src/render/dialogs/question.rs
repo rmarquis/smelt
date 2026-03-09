@@ -303,7 +303,7 @@ impl super::Dialog for QuestionDialog {
         None
     }
 
-    fn draw(&mut self, start_row: u16) {
+    fn draw(&mut self, start_row: u16, sync_started: bool) {
         if !self.dirty {
             return;
         }
@@ -335,6 +335,7 @@ impl super::Dialog for QuestionDialog {
             height,
             None,
             &mut self.anchor_row,
+            sync_started,
         );
         let mut row = bar_row;
 

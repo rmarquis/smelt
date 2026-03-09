@@ -79,7 +79,7 @@ impl App {
                     }),
                 );
                 if agent.is_some() {
-                    self.finish_turn(true);
+                    self.cancel_agent();
                     *agent = None;
                 }
                 self.reset_session();
@@ -513,7 +513,10 @@ impl App {
         let is_from_paste = self.input.skip_shell_escape();
         match self.handle_command(trimmed) {
             CommandAction::Quit => return InputOutcome::Quit,
-            CommandAction::CancelAndClear => return InputOutcome::Continue, // already cleared
+            CommandAction::CancelAndClear => {
+                self.reset_session();
+                return InputOutcome::Continue;
+            }
             CommandAction::Compact => return InputOutcome::Compact,
             CommandAction::OpenDialog(dlg) => return InputOutcome::OpenDialog(dlg),
             CommandAction::Continue => {}

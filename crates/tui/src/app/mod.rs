@@ -53,6 +53,10 @@ pub struct App {
     last_height: u16,
     permissions: Permissions,
     next_turn_id: u64,
+    /// Incremented on rewind/clear/load to invalidate in-flight compactions.
+    compact_epoch: u64,
+    /// The `compact_epoch` value when the last compaction was requested.
+    pending_compact_epoch: u64,
 }
 
 struct TurnState {
@@ -305,6 +309,8 @@ impl App {
                 p
             },
             next_turn_id: 1,
+            compact_epoch: 0,
+            pending_compact_epoch: 0,
         }
     }
 
@@ -549,7 +555,9 @@ impl App {
                 if redirtied {
                     d.mark_dirty();
                 }
-                d.draw(self.screen.dialog_row());
+                let sync = self.screen.take_sync_started();
+                d.draw(self.screen.dialog_row(), sync);
+                self.screen.sync_dialog_anchor(d.anchor_row());
             }
 
             // ── Wait for next event ──────────────────────────────────────
@@ -592,7 +600,9 @@ impl App {
                     let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
                     if let Some(d) = active_dialog.as_mut() {
                         if redirtied { d.mark_dirty(); }
-                        d.draw(self.screen.dialog_row());
+                        let sync = self.screen.take_sync_started();
+                        d.draw(self.screen.dialog_row(), sync);
+                        self.screen.sync_dialog_anchor(d.anchor_row());
                     }
                 }
 
@@ -620,7 +630,8 @@ impl App {
                     let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
                     if let Some(d) = active_dialog.as_mut() {
                         if redirtied { d.mark_dirty(); }
-                        d.draw(self.screen.dialog_row());
+                        let sync = self.screen.take_sync_started();
+                        d.draw(self.screen.dialog_row(), sync);
                     }
                 }
 
@@ -752,6 +763,9 @@ impl App {
         dialog: Box<dyn render::Dialog>,
         active_dialog: &mut Option<Box<dyn render::Dialog>>,
     ) {
+        // Flush any pending blocks (e.g. Thinking) to scroll mode so they
+        // persist in the viewport after the dialog is dismissed.
+        self.screen.render_pending_blocks();
         let height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
         let fits = self.screen.active_tool_rows() + dialog.height() <= height;
         if !fits {

@@ -317,7 +317,7 @@ impl super::Dialog for ConfirmDialog {
         None
     }
 
-    fn draw(&mut self, start_row: u16) {
+    fn draw(&mut self, start_row: u16, sync_started: bool) {
         if !self.dirty {
             return;
         }
@@ -349,6 +349,7 @@ impl super::Dialog for ConfirmDialog {
             height,
             None,
             &mut self.anchor_row,
+            sync_started,
         );
 
         engine::log::entry(

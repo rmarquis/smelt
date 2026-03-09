@@ -47,7 +47,7 @@ pub trait Dialog {
     }
     fn height(&self) -> u16;
     fn mark_dirty(&mut self);
-    fn draw(&mut self, start_row: u16);
+    fn draw(&mut self, start_row: u16, sync_started: bool);
     fn handle_resize(&mut self);
     fn anchor_row(&self) -> Option<u16>;
     fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<DialogResult>;
@@ -154,6 +154,7 @@ impl ListState {
         &mut self,
         start_row: u16,
         item_count: usize,
+        sync_started: bool,
     ) -> Option<(RenderOut, usize, u16)> {
         if !self.dirty {
             return None;
@@ -171,6 +172,7 @@ impl ListState {
             height,
             self.max_height,
             &mut self.anchor_row,
+            sync_started,
         );
         self.max_visible = (granted as usize)
             .saturating_sub(self.overhead as usize)
@@ -408,8 +410,11 @@ pub(crate) fn begin_dialog_draw(
     height: u16,
     max_rows: Option<u16>,
     anchor_row: &mut Option<u16>,
+    sync_started: bool,
 ) -> (u16, u16) {
-    let _ = out.queue(terminal::BeginSynchronizedUpdate);
+    if !sync_started {
+        let _ = out.queue(terminal::BeginSynchronizedUpdate);
+    }
     let _ = out.queue(cursor::Hide);
 
     let granted = if let Some(cap) = max_rows {
