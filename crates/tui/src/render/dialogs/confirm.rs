@@ -12,57 +12,118 @@ use crossterm::style::{Attribute, Print, ResetColor, SetAttribute, SetForeground
 use crossterm::{cursor, terminal, QueueableCommand};
 use std::collections::HashMap;
 
-/// Compute preview row count for the confirm dialog.
-fn confirm_preview_row_count(tool_name: &str, args: &HashMap<String, serde_json::Value>) -> u16 {
-    match tool_name {
-        "edit_file" => {
-            let old = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let new = args
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            count_inline_diff_rows(old, new, path, old)
-        }
-        "write_file" => {
-            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            content.lines().count() as u16
-        }
-        _ => 0,
-    }
+/// Tool-specific scrollable preview content for the confirm dialog.
+enum ConfirmPreview {
+    /// No preview — simple tool calls.
+    None,
+    /// Inline diff preview for edit_file.
+    Diff {
+        old: String,
+        new: String,
+        path: String,
+    },
+    /// Syntax-highlighted file content for write_file.
+    FileContent { content: String, path: String },
+    /// Remaining lines of a multiline bash command (after the first line).
+    BashBody {
+        /// The full command — first line is rendered in the title, rest here.
+        full_command: String,
+    },
 }
 
-/// Render the syntax-highlighted preview for the confirm dialog.
-/// Renders at most `viewport` rows starting from `skip` into the full preview.
-fn render_confirm_preview(
-    out: &mut RenderOut,
-    tool_name: &str,
-    args: &HashMap<String, serde_json::Value>,
-    skip: u16,
-    viewport: u16,
-) {
-    match tool_name {
-        "edit_file" => {
-            let old = args
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let new = args
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            print_inline_diff(out, old, new, path, old, skip, viewport);
+impl ConfirmPreview {
+    fn from_tool(tool_name: &str, desc: &str, args: &HashMap<String, serde_json::Value>) -> Self {
+        match tool_name {
+            "edit_file" => {
+                let old = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let path = args
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                ConfirmPreview::Diff { old, new, path }
+            }
+            "write_file" => {
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let path = args
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                ConfirmPreview::FileContent { content, path }
+            }
+            "bash" if desc.lines().count() > 1 => ConfirmPreview::BashBody {
+                full_command: desc.to_string(),
+            },
+            _ => ConfirmPreview::None,
         }
-        "write_file" => {
-            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            print_syntax_file(out, content, path, skip, viewport);
+    }
+
+    fn total_rows(&self) -> u16 {
+        match self {
+            ConfirmPreview::None => 0,
+            ConfirmPreview::Diff { old, new, path } => count_inline_diff_rows(old, new, path, old),
+            ConfirmPreview::FileContent { content, .. } => content.lines().count() as u16,
+            ConfirmPreview::BashBody { full_command } => (full_command.lines().count() - 1) as u16,
         }
-        _ => {}
+    }
+
+    fn is_some(&self) -> bool {
+        !matches!(self, ConfirmPreview::None)
+    }
+
+    /// Whether to show the top dashed separator before the preview.
+    fn has_top_separator(&self) -> bool {
+        // Bash preview flows directly from the title line — no separator needed.
+        !matches!(self, ConfirmPreview::None | ConfirmPreview::BashBody { .. })
+    }
+
+    fn render(&self, out: &mut RenderOut, skip: u16, viewport: u16) {
+        match self {
+            ConfirmPreview::None => {}
+            ConfirmPreview::Diff { old, new, path } => {
+                print_inline_diff(out, old, new, path, old, skip, viewport);
+            }
+            ConfirmPreview::FileContent { content, path } => {
+                print_syntax_file(out, content, path, skip, viewport);
+            }
+            ConfirmPreview::BashBody { full_command } => {
+                let mut bh = BashHighlighter::new();
+                let mut lines = full_command.lines();
+                // Advance past first line (rendered in title) to preserve highlighter state.
+                if let Some(first) = lines.next() {
+                    bh.advance(first);
+                }
+                let body_lines: Vec<&str> = lines.collect();
+                let mut emitted = 0u16;
+                for (i, line) in body_lines.iter().enumerate() {
+                    if (i as u16) < skip {
+                        bh.advance(line);
+                        continue;
+                    }
+                    if emitted >= viewport {
+                        break;
+                    }
+                    let _ = out.queue(Print(" "));
+                    bh.print_line(out, line);
+                    crlf(out);
+                    emitted += 1;
+                }
+            }
+        }
     }
 }
 
@@ -79,7 +140,7 @@ pub struct ConfirmDialog {
     tool_name: String,
     desc: String,
     summary: Option<String>,
-    args: HashMap<String, serde_json::Value>,
+    preview: ConfirmPreview,
     options: Vec<(String, ConfirmChoice)>,
     total_preview: u16,
     preview_scroll: usize,
@@ -118,13 +179,14 @@ impl ConfirmDialog {
             options.push(("always allow".into(), ConfirmChoice::Always));
         }
 
-        let total_preview = confirm_preview_row_count(tool_name, args);
+        let preview = ConfirmPreview::from_tool(tool_name, desc, args);
+        let total_preview = preview.total_rows();
 
         Self {
             tool_name: tool_name.to_string(),
             desc: desc.to_string(),
             summary: summary.map(|s| s.to_string()),
-            args: args.clone(),
+            preview,
             options,
             total_preview,
             preview_scroll: 0,
@@ -154,17 +216,10 @@ impl ConfirmDialog {
         };
 
         let prefix_len = 1 + self.tool_name.len() + 2;
-        let title_rows = if self.tool_name == "bash" {
-            // For bash, we render each line of the command on its own row.
-            // First line has the "bash: " prefix, rest are indented.
-            let first_line_width = w.saturating_sub(prefix_len);
-            let rest_width = w.saturating_sub(1);
-            let mut rows = 0usize;
-            for (i, line) in self.desc.lines().enumerate() {
-                let avail = if i == 0 { first_line_width } else { rest_width };
-                rows += wrap_line(line, avail).len();
-            }
-            rows.max(1) as u16
+        let title_rows = if matches!(self.preview, ConfirmPreview::BashBody { .. }) {
+            // Only the first line goes in the title; the rest is scrollable preview.
+            let first_line = self.desc.lines().next().unwrap_or("");
+            wrap_line(first_line, w.saturating_sub(prefix_len)).len() as u16
         } else {
             wrap_line(&self.desc, w.saturating_sub(prefix_len)).len() as u16
         };
@@ -173,13 +228,22 @@ impl ConfirmDialog {
             .as_ref()
             .map(|s| wrap_line(s, w.saturating_sub(1)).len() as u16)
             .unwrap_or(0);
-        let has_preview = self.total_preview > 0;
+        let has_preview = self.preview.is_some();
         // bar + title + summary + separators(if preview) +
         // "Allow?" + options + ta_extra + blank + hint
+        let separator_rows = if has_preview {
+            if self.preview.has_top_separator() {
+                2
+            } else {
+                1
+            }
+        } else {
+            1 // blank line
+        };
         let fixed_rows: u16 = 1
             + title_rows
             + summary_rows
-            + if has_preview { 2 } else { 1 }
+            + separator_rows
             + 1
             + self.options.len() as u16
             + ta_extra
@@ -377,16 +441,18 @@ impl super::Dialog for ConfirmDialog {
         );
 
         // Where the options section should begin in the current layout.
-        let expected_options_row = bar_row
-            + 1
-            + ly.title_rows
-            + ly.summary_rows
-            + if ly.has_preview {
-                2 + ly.viewport_rows
+        let preview_section = if ly.has_preview {
+            let seps = if self.preview.has_top_separator() {
+                2
             } else {
                 1
-            }
-            + 1;
+            };
+            seps + ly.viewport_rows
+        } else {
+            1 // blank line
+        };
+        let expected_options_row =
+            bar_row + 1 + ly.title_rows + ly.summary_rows + preview_section + 1;
 
         // Partial redraw: when editing and the layout above the options
         // hasn't shifted, skip re-rendering bar/title/preview/"Allow?" and
@@ -408,47 +474,38 @@ impl super::Dialog for ConfirmDialog {
             crlf(&mut out);
             row += 1;
 
-            // title -- wrap long commands with a leading space on continuation lines
-            if self.tool_name == "bash" {
-                // Syntax-highlighted bash command with stateful highlighter
-                let prefix_len = 1 + self.tool_name.len() + 2;
-                let first_line_width = w.saturating_sub(prefix_len);
-                let rest_width = w.saturating_sub(1);
-                let mut bh = BashHighlighter::new();
-                for (i, line) in self.desc.lines().enumerate() {
-                    let avail = if i == 0 { first_line_width } else { rest_width };
-                    let segments = wrap_line(line, avail);
-                    for (si, seg) in segments.iter().enumerate() {
-                        if i == 0 && si == 0 {
-                            let _ = out.queue(Print(" "));
-                            let _ = out.queue(SetForegroundColor(theme::accent()));
-                            let _ = out.queue(Print(&self.tool_name));
-                            let _ = out.queue(ResetColor);
-                            let _ = out.queue(Print(": "));
-                        } else {
-                            let _ = out.queue(Print(" "));
-                        }
-                        bh.print_line(&mut out, seg);
-                        crlf(&mut out);
-                        row += 1;
-                    }
-                }
+            // Title
+            let prefix_len = 1 + self.tool_name.len() + 2;
+            let title_desc = if matches!(self.preview, ConfirmPreview::BashBody { .. }) {
+                self.desc.lines().next().unwrap_or("")
             } else {
-                let prefix_len = 1 + self.tool_name.len() + 2; // " tool: "
-                let segments = wrap_line(&self.desc, w.saturating_sub(prefix_len));
-                for (i, seg) in segments.iter().enumerate() {
-                    if i == 0 {
-                        let _ = out.queue(Print(" "));
-                        let _ = out.queue(SetForegroundColor(theme::accent()));
-                        let _ = out.queue(Print(&self.tool_name));
-                        let _ = out.queue(ResetColor);
-                        let _ = out.queue(Print(format!(": {seg}")));
-                    } else {
-                        let _ = out.queue(Print(format!(" {seg}")));
-                    }
-                    crlf(&mut out);
-                    row += 1;
+                &self.desc
+            };
+            let segments = wrap_line(title_desc, w.saturating_sub(prefix_len));
+            let is_bash =
+                matches!(self.preview, ConfirmPreview::BashBody { .. }) || self.tool_name == "bash";
+            let mut bh = if is_bash {
+                Some(BashHighlighter::new())
+            } else {
+                None
+            };
+            for (i, seg) in segments.iter().enumerate() {
+                if i == 0 {
+                    let _ = out.queue(Print(" "));
+                    let _ = out.queue(SetForegroundColor(theme::accent()));
+                    let _ = out.queue(Print(&self.tool_name));
+                    let _ = out.queue(ResetColor);
+                    let _ = out.queue(Print(": "));
+                } else {
+                    let _ = out.queue(Print(" "));
                 }
+                if let Some(ref mut h) = bh {
+                    h.print_line(&mut out, seg);
+                } else {
+                    let _ = out.queue(Print(seg));
+                }
+                crlf(&mut out);
+                row += 1;
             }
 
             // summary
@@ -467,19 +524,16 @@ impl super::Dialog for ConfirmDialog {
 
             if ly.has_preview {
                 let separator: String = "\u{254c}".repeat(w);
-                // Top separator -- show scroll position when clipped
-                let _ = out.queue(SetForegroundColor(theme::BAR));
-                let _ = out.queue(Print(&separator));
-                let _ = out.queue(ResetColor);
-                crlf(&mut out);
-                row += 1;
-                render_confirm_preview(
-                    &mut out,
-                    &self.tool_name,
-                    &self.args,
-                    self.preview_scroll as u16,
-                    ly.viewport_rows,
-                );
+                // Top separator (only for tools that request it)
+                if self.preview.has_top_separator() {
+                    let _ = out.queue(SetForegroundColor(theme::BAR));
+                    let _ = out.queue(Print(&separator));
+                    let _ = out.queue(ResetColor);
+                    crlf(&mut out);
+                    row += 1;
+                }
+                self.preview
+                    .render(&mut out, self.preview_scroll as u16, ly.viewport_rows);
                 row += ly.viewport_rows;
                 // Bottom separator -- show scroll indicator when content is clipped
                 let _ = out.queue(SetForegroundColor(theme::BAR));

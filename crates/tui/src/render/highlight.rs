@@ -822,6 +822,12 @@ impl<'a> BashHighlighter<'a> {
         }
     }
 
+    /// Advance the highlighter state without emitting output.
+    pub fn advance(&mut self, line: &str) {
+        let line_with_nl = format!("{}\n", line);
+        let _ = self.h.highlight_line(&line_with_nl, &SYNTAX_SET);
+    }
+
     /// Print a single line with syntax highlighting.
     /// Does not emit `crlf` — the caller controls line breaks.
     pub fn print_line(&mut self, out: &mut RenderOut, line: &str) {
