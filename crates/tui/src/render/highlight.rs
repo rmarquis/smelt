@@ -9,10 +9,10 @@ use crossterm::{
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 use std::sync::LazyLock;
-use unicode_width::UnicodeWidthStr;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Style;
 use syntect::parsing::SyntaxSet;
+use unicode_width::UnicodeWidthStr;
 
 use super::{crlf, term_width, RenderOut};
 
@@ -197,6 +197,7 @@ struct DiffViewData {
     first_mod: usize,
     view_start: usize,
     view_end: usize,
+    max_display_lineno: usize,
     changes: Vec<DiffChange>,
 }
 
@@ -231,16 +232,19 @@ fn compute_diff_view(old: &str, new: &str, path: &str, anchor: &str) -> DiffView
     let mut first_mod: Option<usize> = None;
     let mut last_mod: Option<usize> = None;
     let mut new_line = start_line;
+    let mut old_line = start_line;
     for c in &changes {
         match c.tag {
             ChangeTag::Equal => {
                 new_line += 1;
+                old_line += 1;
             }
             ChangeTag::Delete => {
                 if first_mod.is_none() {
                     first_mod = Some(new_line);
                 }
                 last_mod = Some(new_line);
+                old_line += 1;
             }
             ChangeTag::Insert => {
                 if first_mod.is_none() {
@@ -255,6 +259,7 @@ fn compute_diff_view(old: &str, new: &str, path: &str, anchor: &str) -> DiffView
     let last_mod = last_mod.unwrap_or(start_line);
     let view_start = first_mod.saturating_sub(ctx);
     let view_end = (last_mod + 1 + ctx).min(file_lines_count);
+    let max_display_lineno = view_end.max(old_line).max(new_line);
 
     DiffViewData {
         file_content,
@@ -262,6 +267,7 @@ fn compute_diff_view(old: &str, new: &str, path: &str, anchor: &str) -> DiffView
         first_mod,
         view_start,
         view_end,
+        max_display_lineno,
         changes,
     }
 }
@@ -326,7 +332,7 @@ pub(super) fn print_inline_diff(
     let file_lines: Vec<&str> = expanded_lines.iter().map(|s| s.as_str()).collect();
     let changes = &dv.changes;
 
-    let max_lineno = dv.view_end;
+    let max_lineno = dv.max_display_lineno;
     let gutter_width = format!("{}", max_lineno).len();
     let prefix_len = indent.len() + 1 + gutter_width + 3;
     let right_margin = indent.len();
@@ -537,7 +543,7 @@ pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &
     let dv = compute_diff_view(old, new, path, anchor);
 
     let indent = "   ";
-    let max_lineno = dv.view_end;
+    let max_lineno = dv.max_display_lineno;
     let gutter_width = format!("{}", max_lineno).len();
     let prefix_len = indent.len() + 1 + gutter_width + 3;
     let right_margin = indent.len();
@@ -1170,10 +1176,8 @@ fn wrap_cell_words(text: &str, max_width: usize) -> Vec<String> {
         if breakable[ci] {
             last_break = Some(ci);
         }
-        let visual_width = strip_markdown_markers(
-            &chars[line_start..=ci].iter().collect::<String>(),
-        )
-        .width();
+        let visual_width =
+            strip_markdown_markers(&chars[line_start..=ci].iter().collect::<String>()).width();
 
         if visual_width > max_width {
             if let Some(bp) = last_break {
