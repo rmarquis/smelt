@@ -1,4 +1,6 @@
-use super::{hash_content, int_arg, str_arg, FileHashes, Tool, ToolResult};
+use super::{
+    hash_content, int_arg, str_arg, FileHashes, Tool, ToolContext, ToolFuture, ToolResult,
+};
 use crate::image;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -37,10 +39,19 @@ impl Tool for ReadFileTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move { tokio::task::block_in_place(|| self.run(&args)) })
+    }
+}
+
+impl ReadFileTool {
+    fn run(&self, args: &HashMap<String, Value>) -> ToolResult {
         let path = str_arg(args, "file_path");
 
-        // Image files: return base64 data URL
         if image::is_image_file(&path) {
             return match image::read_image_as_data_url(&path) {
                 Ok(data_url) => ToolResult {
@@ -64,7 +75,6 @@ impl Tool for ReadFileTool {
             }
         };
 
-        // Store hash for staleness detection
         if let Ok(mut map) = self.hashes.lock() {
             map.insert(path.clone(), hash_content(&content));
         }

@@ -1,4 +1,4 @@
-use super::{str_arg, Tool, ToolResult};
+use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -30,48 +30,55 @@ impl Tool for GlobTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let pattern = str_arg(args, "pattern");
-        let root = str_arg(args, "path");
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            tokio::task::block_in_place(|| {
+                let pattern = str_arg(&args, "pattern");
+                let root = str_arg(&args, "path");
 
-        let full_pattern = if root.is_empty() {
-            pattern
-        } else {
-            format!("{}/{}", root.trim_end_matches('/'), pattern)
-        };
-
-        match glob::glob(&full_pattern) {
-            Ok(paths) => {
-                let mut entries: Vec<(std::time::SystemTime, String)> = paths
-                    .filter_map(|p| p.ok())
-                    .take(200)
-                    .filter_map(|p| {
-                        let mtime = p.metadata().ok()?.modified().ok()?;
-                        Some((mtime, p.display().to_string()))
-                    })
-                    .collect();
-
-                // Sort by modification time, most recent first
-                entries.sort_by(|a, b| b.0.cmp(&a.0));
-
-                let matches: Vec<String> = entries.into_iter().map(|(_, path)| path).collect();
-
-                if matches.is_empty() {
-                    ToolResult {
-                        content: "no matches found".into(),
-                        is_error: false,
-                    }
+                let full_pattern = if root.is_empty() {
+                    pattern
                 } else {
-                    ToolResult {
-                        content: matches.join("\n"),
-                        is_error: false,
+                    format!("{}/{}", root.trim_end_matches('/'), pattern)
+                };
+
+                match glob::glob(&full_pattern) {
+                    Ok(paths) => {
+                        let mut entries: Vec<(std::time::SystemTime, String)> = paths
+                            .filter_map(|p| p.ok())
+                            .take(200)
+                            .filter_map(|p| {
+                                let mtime = p.metadata().ok()?.modified().ok()?;
+                                Some((mtime, p.display().to_string()))
+                            })
+                            .collect();
+
+                        entries.sort_by(|a, b| b.0.cmp(&a.0));
+                        let matches: Vec<String> =
+                            entries.into_iter().map(|(_, path)| path).collect();
+
+                        if matches.is_empty() {
+                            ToolResult {
+                                content: "no matches found".into(),
+                                is_error: false,
+                            }
+                        } else {
+                            ToolResult {
+                                content: matches.join("\n"),
+                                is_error: false,
+                            }
+                        }
                     }
+                    Err(e) => ToolResult {
+                        content: e.to_string(),
+                        is_error: true,
+                    },
                 }
-            }
-            Err(e) => ToolResult {
-                content: e.to_string(),
-                is_error: true,
-            },
-        }
+            })
+        })
     }
 }

@@ -1,4 +1,4 @@
-use super::{str_arg, Tool, ToolResult};
+use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -26,11 +26,17 @@ impl Tool for ExitPlanModeTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let summary = str_arg(args, "plan_summary");
-        ToolResult {
-            content: summary,
-            is_error: false,
-        }
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let summary = str_arg(&args, "plan_summary");
+            ToolResult {
+                content: summary,
+                is_error: false,
+            }
+        })
     }
 }

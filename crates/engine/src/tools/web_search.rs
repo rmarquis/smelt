@@ -1,6 +1,6 @@
 use super::web_cache;
 use super::web_shared::next_user_agent;
-use super::{str_arg, Tool, ToolResult};
+use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -34,95 +34,103 @@ impl Tool for WebSearchTool {
         Some(query.to_string())
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let query = str_arg(args, "query");
-        if query.is_empty() {
-            return ToolResult {
-                content: "Query cannot be empty".into(),
-                is_error: true,
-            };
-        }
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move { tokio::task::block_in_place(|| run_search(&args)) })
+    }
+}
 
-        let cache_key = format!("search:{query}");
-        if let Some(cached) = web_cache::get(&cache_key) {
-            return ToolResult {
-                content: cached,
-                is_error: false,
-            };
-        }
-
-        let search_query = query.clone();
-        let fetch_result = std::thread::spawn(move || {
-            let ua = next_user_agent();
-            let client = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(20))
-                .user_agent(ua)
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .build()?;
-
-            let body = url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("q", &search_query)
-                .append_pair("kl", "us-en")
-                .finish();
-
-            let response = client
-                .post("https://html.duckduckgo.com/html/")
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Accept", "text/html")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Referer", "https://html.duckduckgo.com/html/")
-                .header("Origin", "https://html.duckduckgo.com")
-                .body(body)
-                .send()?;
-
-            if !response.status().is_success() {
-                return Err(response.error_for_status().unwrap_err());
-            }
-
-            response.text()
-        })
-        .join();
-
-        let html = match fetch_result {
-            Ok(Ok(h)) => h,
-            Ok(Err(e)) => {
-                return ToolResult {
-                    content: format!("Search failed: {e}"),
-                    is_error: true,
-                }
-            }
-            Err(_) => {
-                return ToolResult {
-                    content: "Search thread panicked".into(),
-                    is_error: true,
-                }
-            }
+fn run_search(args: &HashMap<String, Value>) -> ToolResult {
+    let query = str_arg(args, "query");
+    if query.is_empty() {
+        return ToolResult {
+            content: "Query cannot be empty".into(),
+            is_error: true,
         };
+    }
 
-        let results = parse_ddg_results(&html);
-        if results.is_empty() {
-            return ToolResult {
-                content: "No results found".into(),
-                is_error: false,
-            };
-        }
-
-        let mut output = String::new();
-        for (i, r) in results.iter().enumerate() {
-            output.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.link));
-            if !r.description.is_empty() {
-                output.push_str(&format!("   {}\n", r.description));
-            }
-            output.push('\n');
-        }
-
-        let output = output.trim_end().to_string();
-        web_cache::put(&cache_key, &output);
-
-        ToolResult {
-            content: output,
+    let cache_key = format!("search:{query}");
+    if let Some(cached) = web_cache::get(&cache_key) {
+        return ToolResult {
+            content: cached,
             is_error: false,
+        };
+    }
+
+    let search_query = query.clone();
+    let fetch_result = std::thread::spawn(move || {
+        let ua = next_user_agent();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent(ua)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()?;
+
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("q", &search_query)
+            .append_pair("kl", "us-en")
+            .finish();
+
+        let response = client
+            .post("https://html.duckduckgo.com/html/")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "text/html")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", "https://html.duckduckgo.com/html/")
+            .header("Origin", "https://html.duckduckgo.com")
+            .body(body)
+            .send()?;
+
+        if !response.status().is_success() {
+            return Err(response.error_for_status().unwrap_err());
         }
+
+        response.text()
+    })
+    .join();
+
+    let html = match fetch_result {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => {
+            return ToolResult {
+                content: format!("Search failed: {e}"),
+                is_error: true,
+            }
+        }
+        Err(_) => {
+            return ToolResult {
+                content: "Search thread panicked".into(),
+                is_error: true,
+            }
+        }
+    };
+
+    let results = parse_ddg_results(&html);
+    if results.is_empty() {
+        return ToolResult {
+            content: "No results found".into(),
+            is_error: false,
+        };
+    }
+
+    let mut output = String::new();
+    for (i, r) in results.iter().enumerate() {
+        output.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.link));
+        if !r.description.is_empty() {
+            output.push_str(&format!("   {}\n", r.description));
+        }
+        output.push('\n');
+    }
+
+    let output = output.trim_end().to_string();
+    web_cache::put(&cache_key, &output);
+
+    ToolResult {
+        content: output,
+        is_error: false,
     }
 }
 

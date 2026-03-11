@@ -31,6 +31,7 @@ struct RawModePerms {
 #[serde(default)]
 struct RawPerms {
     normal: RawModePerms,
+    plan: RawModePerms,
     apply: RawModePerms,
     yolo: RawModePerms,
 }
@@ -207,7 +208,7 @@ impl Permissions {
         let raw: RawConfig = serde_yml::from_str(&contents).unwrap_or_default();
         Self {
             normal: build_mode(&raw.permissions.normal, Mode::Normal),
-            plan: build_mode(&raw.permissions.normal, Mode::Plan),
+            plan: build_mode(&raw.permissions.plan, Mode::Plan),
             apply: build_mode(&raw.permissions.apply, Mode::Apply),
             yolo: build_mode(&raw.permissions.yolo, Mode::Yolo),
             restrict_to_workspace: true,

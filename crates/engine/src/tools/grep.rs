@@ -1,4 +1,7 @@
-use super::{bool_arg, int_arg, run_command_with_timeout, str_arg, timeout_arg, Tool, ToolResult};
+use super::{
+    bool_arg, int_arg, run_command_with_timeout, str_arg, timeout_arg, Tool, ToolContext,
+    ToolFuture, ToolResult,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -84,120 +87,119 @@ impl Tool for GrepTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let pattern = str_arg(args, "pattern");
-        let path = str_arg(args, "path");
-        let glob_filter = str_arg(args, "glob");
-        let file_type = str_arg(args, "type");
-        let output_mode = str_arg(args, "output_mode");
-        let case_insensitive = bool_arg(args, "-i");
-        let multiline = bool_arg(args, "multiline");
-        let after_ctx = int_arg(args, "-A");
-        let before_ctx = int_arg(args, "-B");
-        let context = {
-            let c = int_arg(args, "context");
-            if c > 0 {
-                c
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move { tokio::task::block_in_place(|| run_grep(&args)) })
+    }
+}
+
+fn run_grep(args: &HashMap<String, Value>) -> ToolResult {
+    let pattern = str_arg(args, "pattern");
+    let path = str_arg(args, "path");
+    let glob_filter = str_arg(args, "glob");
+    let file_type = str_arg(args, "type");
+    let output_mode = str_arg(args, "output_mode");
+    let case_insensitive = bool_arg(args, "-i");
+    let multiline = bool_arg(args, "multiline");
+    let after_ctx = int_arg(args, "-A");
+    let before_ctx = int_arg(args, "-B");
+    let context = {
+        let c = int_arg(args, "context");
+        if c > 0 {
+            c
+        } else {
+            int_arg(args, "-C")
+        }
+    };
+    let head_limit = int_arg(args, "head_limit");
+    let offset = int_arg(args, "offset");
+    let line_numbers = args.get("-n").and_then(|v| v.as_bool()).unwrap_or(true);
+    let timeout = timeout_arg(args, 30);
+
+    let search_path = if path.is_empty() { ".".into() } else { path };
+
+    let mut cmd_args: Vec<String> = Vec::new();
+
+    match output_mode.as_str() {
+        "files_with_matches" => cmd_args.push("--files-with-matches".into()),
+        "count" => cmd_args.push("--count".into()),
+        "content" | "" => {
+            if line_numbers {
+                cmd_args.push("--line-number".into());
+            }
+            if after_ctx > 0 {
+                cmd_args.push(format!("--after-context={}", after_ctx));
+            }
+            if before_ctx > 0 {
+                cmd_args.push(format!("--before-context={}", before_ctx));
+            }
+            if context > 0 {
+                cmd_args.push(format!("--context={}", context));
+            }
+        }
+        _ => cmd_args.push("--files-with-matches".into()),
+    }
+
+    if case_insensitive {
+        cmd_args.push("--ignore-case".into());
+    }
+    if multiline {
+        cmd_args.push("--multiline".into());
+        cmd_args.push("--multiline-dotall".into());
+    }
+    if !glob_filter.is_empty() {
+        cmd_args.push(format!("--glob={}", glob_filter));
+    }
+    if !file_type.is_empty() {
+        cmd_args.push(format!("--type={}", file_type));
+    }
+
+    cmd_args.push("--".into());
+    cmd_args.push(pattern.clone());
+    cmd_args.push(search_path.clone());
+
+    let child = std::process::Command::new("rg")
+        .args(&cmd_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    match child {
+        Ok(child) => {
+            let result = run_command_with_timeout(child, timeout);
+            if result.is_error {
+                if result.content.is_empty() {
+                    return ToolResult {
+                        content: "no matches found".into(),
+                        is_error: false,
+                    };
+                }
+                return result;
+            }
+
+            let content = if result.content.is_empty() {
+                "no matches found".into()
             } else {
-                int_arg(args, "-C")
-            }
-        };
-        let head_limit = int_arg(args, "head_limit");
-        let offset = int_arg(args, "offset");
-        let line_numbers = args.get("-n").and_then(|v| v.as_bool()).unwrap_or(true);
-        let timeout = timeout_arg(args, 30);
+                apply_offset_and_limit(&result.content, offset, head_limit)
+            };
 
-        let search_path = if path.is_empty() { ".".into() } else { path };
-
-        let mut cmd_args: Vec<String> = Vec::new();
-
-        // Output mode
-        match output_mode.as_str() {
-            "files_with_matches" => cmd_args.push("--files-with-matches".into()),
-            "count" => cmd_args.push("--count".into()),
-            "content" | "" => {
-                if line_numbers {
-                    cmd_args.push("--line-number".into());
-                }
-                if after_ctx > 0 {
-                    cmd_args.push(format!("--after-context={}", after_ctx));
-                }
-                if before_ctx > 0 {
-                    cmd_args.push(format!("--before-context={}", before_ctx));
-                }
-                if context > 0 {
-                    cmd_args.push(format!("--context={}", context));
-                }
-            }
-            _ => cmd_args.push("--files-with-matches".into()),
-        }
-
-        if case_insensitive {
-            cmd_args.push("--ignore-case".into());
-        }
-
-        if multiline {
-            cmd_args.push("--multiline".into());
-            cmd_args.push("--multiline-dotall".into());
-        }
-
-        if !glob_filter.is_empty() {
-            cmd_args.push(format!("--glob={}", glob_filter));
-        }
-
-        if !file_type.is_empty() {
-            cmd_args.push(format!("--type={}", file_type));
-        }
-
-        cmd_args.push("--".into());
-        cmd_args.push(pattern.clone());
-        cmd_args.push(search_path.clone());
-
-        // Try rg first, fall back to system grep
-        let child = std::process::Command::new("rg")
-            .args(&cmd_args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-
-        match child {
-            Ok(child) => {
-                let result = run_command_with_timeout(child, timeout);
-                if result.is_error {
-                    // rg exits 1 for no matches — treat as not-error
-                    if result.content.is_empty() {
-                        return ToolResult {
-                            content: "no matches found".into(),
-                            is_error: false,
-                        };
-                    }
-                    return result;
-                }
-
-                let content = if result.content.is_empty() {
-                    "no matches found".into()
-                } else {
-                    apply_offset_and_limit(&result.content, offset, head_limit)
-                };
-
-                ToolResult {
-                    content,
-                    is_error: false,
-                }
-            }
-            Err(_) => {
-                // rg not found — fall back to system grep
-                grep_fallback(
-                    &pattern,
-                    &search_path,
-                    &glob_filter,
-                    case_insensitive,
-                    timeout,
-                    offset,
-                    head_limit,
-                )
+            ToolResult {
+                content,
+                is_error: false,
             }
         }
+        Err(_) => grep_fallback(
+            &pattern,
+            &search_path,
+            &glob_filter,
+            case_insensitive,
+            timeout,
+            offset,
+            head_limit,
+        ),
     }
 }
 

@@ -48,6 +48,38 @@ pub struct LLMResponse {
     pub tokens_per_sec: Option<f64>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("cancelled")]
+    Cancelled,
+    #[error("rate limited (attempt {attempt})")]
+    RateLimited { attempt: u32 },
+    #[error("authentication failed: {0}")]
+    Auth(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("server error {status}: {body}")]
+    Server { status: u16, body: String },
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+    #[error("max retries exceeded")]
+    MaxRetries,
+}
+
+impl ProviderError {
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::RateLimited { .. }
+                | ProviderError::Server { .. }
+                | ProviderError::Network(_)
+        )
+    }
+}
+
+#[derive(Clone)]
 pub struct Provider {
     api_base: String,
     api_key: String,
@@ -78,7 +110,7 @@ impl Provider {
         reasoning_effort: ReasoningEffort,
         cancel: &CancellationToken,
         on_retry: Option<&(dyn Fn(Duration, u32) + Send + Sync)>,
-    ) -> Result<LLMResponse, String> {
+    ) -> Result<LLMResponse, ProviderError> {
         let mut body: HashMap<&str, serde_json::Value> = HashMap::new();
         body.insert("model", serde_json::json!(model));
         let api_messages: Vec<serde_json::Value> = messages
@@ -137,21 +169,21 @@ impl Provider {
 
             let resp = tokio::select! {
                 _ = cancel.cancelled() => {
-                    return Err("cancelled".into());
+                    return Err(ProviderError::Cancelled);
                 }
                 result = req.send() => match result {
                     Ok(r) => r,
                     Err(e) => {
+                        let err = ProviderError::Network(e.to_string());
                         if attempt < max_retries {
                             let delay = Duration::from_millis(500 * 2u64.pow(attempt as u32));
-                            // Only show retrying after at least one retry has occurred
                             if attempt > 0 {
                                 if let Some(f) = on_retry { f(delay, attempt as u32); }
                             }
                             tokio::time::sleep(delay).await;
                             continue;
                         }
-                        return Err(e.to_string());
+                        return Err(err);
                     }
                 }
             };
@@ -160,9 +192,21 @@ impl Provider {
                 let status = resp.status();
                 let code = status.as_u16();
                 let text = resp.text().await.unwrap_or_default();
-                if (code == 429 || code >= 500) && attempt < max_retries {
+
+                let err = match code {
+                    401 | 403 => ProviderError::Auth(text),
+                    404 => ProviderError::NotFound(text),
+                    429 => ProviderError::RateLimited {
+                        attempt: attempt as u32,
+                    },
+                    _ => ProviderError::Server {
+                        status: code,
+                        body: text,
+                    },
+                };
+
+                if err.is_retryable() && attempt < max_retries {
                     let delay = Duration::from_millis(500 * 2u64.pow(attempt as u32));
-                    // Only show retrying after at least one retry has occurred
                     if attempt > 0 {
                         if let Some(f) = on_retry {
                             f(delay, attempt as u32);
@@ -171,12 +215,17 @@ impl Provider {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                return Err(format!("API error {}: {}", status, text));
+                return Err(err);
             }
 
-            let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let data: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
 
-            let choice = data["choices"].get(0).ok_or("no choices in response")?;
+            let choice = data["choices"]
+                .get(0)
+                .ok_or_else(|| ProviderError::InvalidResponse("no choices in response".into()))?;
             let msg = &choice["message"];
 
             let content = msg["content"].as_str().map(|s| s.to_string());
@@ -214,11 +263,10 @@ impl Provider {
             });
         }
 
-        Err("max retries exceeded".into())
+        Err(ProviderError::MaxRetries)
     }
 
     /// Fetch the context window size for `model` from the /v1/models endpoint.
-    /// Parses --ctx-size from the model's args list.
     pub async fn fetch_context_window(&self, model: &str) -> Option<u32> {
         let url = format!("{}/models", self.api_base);
         let mut req = self.client.get(&url);
@@ -296,7 +344,8 @@ impl Provider {
                 cancel,
                 None,
             )
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         let summary = resp.content.unwrap_or_default();
         if summary.trim().is_empty() {
             return Err("empty summary".into());
@@ -304,8 +353,7 @@ impl Provider {
         Ok(summary)
     }
 
-    /// Fire-and-forget short completion: low reasoning, no thinking, stops on
-    /// newline.  Used for titles, command descriptions, and similar one-liners.
+    /// Fire-and-forget short completion.
     async fn complete_raw(&self, body: serde_json::Value) -> Result<String, String> {
         let url = format!("{}/chat/completions", self.api_base);
         let mut req = self.client.post(&url).json(&body);

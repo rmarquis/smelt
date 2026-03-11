@@ -1,4 +1,4 @@
-use super::{Tool, ToolResult};
+use super::{Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -66,12 +66,18 @@ impl Tool for AskUserQuestionTool {
         })
     }
 
-    fn execute(&self, _args: &HashMap<String, Value>) -> ToolResult {
-        // The actual interaction is handled by the agent event loop.
-        // This is a placeholder — the real result is injected by the main loop.
-        ToolResult {
-            content: "waiting for user response".into(),
-            is_error: false,
-        }
+    fn execute<'a>(
+        &'a self,
+        _args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        // The actual interaction is handled by the Turn loop in agent.rs.
+        // This is a placeholder — the real result is injected by the engine.
+        Box::pin(async move {
+            ToolResult {
+                content: "waiting for user response".into(),
+                is_error: false,
+            }
+        })
     }
 }

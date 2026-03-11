@@ -1,4 +1,7 @@
-use super::{bool_arg, display_path, hash_content, str_arg, FileHashes, Tool, ToolResult};
+use super::{
+    bool_arg, display_path, hash_content, str_arg, FileHashes, Tool, ToolContext, ToolFuture,
+    ToolResult,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -44,7 +47,17 @@ impl Tool for EditFileTool {
         Some(display_path(&str_arg(args, "file_path")))
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move { tokio::task::block_in_place(|| self.run(&args)) })
+    }
+}
+
+impl EditFileTool {
+    fn run(&self, args: &HashMap<String, Value>) -> ToolResult {
         let path = str_arg(args, "file_path");
         let old_string = str_arg(args, "old_string");
         let new_string = str_arg(args, "new_string");
@@ -60,7 +73,6 @@ impl Tool for EditFileTool {
             }
         };
 
-        // Check staleness: require read_file before edit, and verify content hasn't changed
         if let Ok(map) = self.hashes.lock() {
             match map.get(&path) {
                 None => {
@@ -114,7 +126,6 @@ impl Tool for EditFileTool {
 
         match std::fs::write(&path, &new_content) {
             Ok(_) => {
-                // Update the stored hash to the new content
                 if let Ok(mut map) = self.hashes.lock() {
                     map.insert(path.clone(), hash_content(&new_content));
                 }

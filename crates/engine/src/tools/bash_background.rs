@@ -1,7 +1,9 @@
 use super::background::ProcessRegistry;
-use super::{str_arg, Tool, ToolResult};
+use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
+use protocol::EngineEvent;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub fn format_read_result(output: String, running: bool, exit_code: Option<i32>) -> ToolResult {
     let status = if running {
@@ -45,15 +47,72 @@ impl Tool for ReadProcessOutputTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let id = str_arg(args, "id");
-        match self.registry.read(&id) {
-            Ok((output, running, exit_code)) => format_read_result(output, running, exit_code),
-            Err(e) => ToolResult {
-                content: e,
-                is_error: true,
-            },
-        }
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let id = str_arg(&args, "id");
+            let block = args.get("block").and_then(|v| v.as_bool()).unwrap_or(true);
+
+            if !block {
+                return match self.registry.read(&id) {
+                    Ok((output, running, exit_code)) => {
+                        format_read_result(output, running, exit_code)
+                    }
+                    Err(e) => ToolResult {
+                        content: e,
+                        is_error: true,
+                    },
+                };
+            }
+
+            // Blocking poll loop with streaming output
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30000)
+                .min(600_000);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let mut accumulated = String::new();
+
+            loop {
+                match self.registry.read(&id) {
+                    Ok((output, running, exit_code)) => {
+                        if !output.is_empty() {
+                            for line in output.lines() {
+                                let _ = ctx.event_tx.send(EngineEvent::ToolOutput {
+                                    call_id: ctx.call_id.to_string(),
+                                    chunk: line.to_string(),
+                                });
+                            }
+                            if !accumulated.is_empty() {
+                                accumulated.push('\n');
+                            }
+                            accumulated.push_str(&output);
+                        }
+                        if !running {
+                            break format_read_result(accumulated, false, exit_code);
+                        }
+                        if ctx.cancel.is_cancelled() {
+                            let _ = self.registry.stop(&id);
+                            break format_read_result(accumulated, false, None);
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            break format_read_result(accumulated, true, None);
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        break ToolResult {
+                            content: e,
+                            is_error: true,
+                        };
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -80,21 +139,27 @@ impl Tool for StopProcessTool {
         })
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let id = str_arg(args, "id");
-        match self.registry.stop(&id) {
-            Ok(output) => ToolResult {
-                content: if output.is_empty() {
-                    "process stopped (no output)".into()
-                } else {
-                    format!("process stopped\n{output}")
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let id = str_arg(&args, "id");
+            match self.registry.stop(&id) {
+                Ok(output) => ToolResult {
+                    content: if output.is_empty() {
+                        "process stopped (no output)".into()
+                    } else {
+                        format!("process stopped\n{output}")
+                    },
+                    is_error: false,
                 },
-                is_error: false,
-            },
-            Err(e) => ToolResult {
-                content: e,
-                is_error: true,
-            },
-        }
+                Err(e) => ToolResult {
+                    content: e,
+                    is_error: true,
+                },
+            }
+        })
     }
 }

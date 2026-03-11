@@ -1,6 +1,8 @@
-use super::{run_command_with_timeout, str_arg, timeout_arg, Tool, ToolResult};
+use super::{bool_arg, str_arg, timeout_arg, Tool, ToolContext, ToolFuture, ToolResult};
+use protocol::EngineEvent;
 use serde_json::Value;
 use std::collections::HashMap;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub struct BashTool;
 
@@ -49,25 +51,129 @@ impl Tool for BashTool {
         Some(result)
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
-        let command = str_arg(args, "command");
-        let timeout = timeout_arg(args, 120);
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let command = str_arg(&args, "command");
 
-        let child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+            if bool_arg(&args, "run_in_background") {
+                return execute_background(&command, ctx).await;
+            }
 
-        match child {
-            Ok(child) => run_command_with_timeout(child, timeout),
-            Err(e) => ToolResult {
+            execute_streaming(&command, &args, ctx).await
+        })
+    }
+}
+
+async fn execute_background(command: &str, ctx: &ToolContext<'_>) -> ToolResult {
+    match tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => {
+            let id = ctx.processes.next_id();
+            ctx.processes
+                .spawn(id.clone(), command, child, ctx.proc_done_tx.clone());
+            ToolResult {
+                content: format!("background process started with id: {id}"),
+                is_error: false,
+            }
+        }
+        Err(e) => ToolResult {
+            content: e.to_string(),
+            is_error: true,
+        },
+    }
+}
+
+async fn execute_streaming(
+    command: &str,
+    args: &HashMap<String, Value>,
+    ctx: &ToolContext<'_>,
+) -> ToolResult {
+    let timeout = timeout_arg(args, 120);
+
+    let mut child = match tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return ToolResult {
                 content: e.to_string(),
                 is_error: true,
-            },
+            }
         }
+    };
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+    let mut output = String::new();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        if stdout_done && stderr_done {
+            break;
+        }
+        tokio::select! {
+            line = stdout_reader.next_line(), if !stdout_done => {
+                match line {
+                    Ok(Some(line)) => {
+                        let _ = ctx.event_tx.send(EngineEvent::ToolOutput {
+                            call_id: ctx.call_id.to_string(),
+                            chunk: line.clone(),
+                        });
+                        if !output.is_empty() { output.push('\n'); }
+                        output.push_str(&line);
+                    }
+                    _ => stdout_done = true,
+                }
+            }
+            line = stderr_reader.next_line(), if !stderr_done => {
+                match line {
+                    Ok(Some(line)) => {
+                        let _ = ctx.event_tx.send(EngineEvent::ToolOutput {
+                            call_id: ctx.call_id.to_string(),
+                            chunk: line.clone(),
+                        });
+                        if !output.is_empty() { output.push('\n'); }
+                        output.push_str(&line);
+                    }
+                    _ => stderr_done = true,
+                }
+            }
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                return ToolResult {
+                    content: format!("timed out after {:.0}s", timeout.as_secs_f64()),
+                    is_error: true,
+                };
+            }
+        }
+    }
+
+    let status = child.wait().await;
+    let is_error = status.map(|s| !s.success()).unwrap_or(true);
+    ToolResult {
+        content: output,
+        is_error,
     }
 }
 
@@ -127,7 +233,6 @@ mod tests {
 
     #[test]
     fn quoted_operator_not_split() {
-        // && inside quotes is not an operator — single command
         assert_eq!(pattern(r#"grep "&&" file.txt"#), "grep *");
     }
 

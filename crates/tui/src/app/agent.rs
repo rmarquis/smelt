@@ -499,18 +499,7 @@ impl App {
                     tool_name
                 };
 
-                // Check full permission (mode rules + workspace restriction).
-                let decision = self.permissions.decide(self.mode, &tool_name, &args);
-                if decision == engine::permissions::Decision::Allow {
-                    self.engine.send(UiCommand::PermissionDecision {
-                        request_id,
-                        approved: true,
-                        message: None,
-                    });
-                    return LoopAction::Continue;
-                }
-
-                // Check auto-approvals first (doesn't need UI).
+                // Check auto-approvals (doesn't need UI).
                 if let Some(patterns) = self.auto_approved.get(&tool_name) {
                     if patterns.is_empty() || patterns.iter().any(|p| p.matches(&desc)) {
                         self.engine.send(UiCommand::PermissionDecision {

@@ -14,12 +14,16 @@ mod web_shared;
 mod write_file;
 
 use crate::permissions::{Decision, Permissions};
-use crate::provider::{FunctionSchema, ToolDefinition};
-use protocol::Mode;
+use crate::provider::{FunctionSchema, Provider, ToolDefinition};
+use protocol::{EngineEvent, Mode};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub use ask_user_question::AskUserQuestionTool;
 pub use background::{ProcessInfo, ProcessRegistry};
@@ -39,11 +43,30 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+/// Context provided to tools during execution, giving them access to
+/// engine facilities (event streaming, cancellation, background processes,
+/// and the LLM provider for tools that need secondary LLM calls).
+pub struct ToolContext<'a> {
+    pub event_tx: &'a mpsc::UnboundedSender<EngineEvent>,
+    pub call_id: &'a str,
+    pub cancel: &'a CancellationToken,
+    pub processes: &'a ProcessRegistry,
+    pub proc_done_tx: &'a mpsc::UnboundedSender<(String, Option<i32>)>,
+    pub provider: &'a Provider,
+    pub model: &'a str,
+}
+
+pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult;
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a>;
     fn needs_confirm(&self, _args: &HashMap<String, Value>) -> Option<String> {
         None
     }

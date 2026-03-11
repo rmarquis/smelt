@@ -1,4 +1,6 @@
-use super::{display_path, hash_content, str_arg, FileHashes, Tool, ToolResult};
+use super::{
+    display_path, hash_content, str_arg, FileHashes, Tool, ToolContext, ToolFuture, ToolResult,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -37,7 +39,17 @@ impl Tool for WriteFileTool {
         Some(display_path(&str_arg(args, "file_path")))
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        _ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move { tokio::task::block_in_place(|| self.run(&args)) })
+    }
+}
+
+impl WriteFileTool {
+    fn run(&self, args: &HashMap<String, Value>) -> ToolResult {
         let path = str_arg(args, "file_path");
         let content = str_arg(args, "content");
 

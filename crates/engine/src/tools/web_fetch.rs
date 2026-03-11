@@ -3,7 +3,7 @@ use super::web_shared::{
     domain_pattern, extract_links, extract_text, extract_title, html_to_markdown, next_user_agent,
     truncate_output,
 };
-use super::{str_arg, Tool, ToolResult};
+use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
 use base64::Engine;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -70,7 +70,37 @@ impl Tool for WebFetchTool {
         domain_pattern(&str_arg(args, "url"))
     }
 
-    fn execute(&self, args: &HashMap<String, Value>) -> ToolResult {
+    fn execute<'a>(
+        &'a self,
+        args: HashMap<String, Value>,
+        ctx: &'a ToolContext<'a>,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            // Fetch the page (blocking IO)
+            let raw = tokio::task::block_in_place(|| self.fetch_raw(&args));
+            if raw.is_error {
+                return raw;
+            }
+
+            // Extract content using LLM
+            let prompt = str_arg(&args, "prompt");
+            match ctx
+                .provider
+                .extract_web_content(&raw.content, &prompt, ctx.model)
+                .await
+            {
+                Ok(extracted) => ToolResult {
+                    content: extracted,
+                    is_error: false,
+                },
+                Err(_) => raw,
+            }
+        })
+    }
+}
+
+impl WebFetchTool {
+    fn fetch_raw(&self, args: &HashMap<String, Value>) -> ToolResult {
         let url_str = str_arg(args, "url");
         let format = str_arg(args, "format");
         let format = if format.is_empty() {
@@ -109,7 +139,6 @@ impl Tool for WebFetchTool {
             };
         }
 
-        // Run blocking HTTP in a separate thread to avoid tokio runtime conflict
         let fetch_url = url_str.clone();
         let fetch_result = std::thread::spawn(move || {
             let timeout = Duration::from_secs(timeout_secs);
@@ -129,7 +158,6 @@ impl Tool for WebFetchTool {
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .send()?;
 
-            // Cloudflare bot detection retry
             let response = if response.status().as_u16() == 403 {
                 let cf = response
                     .headers()
@@ -185,7 +213,6 @@ impl Tool for WebFetchTool {
             .unwrap_or("")
             .to_lowercase();
 
-        // Image handling
         if IMAGE_TYPES.iter().any(|t| content_type.contains(t)) {
             let bytes = match response.bytes() {
                 Ok(b) => b,

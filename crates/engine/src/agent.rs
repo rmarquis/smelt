@@ -1,7 +1,7 @@
 use crate::log;
 use crate::permissions::{Decision, Permissions};
-use crate::provider::{Provider, ToolDefinition};
-use crate::tools::{self, ToolRegistry, ToolResult};
+use crate::provider::{Provider, ProviderError, ToolDefinition};
+use crate::tools::{self, ToolContext, ToolRegistry, ToolResult};
 use crate::EngineConfig;
 use protocol::{
     Content, EngineEvent, Message, Mode, ReasoningEffort, Role, ToolOutcome, UiCommand,
@@ -9,7 +9,6 @@ use protocol::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -40,12 +39,27 @@ pub async fn engine_task(
                 match cmd {
                     UiCommand::StartTurn { turn_id, input, mode, model, reasoning_effort, history, api_base, api_key } => {
                         last_model = model.clone();
-                        run_turn(
-                            &config, &client, &registry, &config.permissions,
-                            &processes, &proc_done_tx, &mut cmd_rx, &event_tx,
-                            turn_id, input, mode, &model, reasoning_effort, history,
-                            api_base, api_key,
-                        ).await;
+                        let provider = build_provider_with_overrides(
+                            &config, &client,
+                            api_base.as_deref(), api_key.as_deref(),
+                        );
+                        let mut turn = Turn {
+                            provider,
+                            registry: &registry,
+                            permissions: &config.permissions,
+                            processes: &processes,
+                            proc_done_tx: &proc_done_tx,
+                            cmd_rx: &mut cmd_rx,
+                            event_tx: &event_tx,
+                            cancel: tokio_util::sync::CancellationToken::new(),
+                            messages: Vec::new(),
+                            mode,
+                            reasoning_effort,
+                            turn_id,
+                            model,
+                            system_prompt: &config.system_prompt,
+                        };
+                        turn.run(input, history).await;
                     }
                     UiCommand::Compact { keep_turns, history } => {
                         let provider = build_provider(&config, &client);
@@ -111,554 +125,494 @@ fn build_provider_with_overrides(
     .with_model_config(config.model_config.clone())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_turn(
-    config: &EngineConfig,
-    client: &reqwest::Client,
-    registry: &ToolRegistry,
-    permissions: &Permissions,
-    processes: &tools::ProcessRegistry,
-    proc_done_tx: &mpsc::UnboundedSender<(String, Option<i32>)>,
-    cmd_rx: &mut mpsc::UnboundedReceiver<UiCommand>,
-    event_tx: &mpsc::UnboundedSender<EngineEvent>,
+// ── Turn ────────────────────────────────────────────────────────────────────
+
+/// Encapsulates the state of a single agent turn.
+struct Turn<'a> {
+    provider: Provider,
+    registry: &'a ToolRegistry,
+    permissions: &'a Permissions,
+    processes: &'a tools::ProcessRegistry,
+    proc_done_tx: &'a mpsc::UnboundedSender<(String, Option<i32>)>,
+    cmd_rx: &'a mut mpsc::UnboundedReceiver<UiCommand>,
+    event_tx: &'a mpsc::UnboundedSender<EngineEvent>,
+    cancel: tokio_util::sync::CancellationToken,
+    messages: Vec<Message>,
+    mode: Mode,
+    reasoning_effort: ReasoningEffort,
     turn_id: u64,
-    input: String,
-    mut mode: Mode,
-    model: &str,
-    mut reasoning_effort: ReasoningEffort,
-    history: Vec<Message>,
-    api_base_override: Option<String>,
-    api_key_override: Option<String>,
-) {
-    let provider = build_provider_with_overrides(
-        config,
-        client,
-        api_base_override.as_deref(),
-        api_key_override.as_deref(),
-    );
-    let cancel = tokio_util::sync::CancellationToken::new();
+    model: String,
+    system_prompt: &'a str,
+}
 
-    let mut messages = Vec::with_capacity(history.len() + 2);
-    messages.push(Message {
-        role: Role::System,
-        content: Some(Content::text(config.system_prompt.clone())),
-        reasoning_content: None,
-        tool_calls: None,
-        tool_call_id: None,
-    });
-    messages.extend(history);
+impl<'a> Turn<'a> {
+    fn emit(&self, event: EngineEvent) {
+        let _ = self.event_tx.send(event);
+    }
 
-    if !input.is_empty() {
-        messages.push(Message {
-            role: Role::User,
-            content: Some(Content::text(input)),
+    fn send_snapshot(&self) {
+        let _ = self.event_tx.send(EngineEvent::Messages {
+            turn_id: self.turn_id,
+            messages: self.messages[1..].to_vec(),
+        });
+    }
+
+    /// Main agentic loop for a single turn.
+    async fn run(&mut self, input: String, history: Vec<Message>) {
+        self.messages = Vec::with_capacity(history.len() + 2);
+        self.messages.push(Message {
+            role: Role::System,
+            content: Some(Content::text(self.system_prompt)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });
-    }
+        self.messages.extend(history);
 
-    let tool_defs: Vec<ToolDefinition> = registry.definitions(permissions, mode);
-    let mut first = true;
-    let mut empty_retries: u8 = 0;
-    const MAX_EMPTY_RETRIES: u8 = 2;
+        if !input.is_empty() {
+            self.messages.push(Message {
+                role: Role::User,
+                content: Some(Content::text(input)),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
 
-    // Send a snapshot of the current messages (minus the system prompt) to the TUI.
-    let send_snapshot = |msgs: &[Message], tx: &mpsc::UnboundedSender<EngineEvent>| {
-        let _ = tx.send(EngineEvent::Messages {
-            turn_id,
-            messages: msgs[1..].to_vec(),
-        });
-    };
+        let tool_defs: Vec<ToolDefinition> = self.registry.definitions(self.permissions, self.mode);
+        let mut first = true;
+        let mut empty_retries: u8 = 0;
+        const MAX_EMPTY_RETRIES: u8 = 2;
 
-    loop {
-        // Drain pending commands (steering, mode changes, cancel, process list)
-        if !first {
-            loop {
-                match cmd_rx.try_recv() {
-                    Ok(UiCommand::Steer { text }) => {
-                        let _ = event_tx.send(EngineEvent::Steered {
-                            text: text.clone(),
-                            count: 1,
-                        });
-                        messages.push(Message {
-                            role: Role::User,
-                            content: Some(Content::text(text)),
-                            reasoning_content: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                        });
-                    }
-                    Ok(UiCommand::SetMode { mode: new_mode }) => {
-                        mode = new_mode;
-                    }
-                    Ok(UiCommand::SetReasoningEffort { effort }) => {
-                        reasoning_effort = effort;
-                    }
-                    Ok(UiCommand::Cancel) => {
-                        cancel.cancel();
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
+        loop {
+            if !first {
+                self.drain_commands();
+            }
+            first = false;
+
+            if self.cancel.is_cancelled() {
+                self.messages.remove(0);
+                let msgs = std::mem::take(&mut self.messages);
+                self.emit(EngineEvent::TurnComplete {
+                    turn_id: self.turn_id,
+                    messages: msgs,
+                });
+                return;
+            }
+
+            // Call LLM with cancel monitoring
+            let resp = match self.call_llm(&tool_defs).await {
+                Ok(r) => r,
+                Err(ProviderError::Cancelled) => {
+                    self.messages.remove(0);
+                    let msgs = std::mem::take(&mut self.messages);
+                    self.emit(EngineEvent::TurnComplete {
+                        turn_id: self.turn_id,
+                        messages: msgs,
+                    });
+                    return;
+                }
+                Err(e) => {
+                    log::entry(
+                        log::Level::Warn,
+                        "agent_stop",
+                        &serde_json::json!({"reason": "llm_error", "error": e.to_string()}),
+                    );
+                    self.send_snapshot();
+                    self.emit(EngineEvent::TurnError {
+                        message: e.to_string(),
+                    });
+                    return;
+                }
+            };
+
+            if let Some(tokens) = resp.prompt_tokens {
+                let tokens_per_sec = if resp.completion_tokens.unwrap_or(0) >= 5 {
+                    resp.tokens_per_sec
+                } else {
+                    None
+                };
+                self.emit(EngineEvent::TokenUsage {
+                    prompt_tokens: tokens,
+                    completion_tokens: resp.completion_tokens,
+                    tokens_per_sec,
+                });
+            }
+
+            if let Some(ref reasoning) = resp.reasoning_content {
+                if !reasoning.is_empty() {
+                    self.emit(EngineEvent::Thinking {
+                        content: reasoning.clone(),
+                    });
                 }
             }
-        }
-        first = false;
 
-        if cancel.is_cancelled() {
-            messages.remove(0);
-            let _ = event_tx.send(EngineEvent::TurnComplete { turn_id, messages });
-            return;
-        }
+            if let Some(ref content) = resp.content {
+                if !content.is_empty() {
+                    self.emit(EngineEvent::Text {
+                        content: content.clone(),
+                    });
+                }
+            }
 
+            let content = resp.content.map(Content::text);
+            let tool_calls = resp.tool_calls;
+            let reasoning = resp.reasoning_content;
+
+            // No tool calls — turn is done
+            if tool_calls.is_empty() {
+                let is_empty = content.is_none()
+                    && reasoning.is_none()
+                    && self
+                        .messages
+                        .last()
+                        .map(|m| m.role == Role::Tool)
+                        .unwrap_or(false);
+
+                if is_empty && empty_retries < MAX_EMPTY_RETRIES {
+                    empty_retries += 1;
+                    log::entry(
+                        log::Level::Warn,
+                        "empty_response_retry",
+                        &serde_json::json!({ "attempt": empty_retries }),
+                    );
+                    continue;
+                }
+
+                self.messages.push(Message {
+                    role: Role::Assistant,
+                    content,
+                    reasoning_content: reasoning,
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                self.send_snapshot();
+                self.messages.remove(0);
+                let msgs = std::mem::take(&mut self.messages);
+                self.emit(EngineEvent::TurnComplete {
+                    turn_id: self.turn_id,
+                    messages: msgs,
+                });
+                return;
+            }
+
+            // Has tool calls — execute them
+            empty_retries = 0;
+            self.messages.push(Message {
+                role: Role::Assistant,
+                content,
+                reasoning_content: reasoning,
+                tool_calls: Some(tool_calls.clone()),
+                tool_call_id: None,
+            });
+            self.send_snapshot();
+
+            for tc in &tool_calls {
+                self.drain_commands();
+                if self.cancel.is_cancelled() {
+                    break;
+                }
+
+                let args: HashMap<String, Value> =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+
+                let summary = tools::tool_arg_summary(&tc.function.name, &args);
+                self.emit(EngineEvent::ToolStarted {
+                    call_id: tc.id.clone(),
+                    tool_name: tc.function.name.clone(),
+                    args: args.clone(),
+                    summary,
+                });
+
+                let tool = match self.registry.get(&tc.function.name) {
+                    Some(t) => t,
+                    None => {
+                        self.push_tool_result(
+                            &tc.id,
+                            &format!("unknown tool: {}", tc.function.name),
+                            true,
+                        );
+                        continue;
+                    }
+                };
+
+                // Permission check
+                let confirm_msg = match self.check_permission(tool, &tc.function.name, &args).await
+                {
+                    PermissionResult::Allow(msg) => msg,
+                    PermissionResult::Deny(denial) => {
+                        self.push_tool_result(&tc.id, &denial, false);
+                        continue;
+                    }
+                };
+
+                // Execute tool
+                let ToolResult { content, is_error } = if tc.function.name == "ask_user_question" {
+                    self.ask_user(&args).await
+                } else {
+                    let ctx = ToolContext {
+                        event_tx: self.event_tx,
+                        call_id: &tc.id,
+                        cancel: &self.cancel,
+                        processes: self.processes,
+                        proc_done_tx: self.proc_done_tx,
+                        provider: &self.provider,
+                        model: &self.model,
+                    };
+                    tool.execute(args.clone(), &ctx).await
+                };
+
+                log::entry(
+                    log::Level::Debug,
+                    "tool_result",
+                    &serde_json::json!({
+                        "tool": tc.function.name,
+                        "id": tc.id,
+                        "is_error": is_error,
+                        "content_len": content.len(),
+                        "content_preview": &content[..content.floor_char_boundary(500)],
+                    }),
+                );
+
+                let mut model_content = match tc.function.name.as_str() {
+                    "grep" | "glob" => trim_tool_output(&content, 200),
+                    _ => content.clone(),
+                };
+                if let Some(ref msg) = confirm_msg {
+                    model_content.push_str(&format!("\n\nUser message: {msg}"));
+                }
+                self.messages.push(Message {
+                    role: Role::Tool,
+                    content: Some(Content::text(model_content)),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: Some(tc.id.clone()),
+                });
+                self.emit(EngineEvent::ToolFinished {
+                    call_id: tc.id.clone(),
+                    result: ToolOutcome { content, is_error },
+                });
+                self.send_snapshot();
+            }
+        }
+    }
+
+    /// Drain pending commands (steering, mode changes, cancel).
+    fn drain_commands(&mut self) {
+        loop {
+            match self.cmd_rx.try_recv() {
+                Ok(UiCommand::Steer { text }) => {
+                    self.emit(EngineEvent::Steered {
+                        text: text.clone(),
+                        count: 1,
+                    });
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: Some(Content::text(text)),
+                        reasoning_content: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                Ok(UiCommand::SetMode { mode }) => {
+                    self.mode = mode;
+                }
+                Ok(UiCommand::SetReasoningEffort { effort }) => {
+                    self.reasoning_effort = effort;
+                }
+                Ok(UiCommand::Cancel) => {
+                    self.cancel.cancel();
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Call the LLM, monitoring cmd_rx for Cancel during the request.
+    async fn call_llm(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+    ) -> Result<crate::provider::LLMResponse, ProviderError> {
         let on_retry = |delay: std::time::Duration, attempt: u32| {
-            let _ = event_tx.send(EngineEvent::Retrying {
+            let _ = self.event_tx.send(EngineEvent::Retrying {
                 delay_ms: delay.as_millis() as u64,
                 attempt,
             });
         };
 
-        // Monitor cmd_rx for Cancel commands while the HTTP request is
-        // pending.  Without this, a Cancel sent during a long request
-        // (e.g. model loading into VRAM) sits unread in cmd_rx and the
-        // cancellation token is never triggered.
-        let chat_result = {
-            let chat_future = provider.chat(
-                &messages,
-                &tool_defs,
-                model,
-                reasoning_effort,
-                &cancel,
-                Some(&on_retry),
-            );
-            tokio::pin!(chat_future);
+        let chat_future = self.provider.chat(
+            &self.messages,
+            tool_defs,
+            &self.model,
+            self.reasoning_effort,
+            &self.cancel,
+            Some(&on_retry),
+        );
+        tokio::pin!(chat_future);
 
-            let mut cancel_received = false;
-            loop {
-                if cancel_received {
-                    // Stop reading cmd_rx to avoid consuming commands
-                    // meant for later turns.  provider.chat() will
-                    // return almost instantly since the token is set.
-                    break (&mut chat_future).await;
-                }
-                tokio::select! {
-                    result = &mut chat_future => break result,
-                    Some(cmd) = cmd_rx.recv() => match cmd {
-                        UiCommand::Cancel => {
-                            cancel.cancel();
-                            cancel_received = true;
-                        }
-                        UiCommand::SetMode { mode: m } => mode = m,
-                        UiCommand::SetReasoningEffort { effort } => reasoning_effort = effort,
-                        _ => {}
-                    },
-                }
+        let mut cancel_received = false;
+        loop {
+            if cancel_received {
+                break (&mut chat_future).await;
             }
-        };
-
-        let resp = match chat_result {
-            Ok(r) => r,
-            Err(e) => {
-                if e == "cancelled" {
-                    messages.remove(0);
-                    let _ = event_tx.send(EngineEvent::TurnComplete { turn_id, messages });
-                } else {
-                    log::entry(
-                        log::Level::Warn,
-                        "agent_stop",
-                        &serde_json::json!({"reason": "llm_error", "error": e}),
-                    );
-                    send_snapshot(&messages, event_tx);
-                    let _ = event_tx.send(EngineEvent::TurnError { message: e });
-                }
-                return;
-            }
-        };
-
-        if let Some(tokens) = resp.prompt_tokens {
-            let tokens_per_sec = if resp.completion_tokens.unwrap_or(0) >= 5 {
-                resp.tokens_per_sec
-            } else {
-                None
-            };
-            let _ = event_tx.send(EngineEvent::TokenUsage {
-                prompt_tokens: tokens,
-                completion_tokens: resp.completion_tokens,
-                tokens_per_sec,
-            });
-        }
-
-        if let Some(ref reasoning) = resp.reasoning_content {
-            if !reasoning.is_empty() {
-                let _ = event_tx.send(EngineEvent::Thinking {
-                    content: reasoning.clone(),
-                });
+            tokio::select! {
+                result = &mut chat_future => break result,
+                Some(cmd) = self.cmd_rx.recv() => match cmd {
+                    UiCommand::Cancel => {
+                        self.cancel.cancel();
+                        cancel_received = true;
+                    }
+                    UiCommand::SetMode { mode } => self.mode = mode,
+                    UiCommand::SetReasoningEffort { effort } => self.reasoning_effort = effort,
+                    _ => {}
+                },
             }
         }
+    }
 
-        if let Some(ref content) = resp.content {
-            if !content.is_empty() {
-                let _ = event_tx.send(EngineEvent::Text {
-                    content: content.clone(),
-                });
-            }
-        }
+    /// Check permission and handle the Ask flow.
+    async fn check_permission(
+        &mut self,
+        tool: &dyn tools::Tool,
+        tool_name: &str,
+        args: &HashMap<String, Value>,
+    ) -> PermissionResult {
+        let decision = self.permissions.decide(self.mode, tool_name, args);
 
-        let content = resp.content.map(Content::text);
-        let tool_calls = resp.tool_calls;
+        match decision {
+            Decision::Deny => PermissionResult::Deny(
+                "The user's permission settings blocked this tool call. Try a different approach or ask the user for guidance.".into()
+            ),
+            Decision::Allow => PermissionResult::Allow(None),
+            Decision::Ask => {
+                let desc = tool
+                    .needs_confirm(args)
+                    .unwrap_or_else(|| tool_name.to_string());
+                let approval_pattern = tool.approval_pattern(args);
 
-        let reasoning = resp.reasoning_content;
-
-        if tool_calls.is_empty() {
-            // If the response is completely empty and the last message was a
-            // tool result, this is likely a model glitch — retry instead of
-            // stopping the turn.
-            let is_empty = content.is_none()
-                && reasoning.is_none()
-                && messages
-                    .last()
-                    .map(|m| m.role == Role::Tool)
-                    .unwrap_or(false);
-
-            if is_empty && empty_retries < MAX_EMPTY_RETRIES {
-                empty_retries += 1;
-                log::entry(
-                    log::Level::Warn,
-                    "empty_response_retry",
-                    &serde_json::json!({ "attempt": empty_retries }),
-                );
-                continue;
-            }
-
-            messages.push(Message {
-                role: Role::Assistant,
-                content,
-                reasoning_content: reasoning,
-                tool_calls: None,
-                tool_call_id: None,
-            });
-            send_snapshot(&messages, event_tx);
-            messages.remove(0);
-            let _ = event_tx.send(EngineEvent::TurnComplete { turn_id, messages });
-            return;
-        }
-
-        empty_retries = 0;
-        messages.push(Message {
-            role: Role::Assistant,
-            content,
-            reasoning_content: reasoning,
-            tool_calls: Some(tool_calls.clone()),
-            tool_call_id: None,
-        });
-        send_snapshot(&messages, event_tx);
-
-        for tc in &tool_calls {
-            // Drain mode/cancel commands so mid-turn mode switches
-            // take effect before the next permission check.
-            loop {
-                match cmd_rx.try_recv() {
-                    Ok(UiCommand::SetMode { mode: new_mode }) => mode = new_mode,
-                    Ok(UiCommand::Cancel) => cancel.cancel(),
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-            if cancel.is_cancelled() {
-                break;
-            }
-
-            let args: HashMap<String, Value> =
-                serde_json::from_str(&tc.function.arguments).unwrap_or_default();
-
-            let summary = tools::tool_arg_summary(&tc.function.name, &args);
-            let _ = event_tx.send(EngineEvent::ToolStarted {
-                call_id: tc.id.clone(),
-                tool_name: tc.function.name.clone(),
-                args: args.clone(),
-                summary,
-            });
-
-            let tool = match registry.get(&tc.function.name) {
-                Some(t) => t,
-                None => {
-                    push_tool_result(
-                        &mut messages,
-                        event_tx,
-                        &tc.id,
-                        &format!("unknown tool: {}", tc.function.name),
-                        true,
-                    );
-                    continue;
-                }
-            };
-
-            let decision = decide_permission(permissions, mode, &tc.function.name, &args);
-
-            let mut confirm_msg: Option<String> = None;
-            match decision {
-                Decision::Deny => {
-                    push_tool_result(
-                        &mut messages, event_tx, &tc.id,
-                        "The user's permission settings blocked this tool call. Try a different approach or ask the user for guidance.",
-                        false,
-                    );
-                    continue;
-                }
-                Decision::Ask => {
-                    let desc = tool
-                        .needs_confirm(&args)
-                        .unwrap_or_else(|| tc.function.name.clone());
-                    let approval_pattern = tool.approval_pattern(&args);
-
-                    let cmd_summary = if tc.function.name == "bash" {
-                        let cmd = tools::str_arg(&args, "command");
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(3),
-                            provider.describe_command(&cmd, model),
-                        )
-                        .await
-                        {
-                            Ok(Ok(s)) => Some(s),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    let request_id = next_request_id();
-                    let _ = event_tx.send(EngineEvent::RequestPermission {
-                        request_id,
-                        call_id: tc.id.clone(),
-                        tool_name: tc.function.name.clone(),
-                        args: args.clone(),
-                        confirm_message: desc,
-                        approval_pattern,
-                        summary: cmd_summary,
-                    });
-
-                    let (approved, user_msg) = wait_for_permission(
-                        cmd_rx,
-                        request_id,
-                        &mut mode,
-                        &mut reasoning_effort,
-                        &cancel,
+                let cmd_summary = if tool_name == "bash" {
+                    let cmd = tools::str_arg(args, "command");
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        self.provider.describe_command(&cmd, &self.model),
                     )
-                    .await;
-                    if !approved {
-                        let denial = if let Some(ref msg) = user_msg {
-                            format!("The user denied this tool call with message: {msg}")
-                        } else {
-                            "The user denied this tool call. Try a different approach or ask the user for guidance.".to_string()
-                        };
-                        push_tool_result(&mut messages, event_tx, &tc.id, &denial, false);
-                        continue;
-                    }
-                    confirm_msg = user_msg;
-                }
-                Decision::Allow => {}
-            }
-
-            let ToolResult { content, is_error } = if tc.function.name == "ask_user_question" {
-                let request_id = next_request_id();
-                let _ = event_tx.send(EngineEvent::RequestAnswer {
-                    request_id,
-                    args: args.clone(),
-                });
-                let answer = wait_for_answer(
-                    cmd_rx,
-                    request_id,
-                    &mut mode,
-                    &mut reasoning_effort,
-                    &cancel,
-                )
-                .await;
-                ToolResult {
-                    content: answer.unwrap_or_else(|| "no response".into()),
-                    is_error: false,
-                }
-            } else if tc.function.name == "bash" && tools::bool_arg(&args, "run_in_background") {
-                let command = tools::str_arg(&args, "command");
-                match tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&command)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
-                {
-                    Ok(child) => {
-                        let id = processes.next_id();
-                        processes.spawn(id.clone(), &command, child, proc_done_tx.clone());
-                        ToolResult {
-                            content: format!("background process started with id: {id}"),
-                            is_error: false,
-                        }
-                    }
-                    Err(e) => ToolResult {
-                        content: e.to_string(),
-                        is_error: true,
-                    },
-                }
-            } else if tc.function.name == "read_process_output"
-                && args.get("block").and_then(|v| v.as_bool()).unwrap_or(true)
-            {
-                let id = tools::str_arg(&args, "id");
-                let timeout_ms = args
-                    .get("timeout_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30000)
-                    .min(600_000);
-                let deadline =
-                    tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-                let mut accumulated = String::new();
-                loop {
-                    match processes.read(&id) {
-                        Ok((output, running, exit_code)) => {
-                            if !output.is_empty() {
-                                for line in output.lines() {
-                                    let _ = event_tx.send(EngineEvent::ToolOutput {
-                                        call_id: tc.id.clone(),
-                                        chunk: line.to_string(),
-                                    });
-                                }
-                                if !accumulated.is_empty() {
-                                    accumulated.push('\n');
-                                }
-                                accumulated.push_str(&output);
-                            }
-                            if !running {
-                                break tools::format_read_result(accumulated, false, exit_code);
-                            }
-                            if cancel.is_cancelled() {
-                                let _ = processes.stop(&id);
-                                break tools::format_read_result(accumulated, false, None);
-                            }
-                            if tokio::time::Instant::now() >= deadline {
-                                break tools::format_read_result(accumulated, true, None);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                        Err(e) => {
-                            break tools::ToolResult {
-                                content: e,
-                                is_error: true,
-                            };
-                        }
-                    }
-                }
-            } else if tc.function.name == "bash" {
-                execute_bash_streaming(&args, &tc.id, event_tx).await
-            } else if tc.function.name == "web_fetch" {
-                let raw = tokio::task::block_in_place(|| tool.execute(&args));
-                if raw.is_error {
-                    raw
-                } else {
-                    let prompt = tools::str_arg(&args, "prompt");
-                    match provider
-                        .extract_web_content(&raw.content, &prompt, model)
-                        .await
+                    .await
                     {
-                        Ok(extracted) => ToolResult {
-                            content: extracted,
-                            is_error: false,
-                        },
-                        Err(_) => raw,
+                        Ok(Ok(s)) => Some(s),
+                        _ => None,
                     }
+                } else {
+                    None
+                };
+
+                let request_id = next_request_id();
+                self.emit(EngineEvent::RequestPermission {
+                    request_id,
+                    call_id: String::new(),
+                    tool_name: tool_name.to_string(),
+                    args: args.clone(),
+                    confirm_message: desc,
+                    approval_pattern,
+                    summary: cmd_summary,
+                });
+
+                let (approved, user_msg) = self.wait_for_permission(request_id).await;
+                if !approved {
+                    let denial = if let Some(ref msg) = user_msg {
+                        format!("The user denied this tool call with message: {msg}")
+                    } else {
+                        "The user denied this tool call. Try a different approach or ask the user for guidance.".to_string()
+                    };
+                    PermissionResult::Deny(denial)
+                } else {
+                    PermissionResult::Allow(user_msg)
                 }
-            } else {
-                tokio::task::block_in_place(|| tool.execute(&args))
-            };
-
-            log::entry(
-                log::Level::Debug,
-                "tool_result",
-                &serde_json::json!({
-                    "tool": tc.function.name,
-                    "id": tc.id,
-                    "is_error": is_error,
-                    "content_len": content.len(),
-                    "content_preview": &content[..content.floor_char_boundary(500)],
-                }),
-            );
-
-            let mut model_content = match tc.function.name.as_str() {
-                "grep" | "glob" => trim_tool_output_for_model(&content, 200),
-                _ => content.clone(),
-            };
-            if let Some(ref msg) = confirm_msg {
-                model_content.push_str(&format!("\n\nUser message: {msg}"));
             }
-            messages.push(Message {
-                role: Role::Tool,
-                content: Some(Content::text(model_content)),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: Some(tc.id.clone()),
-            });
-            let _ = event_tx.send(EngineEvent::ToolFinished {
-                call_id: tc.id.clone(),
-                result: ToolOutcome { content, is_error },
-            });
-            send_snapshot(&messages, event_tx);
         }
+    }
+
+    /// Handle the ask_user_question tool by requesting an answer from the TUI.
+    async fn ask_user(&mut self, args: &HashMap<String, Value>) -> ToolResult {
+        let request_id = next_request_id();
+        self.emit(EngineEvent::RequestAnswer {
+            request_id,
+            args: args.clone(),
+        });
+        let answer = self.wait_for_answer(request_id).await;
+        ToolResult {
+            content: answer.unwrap_or_else(|| "no response".into()),
+            is_error: false,
+        }
+    }
+
+    /// Wait for a PermissionDecision matching the given request_id.
+    async fn wait_for_permission(&mut self, request_id: u64) -> (bool, Option<String>) {
+        loop {
+            match self.cmd_rx.recv().await {
+                Some(UiCommand::PermissionDecision {
+                    request_id: id,
+                    approved,
+                    message,
+                }) if id == request_id => {
+                    return (approved, message);
+                }
+                Some(UiCommand::SetMode { mode }) => self.mode = mode,
+                Some(UiCommand::SetReasoningEffort { effort }) => self.reasoning_effort = effort,
+                Some(UiCommand::Cancel) => {
+                    self.cancel.cancel();
+                    return (false, None);
+                }
+                None => return (false, None),
+                _ => {}
+            }
+        }
+    }
+
+    /// Wait for a QuestionAnswer matching the given request_id.
+    async fn wait_for_answer(&mut self, request_id: u64) -> Option<String> {
+        loop {
+            match self.cmd_rx.recv().await {
+                Some(UiCommand::QuestionAnswer {
+                    request_id: id,
+                    answer,
+                }) if id == request_id => return answer,
+                Some(UiCommand::SetMode { mode }) => self.mode = mode,
+                Some(UiCommand::SetReasoningEffort { effort }) => self.reasoning_effort = effort,
+                Some(UiCommand::Cancel) => {
+                    self.cancel.cancel();
+                    return None;
+                }
+                None => return None,
+                _ => {}
+            }
+        }
+    }
+
+    fn push_tool_result(&mut self, tool_call_id: &str, content: &str, is_error: bool) {
+        self.messages.push(Message {
+            role: Role::Tool,
+            content: Some(Content::text(content)),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+        });
+        self.emit(EngineEvent::ToolFinished {
+            call_id: tool_call_id.to_string(),
+            result: ToolOutcome {
+                content: content.to_string(),
+                is_error,
+            },
+        });
     }
 }
 
-/// Wait for a PermissionDecision matching the given request_id.
-async fn wait_for_permission(
-    cmd_rx: &mut mpsc::UnboundedReceiver<UiCommand>,
-    request_id: u64,
-    mode: &mut Mode,
-    reasoning_effort: &mut ReasoningEffort,
-    cancel: &tokio_util::sync::CancellationToken,
-) -> (bool, Option<String>) {
-    loop {
-        match cmd_rx.recv().await {
-            Some(UiCommand::PermissionDecision {
-                request_id: id,
-                approved,
-                message,
-            }) if id == request_id => {
-                return (approved, message);
-            }
-            Some(UiCommand::SetMode { mode: new_mode }) => *mode = new_mode,
-            Some(UiCommand::SetReasoningEffort { effort }) => *reasoning_effort = effort,
-            Some(UiCommand::Cancel) => {
-                cancel.cancel();
-                return (false, None);
-            }
-            None => return (false, None),
-            _ => {}
-        }
-    }
+enum PermissionResult {
+    Allow(Option<String>),
+    Deny(String),
 }
 
-/// Wait for a QuestionAnswer matching the given request_id.
-async fn wait_for_answer(
-    cmd_rx: &mut mpsc::UnboundedReceiver<UiCommand>,
-    request_id: u64,
-    mode: &mut Mode,
-    reasoning_effort: &mut ReasoningEffort,
-    cancel: &tokio_util::sync::CancellationToken,
-) -> Option<String> {
-    loop {
-        match cmd_rx.recv().await {
-            Some(UiCommand::QuestionAnswer {
-                request_id: id,
-                answer,
-            }) if id == request_id => return answer,
-            Some(UiCommand::SetMode { mode: new_mode }) => *mode = new_mode,
-            Some(UiCommand::SetReasoningEffort { effort }) => *reasoning_effort = effort,
-            Some(UiCommand::Cancel) => {
-                cancel.cancel();
-                return None;
-            }
-            None => return None,
-            _ => {}
-        }
-    }
-}
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 async fn compact_history(
     provider: &Provider,
@@ -698,41 +652,7 @@ async fn compact_history(
     Ok(new_messages)
 }
 
-// decide_permission delegates to permissions.decide() which handles
-// tool-level, bash-command, web_fetch pattern, and workspace checks.
-fn decide_permission(
-    permissions: &Permissions,
-    mode: Mode,
-    tool_name: &str,
-    args: &HashMap<String, Value>,
-) -> Decision {
-    permissions.decide(mode, tool_name, args)
-}
-
-fn push_tool_result(
-    messages: &mut Vec<Message>,
-    event_tx: &mpsc::UnboundedSender<EngineEvent>,
-    tool_call_id: &str,
-    content: &str,
-    is_error: bool,
-) {
-    messages.push(Message {
-        role: Role::Tool,
-        content: Some(Content::text(content)),
-        reasoning_content: None,
-        tool_calls: None,
-        tool_call_id: Some(tool_call_id.to_string()),
-    });
-    let _ = event_tx.send(EngineEvent::ToolFinished {
-        call_id: tool_call_id.to_string(),
-        result: ToolOutcome {
-            content: content.to_string(),
-            is_error,
-        },
-    });
-}
-
-fn trim_tool_output_for_model(content: &str, max_lines: usize) -> String {
+fn trim_tool_output(content: &str, max_lines: usize) -> String {
     if content == "no matches found" {
         return content.to_string();
     }
@@ -743,89 +663,4 @@ fn trim_tool_output_for_model(content: &str, max_lines: usize) -> String {
     let mut out = lines[..max_lines].join("\n");
     out.push_str(&format!("\n... (trimmed, {} lines total)", lines.len()));
     out
-}
-
-async fn execute_bash_streaming(
-    args: &HashMap<String, Value>,
-    call_id: &str,
-    event_tx: &mpsc::UnboundedSender<EngineEvent>,
-) -> ToolResult {
-    let command = tools::str_arg(args, "command");
-    let timeout = tools::timeout_arg(args, 120);
-
-    let mut child = match tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ToolResult {
-                content: e.to_string(),
-                is_error: true,
-            }
-        }
-    };
-
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
-    let mut output = String::new();
-    let mut stdout_done = false;
-    let mut stderr_done = false;
-
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-
-    loop {
-        if stdout_done && stderr_done {
-            break;
-        }
-        tokio::select! {
-            line = stdout_reader.next_line(), if !stdout_done => {
-                match line {
-                    Ok(Some(line)) => {
-                        let _ = event_tx.send(EngineEvent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            chunk: line.clone(),
-                        });
-                        if !output.is_empty() { output.push('\n'); }
-                        output.push_str(&line);
-                    }
-                    _ => stdout_done = true,
-                }
-            }
-            line = stderr_reader.next_line(), if !stderr_done => {
-                match line {
-                    Ok(Some(line)) => {
-                        let _ = event_tx.send(EngineEvent::ToolOutput {
-                            call_id: call_id.to_string(),
-                            chunk: line.clone(),
-                        });
-                        if !output.is_empty() { output.push('\n'); }
-                        output.push_str(&line);
-                    }
-                    _ => stderr_done = true,
-                }
-            }
-            _ = &mut deadline => {
-                let _ = child.kill().await;
-                return ToolResult {
-                    content: format!("timed out after {:.0}s", timeout.as_secs_f64()),
-                    is_error: true,
-                };
-            }
-        }
-    }
-
-    let status = child.wait().await;
-    let is_error = status.map(|s| !s.success()).unwrap_or(true);
-    ToolResult {
-        content: output,
-        is_error,
-    }
 }

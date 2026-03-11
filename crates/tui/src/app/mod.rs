@@ -10,7 +10,7 @@ use crate::render::{
 };
 use crate::session::Session;
 use crate::{render, session, state, vim};
-use engine::{EngineHandle, Permissions};
+use engine::EngineHandle;
 use protocol::{Content, EngineEvent, Message, Mode, ReasoningEffort, Role, UiCommand};
 
 use crossterm::{
@@ -51,7 +51,6 @@ pub struct App {
     pending_title: bool,
     last_width: u16,
     last_height: u16,
-    permissions: Permissions,
     next_turn_id: u64,
     /// Incremented on rewind/clear/load to invalidate in-flight compactions.
     compact_epoch: u64,
@@ -300,14 +299,6 @@ impl App {
             pending_title: false,
             last_width: terminal::size().map(|(w, _)| w).unwrap_or(80),
             last_height: terminal::size().map(|(_, h)| h).unwrap_or(24),
-            permissions: {
-                let mut p = Permissions::load();
-                p.set_restrict_to_workspace(restrict_to_workspace);
-                if let Ok(cwd) = std::env::current_dir() {
-                    p.set_workspace(cwd);
-                }
-                p
-            },
             next_turn_id: 1,
             compact_epoch: 0,
             pending_compact_epoch: 0,
@@ -482,26 +473,6 @@ impl App {
                 self.screen.set_pending_dialog(false);
             }
             if deferred_dialog.is_some() && active_dialog.is_none() && agent.is_some() {
-                // Try to auto-approve deferred confirms using full permission check.
-                if let Some(DeferredDialog::Confirm {
-                    ref tool_name,
-                    ref args,
-                    request_id,
-                    ..
-                }) = deferred_dialog
-                {
-                    let decision = self.permissions.decide(self.mode, tool_name, args);
-                    if decision == engine::permissions::Decision::Allow {
-                        self.screen.set_pending_dialog(false);
-                        self.engine.send(UiCommand::PermissionDecision {
-                            request_id,
-                            approved: true,
-                            message: None,
-                        });
-                        deferred_dialog.take();
-                    }
-                }
-
                 let idle = t
                     .last_keypress
                     .map(|lk| lk.elapsed() >= Duration::from_millis(CONFIRM_DEFER_MS))
@@ -518,26 +489,16 @@ impl App {
                             summary,
                             request_id,
                         } => {
-                            // Re-check permissions with current mode (includes workspace).
-                            let decision = self.permissions.decide(self.mode, &tool_name, &args);
-                            if decision == engine::permissions::Decision::Allow {
-                                self.engine.send(UiCommand::PermissionDecision {
-                                    request_id,
-                                    approved: true,
-                                    message: None,
-                                });
-                            } else {
-                                self.screen.set_active_status(ToolStatus::Confirm);
-                                let dialog = Box::new(ConfirmDialog::new(
-                                    &tool_name,
-                                    &desc,
-                                    &args,
-                                    approval_pattern.as_deref(),
-                                    summary.as_deref(),
-                                    request_id,
-                                ));
-                                self.open_blocking_dialog(dialog, &mut active_dialog);
-                            }
+                            self.screen.set_active_status(ToolStatus::Confirm);
+                            let dialog = Box::new(ConfirmDialog::new(
+                                &tool_name,
+                                &desc,
+                                &args,
+                                approval_pattern.as_deref(),
+                                summary.as_deref(),
+                                request_id,
+                            ));
+                            self.open_blocking_dialog(dialog, &mut active_dialog);
                         }
                         DeferredDialog::AskQuestion { args, request_id } => {
                             self.screen.set_active_status(ToolStatus::Confirm);
@@ -579,20 +540,6 @@ impl App {
                             ) {
                                 break 'main;
                             }
-                        }
-                    }
-
-                    // If mode changed, re-check deferred dialog with full permissions.
-                    if let Some(DeferredDialog::Confirm { ref tool_name, ref args, request_id, .. }) = deferred_dialog {
-                        let decision = self.permissions.decide(self.mode, tool_name, args);
-                        if decision == engine::permissions::Decision::Allow {
-                            self.screen.set_pending_dialog(false);
-                            self.engine.send(UiCommand::PermissionDecision {
-                                request_id,
-                                approved: true,
-                                message: None,
-                            });
-                            deferred_dialog.take();
                         }
                     }
 
