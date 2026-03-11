@@ -72,6 +72,13 @@ pub(super) fn render_code_block(
     crlf(out);
     rows += 1;
 
+    // Top padding
+    let _ = out.queue(SetBackgroundColor(theme::CODE_BLOCK_BG));
+    let _ = out.queue(Print(" ".repeat(block_w)));
+    let _ = out.queue(ResetColor);
+    crlf(out);
+    rows += 1;
+
     // Code content
     for line in &expanded {
         let line_with_nl = format!("{}\n", line);
@@ -91,6 +98,13 @@ pub(super) fn render_code_block(
         }
         rows += visual_rows.len() as u16;
     }
+
+    // Bottom padding
+    let _ = out.queue(SetBackgroundColor(theme::CODE_BLOCK_BG));
+    let _ = out.queue(Print(" ".repeat(block_w)));
+    let _ = out.queue(ResetColor);
+    crlf(out);
+    rows += 1;
 
     // Bottom border: upper one-eighth block in code block bg color
     let _ = out.queue(SetForegroundColor(theme::USER_BG));
