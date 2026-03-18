@@ -65,6 +65,19 @@ impl WorkingState {
         self.tps_samples.clear();
     }
 
+    /// Returns the current spinner character if actively working/compacting.
+    pub fn spinner_char(&self) -> Option<&'static str> {
+        let state = self.throbber?;
+        match state {
+            Throbber::Working | Throbber::Compacting => {
+                let start = self.since?;
+                let idx = (start.elapsed().as_millis() / 150) as usize % SPINNER_FRAMES.len();
+                Some(SPINNER_FRAMES[idx])
+            }
+            _ => None,
+        }
+    }
+
     pub fn throbber_spans(&self, show_speed: bool) -> Vec<BarSpan> {
         let Some(state) = self.throbber else {
             return vec![];
@@ -78,7 +91,7 @@ impl WorkingState {
                 let idx = (elapsed.as_millis() / 150) as usize % SPINNER_FRAMES.len();
                 vec![
                     BarSpan {
-                        text: format!("{} compacting", SPINNER_FRAMES[idx]),
+                        text: format!(" {} compacting", SPINNER_FRAMES[idx]),
                         color: Color::Reset,
                         bg: None,
                         attr: Some(Attribute::Bold),
@@ -106,7 +119,7 @@ impl WorkingState {
                 };
                 let mut spans = vec![
                     BarSpan {
-                        text: format!("{} working", SPINNER_FRAMES[idx]),
+                        text: format!(" {} working", SPINNER_FRAMES[idx]),
                         color: spinner_color,
                         bg: None,
                         attr: Some(Attribute::Bold),
@@ -156,7 +169,7 @@ impl WorkingState {
             Throbber::Done => {
                 let secs = self.final_elapsed.map(|d| d.as_secs()).unwrap_or(0);
                 let mut spans = vec![BarSpan {
-                    text: format!("done {}", format_duration(secs)),
+                    text: format!(" done {}", format_duration(secs)),
                     color: theme::MUTED,
                     bg: None,
                     attr: Some(Attribute::Dim),
@@ -184,7 +197,7 @@ impl WorkingState {
             }
             Throbber::Interrupted => {
                 vec![BarSpan {
-                    text: "interrupted".into(),
+                    text: " interrupted".into(),
                     color: theme::MUTED,
                     bg: None,
                     attr: Some(Attribute::Dim),

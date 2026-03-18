@@ -3,7 +3,9 @@ mod commands;
 mod events;
 mod history;
 
-use crate::input::{resolve_agent_esc, Action, EscAction, History, InputState, MenuResult};
+use crate::input::{
+    resolve_agent_esc, Action, EscAction, History, InputState, MenuKind, MenuResult,
+};
 use crate::render::{
     tool_arg_summary, Block, ConfirmChoice, ConfirmDialog, ConfirmRequest, Dialog as _,
     FramePrompt, QuestionDialog, ResumeEntry, Screen, ToolOutput, ToolStatus,

@@ -142,6 +142,9 @@ impl App {
 
     pub fn rebuild_screen_from_history(&mut self) {
         self.screen.clear();
+        if let Some(ref slug) = self.session.slug {
+            self.screen.set_task_label(slug.clone());
+        }
         if self.history.is_empty() {
             return;
         }

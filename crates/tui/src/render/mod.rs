@@ -1280,19 +1280,19 @@ impl Screen {
 
         if self.show_slug {
             if let Some(ref label) = self.task_label {
-                if !throbber_spans.is_empty() {
-                    throbber_spans.push(BarSpan {
-                        text: " ".into(),
-                        color: Color::Reset,
-                        bg: None,
-                        attr: None,
-                        priority: 1,
-                    });
-                }
-                throbber_spans.push(BarSpan {
-                    text: format!(" {} ", label),
-                    color: theme::MUTED,
-                    bg: Some(Color::AnsiValue(234)),
+                let slug_text = if let Some(spinner) = self.working.spinner_char() {
+                    // Remove the first span (spinner + "working"/"compacting")
+                    if !throbber_spans.is_empty() {
+                        throbber_spans.remove(0);
+                    }
+                    format!(" {} {} ", spinner, label)
+                } else {
+                    format!(" {} ", label)
+                };
+                throbber_spans.insert(0, BarSpan {
+                    text: slug_text,
+                    color: Color::Black,
+                    bg: Some(theme::accent()),
                     attr: None,
                     priority: 1,
                 });
@@ -2109,10 +2109,10 @@ pub(super) fn draw_bar(
                     .map(|s| s.text.chars().count())
                     .sum();
                 if inner > 0 {
-                    1 + 1 + inner + 1
+                    1 + inner + 1
                 } else {
                     0
-                } // dash + space + spans + space
+                } // dash + spans + space
             })
             .unwrap_or(0);
         let right_chars: usize = right
@@ -2146,11 +2146,10 @@ pub(super) fn draw_bar(
     let left_len: usize = if left_filtered.is_empty() {
         0
     } else {
-        1 + 1
-            + left_filtered
-                .iter()
-                .map(|s| s.text.chars().count())
-                .sum::<usize>()
+        1 + left_filtered
+            .iter()
+            .map(|s| s.text.chars().count())
+            .sum::<usize>()
             + 1
     };
     let right_len: usize = if right_filtered.is_empty() {
@@ -2168,7 +2167,6 @@ pub(super) fn draw_bar(
         let _ = out.queue(SetForegroundColor(bar_color));
         let _ = out.queue(Print(dash));
         let _ = out.queue(ResetColor);
-        let _ = out.queue(Print(" "));
         for span in &left_filtered {
             if let Some(attr) = span.attr {
                 let _ = out.queue(SetAttribute(attr));
