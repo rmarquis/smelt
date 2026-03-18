@@ -111,7 +111,8 @@ pub enum MenuKind {
         models: Vec<(String, String, String)>,
     },
     Stats {
-        lines: Vec<crate::metrics::StatsLine>,
+        left: Vec<crate::metrics::StatsLine>,
+        right: Vec<crate::metrics::StatsLine>,
     },
     Theme {
         /// (name, detail, ansi_value)

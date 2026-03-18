@@ -215,7 +215,7 @@ impl InputState {
         });
     }
 
-    pub fn open_stats(&mut self, lines: Vec<crate::metrics::StatsLine>) {
+    pub fn open_stats(&mut self, stats: crate::metrics::StatsOutput) {
         self.completer = None;
         self.menu = Some(MenuState {
             nav: Menu {
@@ -223,7 +223,10 @@ impl InputState {
                 len: 0,
                 select_on_enter: false,
             },
-            kind: MenuKind::Stats { lines },
+            kind: MenuKind::Stats {
+                left: stats.left,
+                right: stats.right,
+            },
         });
     }
 
@@ -319,13 +322,9 @@ impl InputState {
                 MenuKind::Model { models } => (models.len() + 2).min(12),
                 MenuKind::Theme { presets, .. } => presets.len().min(14),
                 MenuKind::Color { presets, .. } => presets.len().min(14),
-                MenuKind::Stats { lines } => lines
-                    .iter()
-                    .map(|l| match l {
-                        crate::metrics::StatsLine::Sparkline { .. } => 2,
-                        _ => 1,
-                    })
-                    .sum(),
+                MenuKind::Stats { left, right } => {
+                    crate::metrics::stats_row_count(left, right)
+                }
             },
             None => 0,
         }

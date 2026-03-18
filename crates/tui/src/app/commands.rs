@@ -92,8 +92,8 @@ impl App {
             }
             "/stats" => {
                 let entries = crate::metrics::load();
-                let lines = crate::metrics::render_stats(&entries);
-                self.input.open_stats(lines);
+                let stats = crate::metrics::render_stats(&entries);
+                self.input.open_stats(stats);
                 self.screen.mark_dirty();
                 CommandAction::Continue
             }

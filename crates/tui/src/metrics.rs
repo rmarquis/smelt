@@ -51,6 +51,13 @@ pub fn load() -> Vec<MetricsEntry> {
 
 // ── Aggregation ─────────────────────────────────────────────────────────────
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn day_key(ms: u64) -> u64 {
     ms / (24 * 3600 * 1000)
 }
@@ -59,11 +66,23 @@ fn hour_key(ms: u64) -> u64 {
     ms / (3600 * 1000)
 }
 
+struct ModelStats {
+    prompt: u64,
+    completion: u64,
+    calls: usize,
+}
+
+impl ModelStats {
+    fn total(&self) -> u64 {
+        self.prompt + self.completion
+    }
+}
+
 struct Stats {
     total_calls: usize,
     total_prompt: u64,
     total_completion: u64,
-    by_model: BTreeMap<String, (u64, u64, usize)>,
+    by_model: BTreeMap<String, ModelStats>,
     by_day: BTreeMap<u64, u64>,
     by_hour: BTreeMap<u64, u64>,
 }
@@ -78,11 +97,7 @@ fn aggregate(entries: &[MetricsEntry]) -> Stats {
         by_hour: BTreeMap::new(),
     };
 
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let h24_ago = now_ms.saturating_sub(24 * 3600 * 1000);
+    let h24_ago = now_ms().saturating_sub(24 * 3600 * 1000);
 
     for e in entries {
         let prompt = e.prompt_tokens as u64;
@@ -92,10 +107,17 @@ fn aggregate(entries: &[MetricsEntry]) -> Stats {
         stats.total_prompt += prompt;
         stats.total_completion += completion;
 
-        let m = stats.by_model.entry(e.model.clone()).or_insert((0, 0, 0));
-        m.0 += prompt;
-        m.1 += completion;
-        m.2 += 1;
+        let m = stats
+            .by_model
+            .entry(e.model.clone())
+            .or_insert(ModelStats {
+                prompt: 0,
+                completion: 0,
+                calls: 0,
+            });
+        m.prompt += prompt;
+        m.completion += completion;
+        m.calls += 1;
 
         *stats.by_day.entry(day_key(e.timestamp_ms)).or_insert(0) += total;
 
@@ -110,14 +132,14 @@ fn aggregate(entries: &[MetricsEntry]) -> Stats {
 // ── Structured output for the renderer ──────────────────────────────────────
 
 pub enum StatsLine {
-    /// Dim label + accent value.
+    /// Dim label + normal value.
     Kv { label: String, value: String },
-    /// Sub-item (indented, all dim).
-    Sub(String),
-    /// Section heading (accent).
+    /// Section heading (dim).
     Heading(String),
     /// Sparkline bar characters (rendered in accent).
-    Sparkline { bars: String, legend: String },
+    SparklineBars(String),
+    /// Sparkline legend (rendered dim).
+    SparklineLegend(String),
     /// One row of the daily heatmap.
     HeatRow { label: String, cells: Vec<HeatCell> },
     /// Empty separator line.
@@ -144,20 +166,29 @@ fn sparkline(values: &[u64]) -> String {
         .collect()
 }
 
-pub fn render_stats(entries: &[MetricsEntry]) -> Vec<StatsLine> {
+pub struct StatsOutput {
+    pub left: Vec<StatsLine>,
+    pub right: Vec<StatsLine>,
+}
+
+pub fn render_stats(entries: &[MetricsEntry]) -> StatsOutput {
     if entries.is_empty() {
-        return vec![StatsLine::Sub("No metrics recorded yet.".into())];
+        return StatsOutput {
+            left: vec![StatsLine::Heading("No metrics recorded yet.".into())],
+            right: vec![],
+        };
     }
 
     let stats = aggregate(entries);
-    let mut lines = Vec::new();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
     let total = stats.total_prompt + stats.total_completion;
 
-    lines.push(StatsLine::Kv {
+    left.push(StatsLine::Kv {
         label: "calls".into(),
         value: stats.total_calls.to_string(),
     });
-    lines.push(StatsLine::Kv {
+    left.push(StatsLine::Kv {
         label: "tokens".into(),
         value: format!(
             "{} ({} prompt + {} completion)",
@@ -167,36 +198,36 @@ pub fn render_stats(entries: &[MetricsEntry]) -> Vec<StatsLine> {
         ),
     });
     if stats.total_calls > 0 {
-        lines.push(StatsLine::Kv {
+        left.push(StatsLine::Kv {
             label: "avg/call".into(),
             value: format!("{} tokens", fmt(total / stats.total_calls as u64)),
         });
     }
 
-    // Per-model breakdown
+    // Per-model breakdown (sorted by total tokens descending)
     if stats.by_model.len() > 1 {
-        lines.push(StatsLine::Blank);
-        lines.push(StatsLine::Heading("per model".into()));
-        let max_model_len = stats.by_model.keys().map(|k| k.len()).max().unwrap_or(0);
-        let max_calls_len = stats
-            .by_model
-            .values()
-            .map(|(_, _, c)| c.to_string().len())
+        left.push(StatsLine::Blank);
+        left.push(StatsLine::Heading("per model".into()));
+        let mut models: Vec<_> = stats.by_model.iter().collect();
+        models.sort_by(|a, b| b.1.total().cmp(&a.1.total()));
+        let max_model_len = models.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let max_calls_len = models
+            .iter()
+            .map(|(_, m)| m.calls.to_string().len())
             .max()
             .unwrap_or(0);
-        let max_tokens_len = stats
-            .by_model
-            .values()
-            .map(|(p, c, _)| fmt(p + c).len())
+        let max_tokens_len = models
+            .iter()
+            .map(|(_, m)| fmt(m.total()).len())
             .max()
             .unwrap_or(0);
-        for (model, (prompt, completion, calls)) in &stats.by_model {
+        for (model, m) in &models {
             let model_pad = max_model_len.saturating_sub(model.len()) + 2;
-            let calls_str = calls.to_string();
-            let tokens_str = fmt(prompt + completion);
+            let calls_str = m.calls.to_string();
+            let tokens_str = fmt(m.total());
             let calls_pad = max_calls_len.saturating_sub(calls_str.len());
             let tokens_pad = max_tokens_len.saturating_sub(tokens_str.len());
-            lines.push(StatsLine::Kv {
+            left.push(StatsLine::Kv {
                 label: format!("  {model}{}", " ".repeat(model_pad)),
                 value: format!(
                     "{}{calls_str}    {}{tokens_str}",
@@ -209,37 +240,26 @@ pub fn render_stats(entries: &[MetricsEntry]) -> Vec<StatsLine> {
 
     // Last 24h hourly sparkline
     if !stats.by_hour.is_empty() {
-        lines.push(StatsLine::Blank);
-        lines.push(StatsLine::Heading("last 24 hours".into()));
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let now_hour = hour_key(now_ms);
+        right.push(StatsLine::Heading("last 24 hours".into()));
+        let now_hour = hour_key(now_ms());
         let values: Vec<u64> = (0..24)
             .map(|i| {
                 let h = now_hour - 23 + i;
                 stats.by_hour.get(&h).copied().unwrap_or(0)
             })
             .collect();
-        let bars = sparkline(&values);
-        lines.push(StatsLine::Sparkline {
-            bars,
-            legend: "24h ago ─────────────── now".into(),
-        });
+        right.push(StatsLine::SparklineBars(sparkline(&values)));
+        right.push(StatsLine::SparklineLegend(
+            "24h ago ─────────────── now".into(),
+        ));
     }
 
     // Daily heatmap (last 12 weeks)
     if !stats.by_day.is_empty() {
-        lines.push(StatsLine::Blank);
-        lines.push(StatsLine::Heading("daily activity (12 weeks)".into()));
+        right.push(StatsLine::Blank);
+        right.push(StatsLine::Heading("daily activity (12 weeks)".into()));
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let today = day_key(now_ms);
+        let today = day_key(now_ms());
         let days: Vec<u64> = (0..84).map(|i| today - 83 + i).collect();
         let values: Vec<u64> = days
             .iter()
@@ -262,14 +282,50 @@ pub fn render_stats(entries: &[MetricsEntry]) -> Vec<StatsLine> {
                     }
                 }
             }
-            lines.push(StatsLine::HeatRow {
+            right.push(StatsLine::HeatRow {
                 label: label.to_string(),
                 cells,
             });
         }
     }
 
-    lines
+    StatsOutput { left, right }
+}
+
+/// Count visual rows needed to display the stats panels.
+/// Accounts for whether side-by-side fits the current terminal width.
+pub fn stats_row_count(left: &[StatsLine], right: &[StatsLine]) -> usize {
+    if right.is_empty() {
+        return left.len();
+    }
+
+    let left_width = left.iter().map(stats_line_visual_width).max().unwrap_or(0) + 2;
+    let right_width = right.iter().map(stats_line_visual_width).max().unwrap_or(0);
+    let term_width = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
+    let gap = 5;
+
+    if left_width + gap + right_width + 2 <= term_width {
+        left.len().max(right.len())
+    } else {
+        // Sequential: left + blank separator + right
+        left.len() + 1 + right.len()
+    }
+}
+
+/// Visual width of a stats line (excluding the 2-char left margin).
+pub fn stats_line_visual_width(line: &StatsLine) -> usize {
+    match line {
+        StatsLine::Kv { label, value } => {
+            let padding = 10usize.saturating_sub(label.len());
+            label.len() + padding + value.len()
+        }
+        StatsLine::Heading(text) | StatsLine::SparklineLegend(text) => text.len(),
+        StatsLine::SparklineBars(bars) => bars.chars().count(),
+        StatsLine::HeatRow { label, cells } => label.len() + 1 + cells.len() * 2,
+        StatsLine::Blank => 0,
+    }
 }
 
 fn fmt(n: u64) -> String {
