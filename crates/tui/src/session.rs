@@ -1,12 +1,16 @@
 use crate::config;
 use protocol::{Message, ReasoningEffort};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static SESSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Minimum prefix length shown in resume hints.
+const MIN_PREFIX_LEN: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -163,14 +167,16 @@ pub fn time_ago(ts_ms: u64, now_ms: u64) -> String {
     format!("{}mo ago", (delta / 2592000).max(1))
 }
 
+// ── Save / Load / Delete ─────────────────────────────────────────────────────
+
 pub fn save(session: &Session, store: &crate::attachment::AttachmentStore) {
     let _perf = crate::perf::begin("session_save");
-    let dir = sessions_dir();
-    let _ = fs::create_dir_all(&dir);
+    let session_dir = sessions_dir().join(&session.id);
+    let _ = fs::create_dir_all(&session_dir);
     let ts = now_ms();
 
     // Write blob files for images and get the URL replacement map.
-    let blob_dir = dir.join(format!("{}.blobs", session.id));
+    let blob_dir = session_dir.join("blobs");
     let url_to_blob = store.save_blobs(&blob_dir);
 
     // Clone session and replace inline data URLs with blob refs.
@@ -183,8 +189,8 @@ pub fn save(session: &Session, store: &crate::attachment::AttachmentStore) {
     };
 
     // Write main session file
-    let path = dir.join(format!("{}.json", session.id));
-    let tmp = dir.join(format!("{}.{}.tmp", session.id, ts));
+    let path = session_dir.join("session.json");
+    let tmp = session_dir.join(format!("session.{ts}.tmp"));
     if let Ok(json) = serde_json::to_string_pretty(&*session_out) {
         if fs::write(&tmp, json).is_ok() {
             let _ = fs::rename(&tmp, &path);
@@ -192,8 +198,8 @@ pub fn save(session: &Session, store: &crate::attachment::AttachmentStore) {
     }
 
     // Write sidecar metadata file
-    let meta_path = dir.join(format!("{}.meta.json", session.id));
-    let meta_tmp = dir.join(format!("{}.meta.{}.tmp", session.id, ts));
+    let meta_path = session_dir.join("meta.json");
+    let meta_tmp = session_dir.join(format!("meta.{ts}.tmp"));
     if let Ok(json) = serde_json::to_string(&session.meta()) {
         if fs::write(&meta_tmp, json).is_ok() {
             let _ = fs::rename(&meta_tmp, &meta_path);
@@ -201,21 +207,180 @@ pub fn save(session: &Session, store: &crate::attachment::AttachmentStore) {
     }
 }
 
-pub fn load(id: &str) -> Option<Session> {
-    let path = sessions_dir().join(format!("{}.json", id));
-    let contents = fs::read_to_string(path).ok()?;
+/// Load a session by exact ID or unique prefix (git-style).
+pub fn load(id_or_prefix: &str) -> Option<Session> {
+    let id = resolve_prefix(id_or_prefix)?;
+    load_exact(&id)
+}
+
+fn load_exact(id: &str) -> Option<Session> {
+    // Try new directory layout first.
+    let dir_path = sessions_dir().join(id);
+    let session_path = dir_path.join("session.json");
+    if session_path.is_file() {
+        let contents = fs::read_to_string(&session_path).ok()?;
+        let mut session: Session = serde_json::from_str(&contents).ok()?;
+
+        // Resolve blob refs back to inline data URLs.
+        let blob_dir = dir_path.join("blobs");
+        if blob_dir.is_dir() {
+            let blob_to_url = crate::attachment::AttachmentStore::load_blobs(&blob_dir);
+            if !blob_to_url.is_empty() {
+                internalize_blobs(&mut session.messages, &blob_to_url);
+            }
+        }
+        return Some(session);
+    }
+
+    // Fall back to legacy flat file layout.
+    let legacy_path = sessions_dir().join(format!("{id}.json"));
+    let contents = fs::read_to_string(legacy_path).ok()?;
     let mut session: Session = serde_json::from_str(&contents).ok()?;
 
-    // Resolve blob refs back to inline data URLs.
-    let blob_dir = sessions_dir().join(format!("{}.blobs", id));
+    let blob_dir = sessions_dir().join(format!("{id}.blobs"));
     if blob_dir.is_dir() {
         let blob_to_url = crate::attachment::AttachmentStore::load_blobs(&blob_dir);
         if !blob_to_url.is_empty() {
             internalize_blobs(&mut session.messages, &blob_to_url);
         }
     }
-
     Some(session)
+}
+
+/// Resolve a prefix to a full session ID. Returns `None` if no match,
+/// or if the prefix is ambiguous (matches multiple sessions).
+fn resolve_prefix(prefix: &str) -> Option<String> {
+    // Exact match — fast path.
+    let dir = sessions_dir();
+    if dir.join(prefix).join("session.json").is_file()
+        || dir.join(format!("{prefix}.json")).is_file()
+    {
+        return Some(prefix.to_string());
+    }
+
+    // Prefix scan.
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return None;
+    };
+    let mut matches = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with(prefix) {
+            continue;
+        }
+        // New layout: directory with session.json inside.
+        if entry.path().join("session.json").is_file() {
+            matches.push(name_str.to_string());
+        }
+        // Legacy layout: <id>.json flat file.
+        if name_str.ends_with(".json")
+            && !name_str.ends_with(".meta.json")
+            && !name_str.ends_with(".tmp")
+        {
+            let id = name_str.trim_end_matches(".json");
+            if id.starts_with(prefix) && !matches.contains(&id.to_string()) {
+                matches.push(id.to_string());
+            }
+        }
+    }
+    if matches.len() == 1 {
+        Some(matches.into_iter().next().unwrap())
+    } else {
+        None
+    }
+}
+
+pub fn delete(id: &str) {
+    let dir = sessions_dir();
+    // New layout
+    let session_dir = dir.join(id);
+    if session_dir.is_dir() {
+        let _ = fs::remove_dir_all(&session_dir);
+        return;
+    }
+    // Legacy layout
+    let _ = fs::remove_file(dir.join(format!("{id}.json")));
+    let _ = fs::remove_file(dir.join(format!("{id}.meta.json")));
+    let blob_dir = dir.join(format!("{id}.blobs"));
+    if blob_dir.is_dir() {
+        let _ = fs::remove_dir_all(&blob_dir);
+    }
+}
+
+pub fn list_sessions() -> Vec<SessionMeta> {
+    let _perf = crate::perf::begin("session_list");
+    let dir = sessions_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        // New layout: directory with meta.json / session.json.
+        if path.is_dir() {
+            let meta_path = path.join("meta.json");
+            if let Ok(contents) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<SessionMeta>(&contents) {
+                    out.push(meta);
+                    continue;
+                }
+            }
+            // Fall back to full session file.
+            let session_path = path.join("session.json");
+            if let Ok(contents) = fs::read_to_string(&session_path) {
+                if let Ok(mut meta) = serde_json::from_str::<SessionMeta>(&contents) {
+                    if meta.id.is_empty() {
+                        meta.id = name.to_string();
+                    }
+                    out.push(meta);
+                }
+            }
+            continue;
+        }
+
+        // Legacy flat layout: <id>.json files.
+        let name_str = name.to_string();
+        if name_str.ends_with(".meta.json")
+            || name_str.ends_with(".tmp")
+            || !name_str.ends_with(".json")
+        {
+            continue;
+        }
+        let id = name_str.trim_end_matches(".json").to_string();
+        if id.is_empty() {
+            continue;
+        }
+
+        // Try legacy sidecar meta first.
+        let meta_path = dir.join(format!("{id}.meta.json"));
+        if let Ok(contents) = fs::read_to_string(&meta_path) {
+            if let Ok(meta) = serde_json::from_str::<SessionMeta>(&contents) {
+                out.push(meta);
+                continue;
+            }
+        }
+        // Fall back to full session file.
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut meta) = serde_json::from_str::<SessionMeta>(&contents) else {
+            continue;
+        };
+        if meta.id.is_empty() {
+            meta.id = id;
+        }
+        out.push(meta);
+    }
+    out.sort_by_key(|b| std::cmp::Reverse(session_updated_at(b)));
+    out
 }
 
 /// Replace inline `data:` URLs in messages with `blob:` refs.
@@ -254,63 +419,6 @@ fn internalize_blobs(
     }
 }
 
-pub fn delete(id: &str) {
-    let dir = sessions_dir();
-    let _ = fs::remove_file(dir.join(format!("{}.json", id)));
-    let _ = fs::remove_file(dir.join(format!("{}.meta.json", id)));
-}
-
-pub fn list_sessions() -> Vec<SessionMeta> {
-    let _perf = crate::perf::begin("session_list");
-    let dir = sessions_dir();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-
-    // Collect session IDs from .json files (excluding .meta.json and .tmp)
-    let mut ids: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name.ends_with(".meta.json") || name.ends_with(".tmp") || !name.ends_with(".json") {
-            continue;
-        }
-        let id = name.trim_end_matches(".json").to_string();
-        if !id.is_empty() {
-            ids.push(id);
-        }
-    }
-
-    let mut out = Vec::new();
-    for id in ids {
-        // Try the fast sidecar file first
-        let meta_path = dir.join(format!("{}.meta.json", id));
-        if let Ok(contents) = fs::read_to_string(&meta_path) {
-            if let Ok(meta) = serde_json::from_str::<SessionMeta>(&contents) {
-                out.push(meta);
-                continue;
-            }
-        }
-        // Fall back to reading the full session file
-        let path = dir.join(format!("{}.json", id));
-        let Ok(contents) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(mut meta) = serde_json::from_str::<SessionMeta>(&contents) else {
-            continue;
-        };
-        if meta.id.is_empty() {
-            meta.id = id;
-        }
-        out.push(meta);
-    }
-    out.sort_by_key(|b| std::cmp::Reverse(session_updated_at(b)));
-    out
-}
-
 fn session_updated_at(meta: &SessionMeta) -> u64 {
     if meta.updated_at_ms > 0 {
         meta.updated_at_ms
@@ -328,24 +436,63 @@ pub fn print_resume_hint(session_id: &str) {
     use crossterm::QueueableCommand;
     use std::io::Write;
 
+    let short = shortest_unique_prefix(session_id);
     let mut out = std::io::stdout();
     let _ = out.queue(SetAttribute(Attribute::Dim));
-    let _ = out.queue(Print(format!(
-        "\nresume with:\nagent --resume {session_id}\n"
-    )));
+    let _ = out.queue(Print(format!("\nresume with:\nagent --resume {short}\n")));
     let _ = out.queue(SetAttribute(Attribute::Reset));
     let _ = out.flush();
+}
+
+/// Find the shortest prefix of `id` that uniquely identifies it among all sessions.
+fn shortest_unique_prefix(id: &str) -> &str {
+    let dir = sessions_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return &id[..id.len().min(MIN_PREFIX_LEN)];
+    };
+
+    let others: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let s = name.to_str()?.to_string();
+            // New layout: directories. Legacy: <id>.json files.
+            if e.path().is_dir() {
+                (s != id).then_some(s)
+            } else if s.ends_with(".json") && !s.ends_with(".meta.json") {
+                let trimmed = s.trim_end_matches(".json").to_string();
+                (trimmed != id).then_some(trimmed)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for len in MIN_PREFIX_LEN..=id.len() {
+        let prefix = &id[..len];
+        if others.iter().all(|o| !o.starts_with(prefix)) {
+            return prefix;
+        }
+    }
+    id
 }
 
 fn new_session_id(now_ms: u64) -> String {
     let counter = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    format!("{now_ms}-{pid}-{counter}")
+    let mut hasher = Sha256::new();
+    hasher.update(now_ms.to_le_bytes());
+    hasher.update(pid.to_le_bytes());
+    hasher.update(counter.to_le_bytes());
+    // Mix in some randomness from the stack address.
+    let entropy = &hasher as *const _ as usize;
+    hasher.update(entropy.to_le_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::time_ago;
+    use super::*;
 
     #[test]
     fn time_ago_formats() {
@@ -356,5 +503,27 @@ mod tests {
         assert_eq!(time_ago(now - 86_400_000, now), "1d ago");
         assert_eq!(time_ago(now - 604_800_000, now), "1w ago");
         assert_eq!(time_ago(now - 2_592_000_000, now), "1mo ago");
+    }
+
+    #[test]
+    fn session_id_is_full_sha256_hex() {
+        let id = new_session_id(123456789);
+        assert_eq!(id.len(), 64);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn session_ids_are_unique() {
+        let id1 = new_session_id(100);
+        let id2 = new_session_id(100);
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn shortest_prefix_with_no_others() {
+        // When the sessions dir doesn't exist or is empty, returns MIN_PREFIX_LEN.
+        let id = "abcdef1234567890";
+        let prefix = &id[..id.len().min(MIN_PREFIX_LEN)];
+        assert_eq!(prefix, "abcd");
     }
 }

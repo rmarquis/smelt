@@ -565,25 +565,3 @@ pub struct PermissionOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_fetch: Option<RuleSetOverride>,
 }
-
-/// Metadata for a saved session (used by resume dialog).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionMeta {
-    pub id: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub first_user_message: Option<String>,
-    #[serde(default)]
-    pub created_at_ms: u64,
-    #[serde(default)]
-    pub updated_at_ms: u64,
-    #[serde(default)]
-    pub mode: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub cwd: Option<String>,
-}
