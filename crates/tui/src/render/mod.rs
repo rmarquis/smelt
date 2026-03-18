@@ -1279,24 +1279,24 @@ impl Screen {
         let mut throbber_spans = self.working.throbber_spans(self.show_speed);
 
         if self.show_slug {
-        if let Some(ref label) = self.task_label {
-            if !throbber_spans.is_empty() {
+            if let Some(ref label) = self.task_label {
+                if !throbber_spans.is_empty() {
+                    throbber_spans.push(BarSpan {
+                        text: " ".into(),
+                        color: Color::Reset,
+                        bg: None,
+                        attr: None,
+                        priority: 1,
+                    });
+                }
                 throbber_spans.push(BarSpan {
-                    text: " ".into(),
-                    color: Color::Reset,
-                    bg: None,
+                    text: format!(" {} ", label),
+                    color: theme::MUTED,
+                    bg: Some(Color::AnsiValue(234)),
                     attr: None,
                     priority: 1,
                 });
             }
-            throbber_spans.push(BarSpan {
-                text: format!(" {} ", label),
-                color: theme::MUTED,
-                bg: Some(Color::AnsiValue(236)),
-                attr: None,
-                priority: 1,
-            });
-        }
         }
 
         let mut right_spans = Vec::new();
@@ -1755,9 +1755,7 @@ fn render_btw(
             if btw.wrapped.is_empty() || btw.wrap_width != render_w {
                 btw.wrapped.clear();
                 let mut buf = RenderOut::buffer();
-                blocks::render_markdown_inner(
-                    &mut buf, text, render_w, "   ", true, None,
-                );
+                blocks::render_markdown_inner(&mut buf, text, render_w, "   ", true, None);
                 let _ = std::io::Write::flush(&mut buf);
                 let bytes = buf.into_bytes();
                 let rendered = String::from_utf8_lossy(&bytes);

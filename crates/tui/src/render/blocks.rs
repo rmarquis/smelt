@@ -147,7 +147,7 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
             }
             rows
         }
-        Block::Text { content } => render_markdown(out, content, width, " ", false),
+        Block::Text { content } => render_markdown_inner(out, content, width, " ", false, None),
         Block::ToolCall {
             name,
             summary,
@@ -487,27 +487,7 @@ fn render_question_output(out: &mut RenderOut, content: &str, width: usize) -> u
 }
 
 fn render_web_fetch_output(out: &mut RenderOut, content: &str, width: usize) -> u16 {
-    render_markdown(out, content.trim(), width, "   ", true)
-}
-
-fn render_markdown(
-    out: &mut RenderOut,
-    content: &str,
-    width: usize,
-    indent: &str,
-    dim: bool,
-) -> u16 {
-    render_markdown_inner(out, content, width, indent, dim, None)
-}
-
-fn render_markdown_boxed(
-    out: &mut RenderOut,
-    content: &str,
-    width: usize,
-    dim: bool,
-    bctx: &super::BoxContext,
-) -> u16 {
-    render_markdown_inner(out, content, width, bctx.left, dim, Some(bctx))
+    render_markdown_inner(out, content.trim(), width, "   ", true, None)
 }
 
 pub(crate) fn render_markdown_inner(
@@ -538,7 +518,7 @@ pub(crate) fn render_markdown_inner(
             if i < lines.len() {
                 i += 1;
             }
-            rows += render_code_block(out, code_lines, lang, width, dim, bctx, indent);
+            rows += render_code_block(out, code_lines, lang, width, dim, bctx, "");
             // Skip blank lines after code block — the border provides spacing.
             while i < lines.len() && lines[i].trim().is_empty() {
                 i += 1;
@@ -548,7 +528,8 @@ pub(crate) fn render_markdown_inner(
             while i < lines.len() && lines[i].trim_start().starts_with('|') {
                 i += 1;
             }
-            rows += render_markdown_table(out, &lines[table_start..i], dim, bctx, indent);
+            rows +=
+                render_markdown_table_from_lines(out, &lines[table_start..i], dim, bctx, indent);
         } else {
             // Skip blank lines before a code fence — the border provides spacing.
             let is_blank = lines[i].trim().is_empty();
@@ -566,11 +547,11 @@ pub(crate) fn render_markdown_inner(
             for seg in &segments {
                 if let Some(b) = bctx {
                     b.print_left(out);
-                    print_styled_dim(out, seg, dim);
+                    print_styled_line(out, seg, dim);
                     b.print_right(out, seg.chars().count());
                 } else {
                     let _ = out.queue(Print(indent));
-                    print_styled_dim(out, seg, dim);
+                    print_styled_line(out, seg, dim);
                 }
                 crlf(out);
             }
@@ -579,6 +560,101 @@ pub(crate) fn render_markdown_inner(
         }
     }
     rows
+}
+
+/// Render a single line with block-level detection (headings, blockquotes,
+/// list markers) then inline styling via the shared `print_inline_styled`.
+fn print_styled_line(out: &mut RenderOut, text: &str, dim: bool) {
+    use super::highlight::print_inline_styled;
+
+    macro_rules! reset {
+        () => {
+            let _ = out.queue(SetAttribute(Attribute::Reset));
+            let _ = out.queue(ResetColor);
+            if dim {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+            }
+        };
+    }
+
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('#') {
+        let _ = out.queue(SetForegroundColor(theme::HEADING));
+        let _ = out.queue(SetAttribute(Attribute::Bold));
+        let _ = out.queue(Print(trimmed));
+        reset!();
+        return;
+    }
+
+    if trimmed.starts_with('>') {
+        let content = trimmed.strip_prefix('>').unwrap().trim_start();
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+        let _ = out.queue(SetAttribute(Attribute::Italic));
+        let _ = out.queue(Print(content));
+        reset!();
+        return;
+    }
+
+    // Split off list-item markers and print them dim.
+    let (prefix, body) = split_list_prefix(trimmed);
+    let leading_ws = &text[..text.len() - trimmed.len()];
+    if !leading_ws.is_empty() {
+        let _ = out.queue(Print(leading_ws));
+    }
+    if !prefix.is_empty() {
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+        let _ = out.queue(Print(prefix));
+        let _ = out.queue(SetAttribute(Attribute::Reset));
+        let _ = out.queue(ResetColor);
+    }
+
+    print_inline_styled(out, body, dim);
+}
+
+/// Split a list-item prefix (`- `, `* `, `1. `, etc.) from the line content.
+/// Returns (prefix, rest). If not a list item, prefix is empty.
+fn split_list_prefix(line: &str) -> (&str, &str) {
+    // Ordered: "1. ", "12. ", etc.
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i < bytes.len() && bytes[i] == b'.' {
+        let end = i + 1;
+        if end < bytes.len() && bytes[end] == b' ' {
+            return (&line[..end + 1], &line[end + 1..]);
+        }
+        return (&line[..end], &line[end..]);
+    }
+    // Unordered: "- " or "* "
+    if line.starts_with("- ") || line.starts_with("* ") {
+        return (&line[..2], &line[2..]);
+    }
+    ("", line)
+}
+
+/// Parse pipe-delimited table lines into rows, then render.
+fn render_markdown_table_from_lines(
+    out: &mut RenderOut,
+    lines: &[&str],
+    dim: bool,
+    bctx: Option<&super::BoxContext>,
+    indent: &str,
+) -> u16 {
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    for line in lines {
+        let trimmed = line.trim().trim_start_matches('|').trim_end_matches('|');
+        if trimmed
+            .chars()
+            .all(|c| c == '-' || c == '|' || c == ':' || c == ' ')
+        {
+            continue;
+        }
+        let cells: Vec<String> = trimmed.split('|').map(|c| c.trim().to_string()).collect();
+        table_rows.push(cells);
+    }
+    render_markdown_table(out, &table_rows, dim, bctx, indent)
 }
 
 fn render_plan_output(
@@ -619,7 +695,7 @@ fn render_plan_output(
         color: theme::PLAN,
         inner_w,
     };
-    rows += render_markdown_boxed(out, body, width, false, &bctx);
+    rows += render_markdown_inner(out, body, width, bctx.left, false, Some(&bctx));
 
     // Bottom border: "   └──...──┘"
     // 3 + 1(└) + dashes + 1(┘) = 5 + inner_w + 2 → dashes = inner_w + 2
@@ -713,130 +789,6 @@ fn result_preview(content: &str, max_lines: usize) -> String {
             lines[..max_lines].join(" | "),
             lines.len()
         )
-    }
-}
-
-pub(crate) fn print_styled_dim(out: &mut RenderOut, text: &str, dim: bool) {
-    macro_rules! reset {
-        () => {
-            let _ = out.queue(SetAttribute(Attribute::Reset));
-            let _ = out.queue(ResetColor);
-            if dim {
-                let _ = out.queue(SetAttribute(Attribute::Dim));
-            }
-        };
-    }
-
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('#') {
-        let _ = out.queue(SetForegroundColor(theme::HEADING));
-        let _ = out.queue(SetAttribute(Attribute::Bold));
-        let _ = out.queue(Print(trimmed));
-        reset!();
-        return;
-    }
-
-    if trimmed.starts_with('>') {
-        let content = trimmed.strip_prefix('>').unwrap().trim_start();
-        let _ = out.queue(SetAttribute(Attribute::Dim));
-        let _ = out.queue(SetAttribute(Attribute::Italic));
-        let _ = out.queue(Print(content));
-        reset!();
-        return;
-    }
-
-    if dim {
-        let _ = out.queue(SetAttribute(Attribute::Dim));
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut plain = String::new();
-
-    while i < len {
-        if i + 1 < len
-            && chars[i] == '*'
-            && chars[i + 1] == '*'
-            && i + 2 < len
-            && !chars[i + 2].is_whitespace()
-            && (i == 0 || !chars[i - 1].is_alphanumeric())
-        {
-            // Look ahead to find closing **
-            let mut j = i + 2;
-            while j + 1 < len && !(chars[j] == '*' && chars[j + 1] == '*') {
-                j += 1;
-            }
-            if j + 1 < len && !chars[j - 1].is_whitespace() {
-                if !plain.is_empty() {
-                    let _ = out.queue(Print(&plain));
-                    plain.clear();
-                }
-                let word: String = chars[i + 2..j].iter().collect();
-                let _ = out.queue(SetAttribute(Attribute::Bold));
-                let _ = out.queue(Print(&word));
-                reset!();
-                i = j + 2;
-                continue;
-            }
-        }
-
-        if chars[i] == '*'
-            && i + 1 < len
-            && chars[i + 1] != '*'
-            && !chars[i + 1].is_whitespace()
-            && (i == 0 || !chars[i - 1].is_alphanumeric())
-        {
-            // Look ahead to find closing *
-            let mut j = i + 1;
-            while j < len && chars[j] != '*' {
-                j += 1;
-            }
-            if j < len && !chars[j - 1].is_whitespace() {
-                if !plain.is_empty() {
-                    let _ = out.queue(Print(&plain));
-                    plain.clear();
-                }
-                let word: String = chars[i + 1..j].iter().collect();
-                let _ = out.queue(SetAttribute(Attribute::Italic));
-                let _ = out.queue(Print(&word));
-                reset!();
-                i = j + 1;
-                continue;
-            }
-        }
-
-        if chars[i] == '`' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '`' {
-                j += 1;
-            }
-            if j < len {
-                if !plain.is_empty() {
-                    let _ = out.queue(Print(&plain));
-                    plain.clear();
-                }
-                let word: String = chars[i + 1..j].iter().collect();
-                let _ = out.queue(SetForegroundColor(theme::accent()));
-                if dim {
-                    let _ = out.queue(SetAttribute(Attribute::Dim));
-                }
-                let _ = out.queue(Print(&word));
-                reset!();
-                i = j + 1;
-                continue;
-            }
-        }
-
-        plain.push(chars[i]);
-        i += 1;
-    }
-    if !plain.is_empty() {
-        let _ = out.queue(Print(&plain));
-    }
-    if dim {
-        let _ = out.queue(SetAttribute(Attribute::Reset));
-        let _ = out.queue(ResetColor);
     }
 }
 

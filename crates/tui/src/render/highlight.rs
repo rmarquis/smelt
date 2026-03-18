@@ -1,4 +1,3 @@
-use crate::render::blocks::print_styled_dim;
 use crate::theme;
 use crossterm::{
     style::{
@@ -963,44 +962,20 @@ fn print_split_regions(
     col
 }
 
+/// Strip inline markdown markers (`**`, `*`, `__`, `_`, `` ` ``, `~~`) and
+/// return the visible text content. Used for measuring visual width.
 fn strip_markdown_markers(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let mut out = String::with_capacity(len);
     let mut i = 0;
     while i < len {
-        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            let mut j = i + 2;
-            while j + 1 < len && !(chars[j] == '*' && chars[j + 1] == '*') {
-                j += 1;
-            }
-            if j + 1 < len {
-                out.extend(&chars[i + 2..j]);
-                i = j + 2;
-                continue;
-            }
-        }
-        if chars[i] == '*' && i + 1 < len && chars[i + 1] != '*' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '*' {
-                j += 1;
-            }
-            if j < len {
-                out.extend(&chars[i + 1..j]);
-                i = j + 1;
-                continue;
-            }
-        }
-        if chars[i] == '`' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '`' {
-                j += 1;
-            }
-            if j < len {
-                out.extend(&chars[i + 1..j]);
-                i = j + 1;
-                continue;
-            }
+        if let Some(skip) = skip_inline_span(&chars, i) {
+            // Append the content between the opening and closing delimiters.
+            let (content_start, content_end, after) = skip;
+            out.extend(&chars[content_start..content_end]);
+            i = after;
+            continue;
         }
         out.push(chars[i]);
         i += 1;
@@ -1008,26 +983,97 @@ fn strip_markdown_markers(text: &str) -> String {
     out
 }
 
+/// Identify character positions in `text` where line-breaking is allowed.
+/// Returns a bool vec parallel to `text.chars()` — `true` at spaces outside
+/// inline markdown spans (delimiters are not breakable).
+fn breakable_positions(text: &str) -> Vec<bool> {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut breakable = vec![false; len];
+    let mut i = 0;
+    while i < len {
+        if let Some(skip) = skip_inline_span(&chars, i) {
+            // Jump past the entire span (delimiters + content) — no breaks inside.
+            i = skip.2;
+            continue;
+        }
+        if chars[i] == ' ' {
+            breakable[i] = true;
+        }
+        i += 1;
+    }
+    breakable
+}
+
+/// Try to match an inline markdown span starting at position `i`.
+/// Returns `Some((content_start, content_end, after))` if a complete span is
+/// found, where `content_start..content_end` is the inner text and `after` is
+/// the index past the closing delimiter. Returns `None` if no span matches.
+fn skip_inline_span(chars: &[char], i: usize) -> Option<(usize, usize, usize)> {
+    let len = chars.len();
+
+    // ~~strikethrough~~
+    if i + 1 < len && chars[i] == '~' && chars[i + 1] == '~' {
+        if let Some(end) = find_closing_pair(chars, i + 2, '~', '~') {
+            return Some((i + 2, end, end + 2));
+        }
+    }
+
+    // ***bold+italic*** or ___bold+italic___
+    if i + 2 < len
+        && chars[i] == chars[i + 1]
+        && chars[i] == chars[i + 2]
+        && (chars[i] == '*' || chars[i] == '_')
+    {
+        if let Some(end) = find_closing_triple(chars, i + 3, chars[i]) {
+            return Some((i + 3, end, end + 3));
+        }
+    }
+
+    // **bold** or __bold__
+    if i + 1 < len
+        && chars[i] == chars[i + 1]
+        && (chars[i] == '*' || chars[i] == '_')
+        && i + 2 < len
+        && !chars[i + 2].is_whitespace()
+    {
+        if let Some(end) = find_closing_pair(chars, i + 2, chars[i], chars[i]) {
+            if !chars[end - 1].is_whitespace() {
+                return Some((i + 2, end, end + 2));
+            }
+        }
+    }
+
+    // *italic* or _italic_
+    if (chars[i] == '*' || chars[i] == '_')
+        && i + 1 < len
+        && chars[i + 1] != chars[i]
+        && !chars[i + 1].is_whitespace()
+    {
+        if let Some(end) = find_closing_single(chars, i + 1, chars[i]) {
+            if !chars[end - 1].is_whitespace() {
+                return Some((i + 1, end, end + 1));
+            }
+        }
+    }
+
+    // `code`
+    if chars[i] == '`' {
+        if let Some(end) = find_closing_single(chars, i + 1, '`') {
+            return Some((i + 1, end, end + 1));
+        }
+    }
+
+    None
+}
+
 pub(crate) fn render_markdown_table(
     out: &mut RenderOut,
-    lines: &[&str],
+    rows: &[Vec<String>],
     dim: bool,
     bctx: Option<&super::BoxContext>,
     indent: &str,
 ) -> u16 {
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for line in lines {
-        let trimmed = line.trim().trim_start_matches('|').trim_end_matches('|');
-        if trimmed
-            .chars()
-            .all(|c| c == '-' || c == '|' || c == ':' || c == ' ')
-        {
-            continue;
-        }
-        let cells: Vec<String> = trimmed.split('|').map(|c| c.trim().to_string()).collect();
-        rows.push(cells);
-    }
-
     if rows.is_empty() {
         return 0;
     }
@@ -1044,19 +1090,19 @@ pub(crate) fn render_markdown_table(
         term_width().saturating_sub(2)
     };
     let mut col_widths = vec![0usize; num_cols];
-    for row in &rows {
+    for row in rows {
         for (c, cell) in row.iter().enumerate() {
             let visual = strip_markdown_markers(cell).width();
             col_widths[c] = col_widths[c].max(visual);
         }
     }
 
-    // Borders: " ┃" + (" col ┃") * num_cols → 3 * num_cols + 2.
-    let overhead = 3 * num_cols + 2;
+    // Borders: "┃" + (" col ┃") * num_cols → 3 * num_cols + 1.
+    let overhead = 3 * num_cols + 1;
 
     // Minimum column widths: the longest unwrappable segment per column.
     let mut min_widths = vec![0usize; num_cols];
-    for row in &rows {
+    for row in rows {
         for (c, cell) in row.iter().enumerate() {
             min_widths[c] = min_widths[c].max(min_visual_width(cell));
         }
@@ -1070,7 +1116,7 @@ pub(crate) fn render_markdown_table(
 
         if min_total > avail {
             // Can't fit even at minimum widths — switch to stacked layout.
-            return render_table_stacked(out, &rows, dim);
+            return render_table_stacked(out, rows, dim);
         }
 
         // Shrink proportionally but clamp to min_widths.
@@ -1140,11 +1186,10 @@ pub(crate) fn render_markdown_table(
                 } else if !indent.is_empty() {
                     let _ = out.queue(Print(indent));
                 }
-                let _ = out.queue(Print(" "));
                 bar(out, dim);
                 let _ = out.queue(Print("┃"));
                 reset(out, dim);
-                let mut line_cols = 2; // " ┃"
+                let mut line_cols = 1; // "┃"
                 for (c, width) in widths.iter().enumerate() {
                     let text = wrapped
                         .get(c)
@@ -1153,7 +1198,7 @@ pub(crate) fn render_markdown_table(
                         .unwrap_or("");
                     let visual_len = strip_markdown_markers(text).width();
                     let _ = out.queue(Print(" "));
-                    print_styled_dim(out, text, dim);
+                    print_inline_styled(out, text, dim);
                     let pad = width.saturating_sub(visual_len);
                     if pad > 0 {
                         let _ = out.queue(Print(" ".repeat(pad)));
@@ -1180,10 +1225,9 @@ pub(crate) fn render_markdown_table(
             } else if !indent.is_empty() {
                 let _ = out.queue(Print(indent));
             }
-            let _ = out.queue(Print(" "));
             bar(out, dim);
             let _ = out.queue(Print(l));
-            let mut line_cols = 2; // " l"
+            let mut line_cols = 1; // "l"
             for (c, width) in widths.iter().enumerate() {
                 let seg = width + 2;
                 let _ = out.queue(Print("━".repeat(seg)));
@@ -1260,7 +1304,7 @@ fn render_table_stacked(out: &mut RenderOut, rows: &[Vec<String>], dim: bool) ->
                     if dim {
                         let _ = out.queue(SetAttribute(Attribute::Dim));
                     }
-                    print_styled_dim(out, label, dim);
+                    print_inline_styled(out, label, dim);
                     if pad > 0 {
                         let _ = out.queue(Print(" ".repeat(pad)));
                     }
@@ -1272,7 +1316,7 @@ fn render_table_stacked(out: &mut RenderOut, rows: &[Vec<String>], dim: bool) ->
                 } else {
                     let _ = out.queue(Print(" ".repeat(value_indent)));
                 }
-                print_styled_dim(out, line, dim);
+                print_inline_styled(out, line, dim);
                 crlf(out);
                 total_rows += 1;
             }
@@ -1288,50 +1332,10 @@ fn wrap_cell_words(text: &str, max_width: usize) -> Vec<String> {
         return vec![text.to_string()];
     }
 
-    // Find char indices where we're allowed to break (spaces outside spans).
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
-    let mut breakable = vec![false; len];
-    let mut i = 0;
-    while i < len {
-        // Skip over inline spans — no breaks inside them.
-        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            let mut j = i + 2;
-            while j + 1 < len && !(chars[j] == '*' && chars[j + 1] == '*') {
-                j += 1;
-            }
-            if j + 1 < len {
-                i = j + 2;
-                continue;
-            }
-        }
-        if chars[i] == '*' && i + 1 < len && chars[i + 1] != '*' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '*' {
-                j += 1;
-            }
-            if j < len {
-                i = j + 1;
-                continue;
-            }
-        }
-        if chars[i] == '`' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '`' {
-                j += 1;
-            }
-            if j < len {
-                i = j + 1;
-                continue;
-            }
-        }
-        if chars[i] == ' ' {
-            breakable[i] = true;
-        }
-        i += 1;
-    }
+    let breakable = breakable_positions(text);
 
-    // Walk through the text, breaking at allowed spaces when visual width exceeds max.
     let mut lines = Vec::new();
     let mut line_start = 0usize;
     let mut last_break = None::<usize>;
@@ -1351,7 +1355,6 @@ fn wrap_cell_words(text: &str, max_width: usize) -> Vec<String> {
             }
         }
     }
-    // Remaining text
     if line_start < len {
         let line: String = chars[line_start..].iter().collect();
         lines.push(line);
@@ -1367,48 +1370,8 @@ fn wrap_cell_words(text: &str, max_width: usize) -> Vec<String> {
 fn min_visual_width(text: &str) -> usize {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
+    let breakable = breakable_positions(text);
 
-    // Find breakable positions (same logic as wrap_cell_words).
-    let mut breakable = vec![false; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            let mut j = i + 2;
-            while j + 1 < len && !(chars[j] == '*' && chars[j + 1] == '*') {
-                j += 1;
-            }
-            if j + 1 < len {
-                i = j + 2;
-                continue;
-            }
-        }
-        if chars[i] == '*' && i + 1 < len && chars[i + 1] != '*' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '*' {
-                j += 1;
-            }
-            if j < len {
-                i = j + 1;
-                continue;
-            }
-        }
-        if chars[i] == '`' {
-            let mut j = i + 1;
-            while j < len && chars[j] != '`' {
-                j += 1;
-            }
-            if j < len {
-                i = j + 1;
-                continue;
-            }
-        }
-        if chars[i] == ' ' {
-            breakable[i] = true;
-        }
-        i += 1;
-    }
-
-    // Split at breakable positions, measure each segment.
     let mut max_w = 0usize;
     let mut seg_start = 0;
     for ci in 0..len {
@@ -1425,4 +1388,173 @@ fn min_visual_width(text: &str) -> usize {
         max_w = max_w.max(strip_markdown_markers(&seg).width());
     }
     max_w
+}
+
+/// Render inline markdown spans: `**bold**`, `__bold__`, `*italic*`, `_italic_`,
+/// `***bold+italic***`, `` `code` ``, `~~strikethrough~~`.
+/// Everything else passes through literally.
+pub(crate) fn print_inline_styled(out: &mut super::RenderOut, text: &str, dim: bool) {
+    macro_rules! reset {
+        () => {
+            let _ = out.queue(SetAttribute(Attribute::Reset));
+            let _ = out.queue(ResetColor);
+            if dim {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+            }
+        };
+    }
+
+    if dim {
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut plain = String::new();
+
+    macro_rules! flush_plain {
+        () => {
+            if !plain.is_empty() {
+                let _ = out.queue(Print(&plain));
+                plain.clear();
+            }
+        };
+    }
+
+    while i < len {
+        // ~~strikethrough~~
+        if i + 1 < len && chars[i] == '~' && chars[i + 1] == '~' {
+            if let Some(end) = find_closing_pair(&chars, i + 2, '~', '~') {
+                flush_plain!();
+                let word: String = chars[i + 2..end].iter().collect();
+                let _ = out.queue(SetAttribute(Attribute::CrossedOut));
+                let _ = out.queue(Print(&word));
+                reset!();
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // ***bold+italic*** or ___bold+italic___
+        if i + 2 < len
+            && chars[i] == chars[i + 1]
+            && chars[i] == chars[i + 2]
+            && (chars[i] == '*' || chars[i] == '_')
+        {
+            let marker = chars[i];
+            if let Some(end) = find_closing_triple(&chars, i + 3, marker) {
+                flush_plain!();
+                let word: String = chars[i + 3..end].iter().collect();
+                let _ = out.queue(SetAttribute(Attribute::Bold));
+                let _ = out.queue(SetAttribute(Attribute::Italic));
+                let _ = out.queue(Print(&word));
+                reset!();
+                i = end + 3;
+                continue;
+            }
+        }
+
+        // **bold** or __bold__
+        if i + 1 < len
+            && chars[i] == chars[i + 1]
+            && (chars[i] == '*' || chars[i] == '_')
+            && i + 2 < len
+            && !chars[i + 2].is_whitespace()
+        {
+            let marker = chars[i];
+            if let Some(end) = find_closing_pair(&chars, i + 2, marker, marker) {
+                if !chars[end - 1].is_whitespace() {
+                    flush_plain!();
+                    let word: String = chars[i + 2..end].iter().collect();
+                    let _ = out.queue(SetAttribute(Attribute::Bold));
+                    let _ = out.queue(Print(&word));
+                    reset!();
+                    i = end + 2;
+                    continue;
+                }
+            }
+        }
+
+        // *italic* or _italic_
+        if (chars[i] == '*' || chars[i] == '_')
+            && i + 1 < len
+            && chars[i + 1] != chars[i]
+            && !chars[i + 1].is_whitespace()
+        {
+            let marker = chars[i];
+            if let Some(end) = find_closing_single(&chars, i + 1, marker) {
+                if !chars[end - 1].is_whitespace() {
+                    flush_plain!();
+                    let word: String = chars[i + 1..end].iter().collect();
+                    let _ = out.queue(SetAttribute(Attribute::Italic));
+                    let _ = out.queue(Print(&word));
+                    reset!();
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        // `code`
+        if chars[i] == '`' {
+            if let Some(end) = find_closing_single(&chars, i + 1, '`') {
+                flush_plain!();
+                let word: String = chars[i + 1..end].iter().collect();
+                let _ = out.queue(SetForegroundColor(theme::accent()));
+                if dim {
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                }
+                let _ = out.queue(Print(&word));
+                reset!();
+                i = end + 1;
+                continue;
+            }
+        }
+
+        plain.push(chars[i]);
+        i += 1;
+    }
+    flush_plain!();
+
+    if dim {
+        let _ = out.queue(SetAttribute(Attribute::Reset));
+        let _ = out.queue(ResetColor);
+    }
+}
+
+/// Find position of a single closing `marker` starting from `start`.
+fn find_closing_single(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    let mut j = start;
+    while j < chars.len() {
+        if chars[j] == marker {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Find position of a closing double-marker (`m1 m2`) starting from `start`.
+fn find_closing_pair(chars: &[char], start: usize, m1: char, m2: char) -> Option<usize> {
+    let mut j = start;
+    while j + 1 < chars.len() {
+        if chars[j] == m1 && chars[j + 1] == m2 {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Find position of a closing triple-marker starting from `start`.
+fn find_closing_triple(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    let mut j = start;
+    while j + 2 < chars.len() {
+        if chars[j] == marker && chars[j + 1] == marker && chars[j + 2] == marker {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
 }

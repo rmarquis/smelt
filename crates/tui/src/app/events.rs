@@ -379,9 +379,7 @@ impl App {
 
         // Delegate to InputState::handle_event
         match self.input.handle_event(ev, Some(&mut self.input_history)) {
-            Action::Submit { content, display } => {
-                EventOutcome::Submit { content, display }
-            }
+            Action::Submit { content, display } => EventOutcome::Submit { content, display },
             Action::MenuResult(result) => EventOutcome::MenuResult(result),
             Action::ToggleMode => {
                 self.toggle_mode();
@@ -563,13 +561,6 @@ impl App {
             }) = ev
             {
                 match (*code, *modifiers) {
-                    (KeyCode::Esc, _)
-                    | (KeyCode::Char('q'), KeyModifiers::NONE)
-                    | (KeyCode::Char('c'), KeyModifiers::CONTROL)
-                    | (KeyCode::Enter, _) => {
-                        self.screen.dismiss_btw();
-                        return Some(EventOutcome::Noop);
-                    }
                     (KeyCode::Char('d'), KeyModifiers::CONTROL) | (KeyCode::PageDown, _) => {
                         self.screen.btw_scroll(10);
                         return Some(EventOutcome::Noop);
@@ -579,6 +570,7 @@ impl App {
                         return Some(EventOutcome::Noop);
                     }
                     _ => {
+                        self.screen.dismiss_btw();
                         return Some(EventOutcome::Noop);
                     }
                 }
