@@ -412,7 +412,7 @@ fn print_tool_output(
         "edit_file" if !is_error => render_edit_output(out, args),
         "write_file" if !is_error => render_write_output(out, args),
         "ask_user_question" if !is_error => render_question_output(out, content, width),
-        "exit_plan_mode" if !is_error => render_plan_output(out, content, width),
+        "exit_plan_mode" if !is_error => render_plan_output(out, args, width),
         "bash" | "read_process_output" | "stop_process" => {
             render_bash_output(out, content, is_error, width)
         }
@@ -581,19 +581,15 @@ fn render_markdown_inner(
     rows
 }
 
-fn render_plan_output(out: &mut RenderOut, content: &str, width: usize) -> u16 {
-    // Skip the first line ("Plan saved to ...") and the trailing
-    // "The user approved..." instruction for the bordered display.
-    let body = if let Some(pos) = content.find("\n\n") {
-        let rest = &content[pos + 2..];
-        if let Some(end) = rest.rfind("\n\nThe user approved") {
-            &rest[..end]
-        } else {
-            rest
-        }
-    } else {
-        content
-    };
+fn render_plan_output(
+    out: &mut RenderOut,
+    args: &HashMap<String, serde_json::Value>,
+    width: usize,
+) -> u16 {
+    let body = args
+        .get("plan_summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if body.is_empty() {
         return 0;

@@ -5,8 +5,8 @@ mod history;
 
 use crate::input::{resolve_agent_esc, Action, EscAction, History, InputState, MenuResult};
 use crate::render::{
-    tool_arg_summary, Block, ConfirmChoice, ConfirmDialog, Dialog as _, FramePrompt,
-    QuestionDialog, ResumeEntry, Screen, ToolOutput, ToolStatus,
+    tool_arg_summary, Block, ConfirmChoice, ConfirmDialog, ConfirmRequest, Dialog as _,
+    FramePrompt, QuestionDialog, ResumeEntry, Screen, ToolOutput, ToolStatus,
 };
 use crate::session::Session;
 use crate::{render, session, state, vim};
@@ -69,6 +69,7 @@ pub struct App {
     pending_compact_epoch: u64,
 }
 
+/// Retained subset of the confirm request for mode-toggle re-checks.
 struct ConfirmContext {
     tool_name: String,
     args: HashMap<String, serde_json::Value>,
@@ -208,15 +209,7 @@ const CONFIRM_DEFER_MS: u64 = 1500;
 
 /// A permission dialog deferred because the user was actively typing.
 enum DeferredDialog {
-    Confirm {
-        tool_name: String,
-        desc: String,
-        args: HashMap<String, serde_json::Value>,
-        approval_pattern: Option<String>,
-        outside_dir: Option<PathBuf>,
-        summary: Option<String>,
-        request_id: u64,
-    },
+    Confirm(ConfirmRequest),
     AskQuestion {
         args: HashMap<String, serde_json::Value>,
         request_id: u64,
@@ -227,14 +220,7 @@ enum DeferredDialog {
 
 pub enum SessionControl {
     Continue,
-    NeedsConfirm {
-        tool_name: String,
-        desc: String,
-        args: HashMap<String, serde_json::Value>,
-        approval_pattern: Option<String>,
-        summary: Option<String>,
-        request_id: u64,
-    },
+    NeedsConfirm(ConfirmRequest),
     NeedsAskQuestion {
         args: HashMap<String, serde_json::Value>,
         request_id: u64,
@@ -539,33 +525,14 @@ impl App {
                     self.screen.set_pending_dialog(false);
                     let deferred = deferred_dialog.take().unwrap();
                     match deferred {
-                        DeferredDialog::Confirm {
-                            tool_name,
-                            desc,
-                            args,
-                            approval_pattern,
-                            outside_dir,
-                            summary,
-                            request_id,
-                        } => {
+                        DeferredDialog::Confirm(req) => {
                             self.confirm_context = Some(ConfirmContext {
-                                tool_name: tool_name.clone(),
-                                args: args.clone(),
-                                request_id,
+                                tool_name: req.tool_name.clone(),
+                                args: req.args.clone(),
+                                request_id: req.request_id,
                             });
                             self.screen.set_active_status(ToolStatus::Confirm);
-                            let dialog = Box::new(ConfirmDialog::new(
-                                &tool_name,
-                                &desc,
-                                &args,
-                                approval_pattern.as_deref(),
-                                outside_dir
-                                    .as_ref()
-                                    .map(|d| d.to_string_lossy().into_owned())
-                                    .as_deref(),
-                                summary.as_deref(),
-                                request_id,
-                            ));
+                            let dialog = Box::new(ConfirmDialog::new(&req));
                             self.open_blocking_dialog(dialog, &mut active_dialog);
                         }
                         DeferredDialog::AskQuestion { args, request_id } => {

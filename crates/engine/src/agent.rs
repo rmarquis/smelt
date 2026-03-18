@@ -32,12 +32,15 @@ pub async fn engine_task(
     // Process completion channel for background processes
     let (proc_done_tx, mut proc_done_rx) = mpsc::unbounded_channel::<(String, Option<i32>)>();
     let mut last_model = String::new();
+    // Cancellation token for the in-flight prediction request.
+    let mut predict_cancel = tokio_util::sync::CancellationToken::new();
 
     loop {
         tokio::select! {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     UiCommand::StartTurn { turn_id, input, mode, model, reasoning_effort, history, api_base, api_key, session_id, model_config_overrides, permission_overrides } => {
+                        predict_cancel.cancel();
                         last_model = model.clone();
                         let mut provider = build_provider_with_overrides(
                             &config, &client,
@@ -93,7 +96,9 @@ pub async fn engine_task(
                         spawn_btw_request(&config, &client, &model, reasoning_effort, question, history, api_base, api_key, &event_tx);
                     }
                     UiCommand::PredictInput { history, model, api_base, api_key } => {
-                        spawn_predict_request(&config, &client, &model, history, api_base, api_key, &event_tx);
+                        predict_cancel.cancel();
+                        predict_cancel = tokio_util::sync::CancellationToken::new();
+                        spawn_predict_request(&config, &client, &model, history, api_base, api_key, &event_tx, predict_cancel.clone());
                     }
                     _ => {} // Steer, Cancel, etc. only relevant during a turn
                 }
@@ -220,6 +225,7 @@ fn spawn_predict_request(
     api_base: Option<String>,
     api_key: Option<String>,
     event_tx: &mpsc::UnboundedSender<EngineEvent>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let provider =
         build_provider_with_overrides(config, client, api_base.as_deref(), api_key.as_deref());
@@ -266,7 +272,6 @@ fn spawn_predict_request(
             },
         ];
 
-        let cancel = tokio_util::sync::CancellationToken::new();
         match tokio::time::timeout(
             std::time::Duration::from_secs(10),
             provider.chat(

@@ -148,6 +148,20 @@ fn reasoning_color(effort: protocol::ReasoningEffort) -> Color {
     }
 }
 
+/// All data needed to show a confirm dialog. Flows unchanged from
+/// `EngineEvent::RequestPermission` through `SessionControl`, `DeferredDialog`,
+/// `ConfirmContext`, and `ConfirmDialog::new`.
+pub struct ConfirmRequest {
+    pub tool_name: String,
+    pub desc: String,
+    pub args: std::collections::HashMap<String, serde_json::Value>,
+    pub approval_pattern: Option<String>,
+    /// Set during dispatch when paths outside the workspace are detected.
+    pub outside_dir: Option<std::path::PathBuf>,
+    pub summary: Option<String>,
+    pub request_id: u64,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum ToolStatus {
     Pending,

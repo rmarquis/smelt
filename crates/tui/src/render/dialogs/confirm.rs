@@ -203,28 +203,20 @@ pub struct ConfirmDialog {
 }
 
 impl ConfirmDialog {
-    pub fn new(
-        tool_name: &str,
-        desc: &str,
-        args: &HashMap<String, serde_json::Value>,
-        approval_pattern: Option<&str>,
-        outside_dir: Option<&str>,
-        summary: Option<&str>,
-        request_id: u64,
-    ) -> Self {
-        let is_plan = tool_name == "exit_plan_mode";
+    pub fn new(req: &crate::render::ConfirmRequest) -> Self {
+        let is_plan = req.tool_name == "exit_plan_mode";
         let mut options: Vec<(String, ConfirmChoice)> = vec![
             ("yes".into(), ConfirmChoice::Yes),
             ("no".into(), ConfirmChoice::No),
         ];
         if !is_plan {
-            if let Some(dir) = outside_dir {
-                // Directory-based approval (second+ time seeing this dir).
+            if let Some(ref dir) = req.outside_dir {
+                let dir_str = dir.to_string_lossy();
                 options.push((
-                    format!("allow {dir}"),
-                    ConfirmChoice::AlwaysDir(dir.to_string()),
+                    format!("allow {dir_str}"),
+                    ConfirmChoice::AlwaysDir(dir_str.into_owned()),
                 ));
-            } else if let Some(pattern) = approval_pattern {
+            } else if let Some(ref pattern) = req.approval_pattern {
                 let display = pattern.strip_suffix("/*").unwrap_or(pattern);
                 let display = display.split("://").nth(1).unwrap_or(display);
                 options.push((
@@ -236,15 +228,15 @@ impl ConfirmDialog {
             }
         }
 
-        let preview = ConfirmPreview::from_tool(tool_name, desc, args);
+        let preview = ConfirmPreview::from_tool(&req.tool_name, &req.desc, &req.args);
 
-        let display_name = if is_plan { "plan" } else { tool_name };
+        let display_name = if is_plan { "plan" } else { &req.tool_name };
 
         Self {
-            tool_name: tool_name.to_string(),
+            tool_name: req.tool_name.clone(),
             display_name: display_name.to_string(),
-            desc: desc.to_string(),
-            summary: summary.map(|s| s.to_string()),
+            desc: req.desc.clone(),
+            summary: req.summary.clone(),
             preview,
             options,
             preview_scroll: 0,
@@ -254,7 +246,7 @@ impl ConfirmDialog {
             anchor_row: None,
             options_row: 0,
             dirty: true,
-            request_id,
+            request_id: req.request_id,
         }
     }
 }

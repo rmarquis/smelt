@@ -312,14 +312,15 @@ impl App {
                 approval_pattern,
                 summary,
                 ..
-            } => SessionControl::NeedsConfirm {
+            } => SessionControl::NeedsConfirm(ConfirmRequest {
                 tool_name,
                 desc: confirm_message,
                 args,
                 approval_pattern,
+                outside_dir: None,
                 summary,
                 request_id,
-            },
+            }),
             EngineEvent::RequestAnswer { request_id, args } => {
                 SessionControl::NeedsAskQuestion { args, request_id }
             }
@@ -694,25 +695,16 @@ impl App {
         match ctrl {
             SessionControl::Continue => LoopAction::Continue,
             SessionControl::Done => LoopAction::Done,
-            SessionControl::NeedsConfirm {
-                tool_name,
-                desc,
-                args,
-                approval_pattern,
-                summary,
-                request_id,
-            } => {
-                let tool_name = if tool_name.is_empty() {
-                    pending.as_ref().map(|p| p.name.clone()).unwrap_or_default()
-                } else {
-                    tool_name
-                };
+            SessionControl::NeedsConfirm(mut req) => {
+                if req.tool_name.is_empty() {
+                    req.tool_name = pending.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                }
 
                 // Check auto-approvals (doesn't need UI).
-                if let Some(patterns) = self.auto_approved.get(&tool_name) {
-                    if patterns.is_empty() || patterns.iter().any(|p| p.matches(&desc)) {
+                if let Some(patterns) = self.auto_approved.get(&req.tool_name) {
+                    if patterns.is_empty() || patterns.iter().any(|p| p.matches(&req.desc)) {
                         self.engine.send(UiCommand::PermissionDecision {
-                            request_id,
+                            request_id: req.request_id,
                             approved: true,
                             message: None,
                         });
@@ -721,7 +713,9 @@ impl App {
                 }
 
                 // Check directory-based auto-approvals (global across tools).
-                let outside_paths = self.permissions.outside_workspace_paths(&tool_name, &args);
+                let outside_paths = self
+                    .permissions
+                    .outside_workspace_paths(&req.tool_name, &req.args);
                 if !outside_paths.is_empty()
                     && outside_paths.iter().all(|p| {
                         let dir = std::path::Path::new(p)
@@ -731,38 +725,26 @@ impl App {
                     })
                 {
                     self.engine.send(UiCommand::PermissionDecision {
-                        request_id,
+                        request_id: req.request_id,
                         approved: true,
                         message: None,
                     });
                     return LoopAction::Continue;
                 }
 
-                // For commands with paths outside the workspace, decide
-                // whether to offer command-based or directory-based "always
-                // allow".
-                //
-                // If the command was downgraded (base=Allow, demoted to Ask
-                // purely because of the path), always offer the directory
-                // option — the command itself is already trusted.
-                //
-                // If the command is genuinely Ask (e.g. rm), the first time
-                // show "always allow" (command), the second time show the
-                // directory option.
-                let downgraded = self
-                    .permissions
-                    .was_downgraded(self.mode, &tool_name, &args);
-                let outside_dir_option = if !outside_paths.is_empty() {
+                // Determine the outside-dir option for the "always allow" button.
+                let downgraded =
+                    self.permissions
+                        .was_downgraded(self.mode, &req.tool_name, &req.args);
+                req.outside_dir = if !outside_paths.is_empty() {
                     let dir = std::path::Path::new(&outside_paths[0])
                         .parent()
                         .unwrap_or(std::path::Path::new(&outside_paths[0]))
                         .to_path_buf();
                     if downgraded || self.seen_outside_dirs.contains(&dir) {
-                        // Downgraded command or second+ encounter: directory option.
                         self.seen_outside_dirs.insert(dir.clone());
                         Some(dir)
                     } else {
-                        // First time for a genuinely-Ask command: command option.
                         self.seen_outside_dirs.insert(dir);
                         None
                     }
@@ -776,15 +758,7 @@ impl App {
                 if recently_typed && !self.input.buf.is_empty() {
                     self.screen.set_active_status(ToolStatus::Confirm);
                     self.screen.set_pending_dialog(true);
-                    *deferred_dialog = Some(DeferredDialog::Confirm {
-                        tool_name,
-                        desc,
-                        args,
-                        approval_pattern,
-                        outside_dir: outside_dir_option,
-                        summary,
-                        request_id,
-                    });
+                    *deferred_dialog = Some(DeferredDialog::Confirm(req));
                     return LoopAction::Continue;
                 }
 
@@ -793,23 +767,12 @@ impl App {
                     self.screen.clear_dialog_area(prev.anchor_row());
                 }
                 self.confirm_context = Some(ConfirmContext {
-                    tool_name: tool_name.clone(),
-                    args: args.clone(),
-                    request_id,
+                    tool_name: req.tool_name.clone(),
+                    args: req.args.clone(),
+                    request_id: req.request_id,
                 });
                 self.screen.set_active_status(ToolStatus::Confirm);
-                let dialog = Box::new(ConfirmDialog::new(
-                    &tool_name,
-                    &desc,
-                    &args,
-                    approval_pattern.as_deref(),
-                    outside_dir_option
-                        .as_ref()
-                        .map(|d| d.to_string_lossy().into_owned())
-                        .as_deref(),
-                    summary.as_deref(),
-                    request_id,
-                ));
+                let dialog = Box::new(ConfirmDialog::new(&req));
                 self.open_blocking_dialog(dialog, active_dialog);
                 LoopAction::Continue
             }
