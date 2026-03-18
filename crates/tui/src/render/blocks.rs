@@ -63,7 +63,8 @@ pub(super) fn gap_between(above: &Element, below: &Element) -> u16 {
 pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> u16 {
     let _perf = crate::perf::begin("render_block");
     match block {
-        Block::User { text } => {
+        Block::User { text, image_labels } => {
+            let is_command = crate::completer::Completer::is_command(text.trim());
             // Each rendered row is: " " (1-char prefix) + content + trailing padding.
             // `text_w` is the max content chars per row so the total never reaches
             // the terminal width (which would cause an implicit wrap).
@@ -75,7 +76,10 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
                 .iter()
                 .rposition(|l| !l.is_empty())
                 .map_or(0, |i| i + 1);
-            let logical_lines: Vec<String> = all_lines[start..end].to_vec();
+            let logical_lines: Vec<String> = all_lines[start..end]
+                .iter()
+                .map(|l| l.trim_end().to_string())
+                .collect();
             let wraps = logical_lines.iter().any(|l| l.chars().count() > text_w);
             let multiline = logical_lines.len() > 1 || wraps;
             // For multi-line messages, pad all rows to the same width.
@@ -98,11 +102,10 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
             for logical_line in &logical_lines {
                 if logical_line.is_empty() {
                     let fill = if block_w > 0 { block_w + 1 } else { 2 };
-                    let _ = out
-                        .queue(SetBackgroundColor(theme::USER_BG))
-                        .and_then(|o| o.queue(Print(" ".repeat(fill))))
-                        .and_then(|o| o.queue(SetAttribute(Attribute::Reset)))
-                        .and_then(|o| o.queue(ResetColor));
+                    let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                    let _ = out.queue(Print(" ".repeat(fill)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                    let _ = out.queue(ResetColor);
                     crlf(out);
                     rows += 1;
                     continue;
@@ -115,12 +118,13 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
                     } else {
                         1
                     };
-                    let _ = out
-                        .queue(SetBackgroundColor(theme::USER_BG))
-                        .and_then(|o| o.queue(SetAttribute(Attribute::Bold)))
-                        .and_then(|o| o.queue(Print(format!(" {}{}", chunk, " ".repeat(trailing)))))
-                        .and_then(|o| o.queue(SetAttribute(Attribute::Reset)))
-                        .and_then(|o| o.queue(ResetColor));
+                    let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                    let _ = out.queue(SetAttribute(Attribute::Bold));
+                    let _ = out.queue(Print(" "));
+                    print_user_highlights(out, chunk, image_labels, is_command);
+                    let _ = out.queue(Print(" ".repeat(trailing)));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                    let _ = out.queue(ResetColor);
                     crlf(out);
                     rows += 1;
                 }
@@ -806,6 +810,67 @@ pub(crate) fn print_styled_dim(out: &mut RenderOut, text: &str, dim: bool) {
     }
 }
 
+/// Print user message text with accent highlighting for valid `@path` refs,
+/// `/command` lines, and `[image]` attachment labels.
+pub(super) fn print_user_highlights(
+    out: &mut RenderOut,
+    text: &str,
+    image_labels: &[String],
+    is_command: bool,
+) {
+    // Slash commands: accent the entire text, same as the prompt.
+    if is_command {
+        let _ = out.queue(SetForegroundColor(theme::accent()));
+        let _ = out.queue(Print(text));
+        let _ = out.queue(SetForegroundColor(Color::Reset));
+        return;
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut plain = String::new();
+
+    let flush = |out: &mut RenderOut, plain: &mut String| {
+        if !plain.is_empty() {
+            let _ = out.queue(Print(std::mem::take(plain)));
+        }
+    };
+
+    let accent = |out: &mut RenderOut, token: String| {
+        let _ = out.queue(SetForegroundColor(theme::accent()));
+        let _ = out.queue(Print(token));
+        let _ = out.queue(SetForegroundColor(Color::Reset));
+    };
+
+    while i < len {
+        // Image attachment labels like [screenshot.png].
+        if chars[i] == '[' {
+            let remaining: String = chars[i..].iter().collect();
+            if let Some(label) = image_labels
+                .iter()
+                .find(|l| remaining.starts_with(l.as_str()))
+            {
+                flush(out, &mut plain);
+                accent(out, label.clone());
+                i += label.chars().count();
+                continue;
+            }
+        }
+
+        // @path references validated against the filesystem.
+        if let Some((token, end)) = super::try_at_ref(&chars, i) {
+            flush(out, &mut plain);
+            accent(out, token);
+            i = end;
+        } else {
+            plain.push(chars[i]);
+            i += 1;
+        }
+    }
+    flush(out, &mut plain);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +886,7 @@ mod tests {
     fn user(s: &str) -> Block {
         Block::User {
             text: s.to_string(),
+            image_labels: vec![],
         }
     }
 

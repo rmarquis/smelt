@@ -168,6 +168,9 @@ pub struct ResumeEntry {
 pub enum Block {
     User {
         text: String,
+        /// Bracketed labels for image attachments (e.g. `[screenshot.png]`).
+        /// Used to accent-highlight them in the rendered message.
+        image_labels: Vec<String>,
     },
     Thinking {
         content: String,
@@ -846,7 +849,7 @@ impl Screen {
             .iter()
             .enumerate()
             .filter_map(|(i, b)| {
-                if let Block::User { text } = b {
+                if let Block::User { text, .. } = b {
                     Some((i, text.clone()))
                 } else {
                     None
@@ -1385,6 +1388,7 @@ fn render_queued(out: &mut RenderOut, queued: &[String], usable: usize) -> u16 {
     let text_w = usable.saturating_sub(indent + 1).max(1);
     let mut rows = 0u16;
     for msg in queued {
+        let is_command = crate::completer::Completer::is_command(msg.trim());
         let all_lines: Vec<String> = msg.lines().map(|l| l.replace('\t', "    ")).collect();
         let wraps = all_lines.iter().any(|l| l.chars().count() > text_w);
         let multiline = all_lines.len() > 1 || wraps;
@@ -1406,11 +1410,10 @@ fn render_queued(out: &mut RenderOut, queued: &[String], usable: usize) -> u16 {
             if line.is_empty() {
                 let fill = if block_w > 0 { block_w + 1 } else { 2 };
                 let _ = out.queue(Print(" ".repeat(indent)));
-                let _ = out
-                    .queue(SetBackgroundColor(theme::USER_BG))
-                    .and_then(|o| o.queue(Print(" ".repeat(fill))))
-                    .and_then(|o| o.queue(SetAttribute(Attribute::Reset)))
-                    .and_then(|o| o.queue(ResetColor));
+                let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                let _ = out.queue(Print(" ".repeat(fill)));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                let _ = out.queue(ResetColor);
                 crlf(out);
                 rows += 1;
                 continue;
@@ -1424,12 +1427,13 @@ fn render_queued(out: &mut RenderOut, queued: &[String], usable: usize) -> u16 {
                     1
                 };
                 let _ = out.queue(Print(" ".repeat(indent)));
-                let _ = out
-                    .queue(SetBackgroundColor(theme::USER_BG))
-                    .and_then(|o| o.queue(SetAttribute(Attribute::Bold)))
-                    .and_then(|o| o.queue(Print(format!(" {}{}", chunk, " ".repeat(trailing)))))
-                    .and_then(|o| o.queue(SetAttribute(Attribute::Reset)))
-                    .and_then(|o| o.queue(ResetColor));
+                let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                let _ = out.queue(SetAttribute(Attribute::Bold));
+                let _ = out.queue(Print(" "));
+                blocks::print_user_highlights(out, chunk, &[], is_command);
+                let _ = out.queue(Print(" ".repeat(trailing)));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                let _ = out.queue(ResetColor);
                 crlf(out);
                 rows += 1;
             }
@@ -1833,6 +1837,32 @@ fn build_char_kinds(spans: &[Span]) -> Vec<SpanKind> {
     kinds
 }
 
+/// Check if position `i` in `chars` starts a valid `@path` reference.
+/// Returns `Some((token, end_index))` if the path after `@` exists on disk.
+pub(super) fn try_at_ref(chars: &[char], i: usize) -> Option<(String, usize)> {
+    if chars[i] != '@' {
+        return None;
+    }
+    let at_start = i == 0 || chars[i - 1].is_whitespace();
+    if !at_start {
+        return None;
+    }
+    let mut end = i + 1;
+    while end < chars.len() && !chars[end].is_whitespace() {
+        end += 1;
+    }
+    if end <= i + 1 {
+        return None;
+    }
+    let token: String = chars[i..end].iter().collect();
+    let path_str = &token[1..];
+    if std::path::Path::new(path_str).exists() {
+        Some((token, end))
+    } else {
+        None
+    }
+}
+
 fn build_display_spans(buf: &str, attachments: &[Attachment]) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut plain = String::new();
@@ -1852,33 +1882,24 @@ fn build_display_spans(buf: &str, attachments: &[Attachment]) -> Vec<Span> {
             spans.push(Span::Attachment(label));
             att_idx += 1;
             i += 1;
-        } else if chars[i] == '@' {
-            let at_start = i == 0 || chars[i - 1].is_whitespace();
-            if at_start {
-                if !plain.is_empty() {
-                    spans.push(Span::Plain(std::mem::take(&mut plain)));
-                }
-                let mut end = i + 1;
-                while end < chars.len() && !chars[end].is_whitespace() {
-                    end += 1;
-                }
-                if end > i + 1 {
-                    let token: String = chars[i..end].iter().collect();
-                    let path_str = &token[1..];
-                    if std::path::Path::new(path_str).exists() {
-                        spans.push(Span::AtRef(token));
-                    } else {
-                        spans.push(Span::Plain(token));
-                    }
-                    i = end;
-                } else {
-                    spans.push(Span::Plain("@".to_string()));
-                    i += 1;
-                }
-            } else {
-                plain.push(chars[i]);
-                i += 1;
+        } else if let Some((token, end)) = try_at_ref(&chars, i) {
+            if !plain.is_empty() {
+                spans.push(Span::Plain(std::mem::take(&mut plain)));
             }
+            spans.push(Span::AtRef(token));
+            i = end;
+        } else if chars[i] == '@' && (i == 0 || chars[i - 1].is_whitespace()) {
+            // @ at word start but not a valid path — consume the whole token as plain.
+            if !plain.is_empty() {
+                spans.push(Span::Plain(std::mem::take(&mut plain)));
+            }
+            let mut end = i + 1;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            let token: String = chars[i..end].iter().collect();
+            spans.push(Span::Plain(token));
+            i = end;
         } else {
             plain.push(chars[i]);
             i += 1;

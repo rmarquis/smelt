@@ -175,6 +175,7 @@ impl App {
                     if let Some(ref content) = msg.content {
                         self.screen.push(Block::User {
                             text: content.text_content(),
+                            image_labels: vec![],
                         });
                     }
                 }
@@ -187,9 +188,11 @@ impl App {
                         }
                     }
                     if let Some(ref content) = msg.content {
-                        if !content.is_empty() {
+                        let text = content.text_content();
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
                             self.screen.push(Block::Text {
-                                content: content.text_content(),
+                                content: trimmed.to_string(),
                             });
                         }
                     }
@@ -229,9 +232,12 @@ impl App {
                         if let Some(summary) =
                             text.strip_prefix("Summary of prior conversation:\n\n")
                         {
-                            self.screen.push(Block::Text {
-                                content: summary.to_string(),
-                            });
+                            let trimmed = summary.trim();
+                            if !trimmed.is_empty() {
+                                self.screen.push(Block::Text {
+                                    content: trimmed.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -390,9 +396,10 @@ impl App {
 
     // ── Agent internals ──────────────────────────────────────────────────
 
-    pub fn show_user_message(&mut self, input: &str) {
+    pub fn show_user_message(&mut self, input: &str, image_labels: Vec<String>) {
         self.screen.push(Block::User {
             text: input.to_string(),
+            image_labels,
         });
     }
 }

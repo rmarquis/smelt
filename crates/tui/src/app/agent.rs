@@ -5,7 +5,7 @@ impl App {
 
     pub(super) fn begin_agent_turn(&mut self, display: &str, content: Content) -> TurnState {
         self.screen.begin_turn();
-        self.show_user_message(display);
+        self.show_user_message(display, content.image_labels());
         let text = content.text_content();
         if self.session.first_user_message.is_none() {
             self.session.first_user_message = Some(text.clone());
@@ -133,7 +133,7 @@ impl App {
         };
 
         self.screen.begin_turn();
-        self.show_user_message(&display);
+        self.show_user_message(&display, vec![]);
         if self.session.first_user_message.is_none() {
             self.session.first_user_message = Some(display.clone());
         }
@@ -242,7 +242,10 @@ impl App {
                 *steered_count = steered_count.saturating_sub(drain_n);
                 // Only render if the message is still queued (not unqueued by Esc).
                 if drain_n > 0 {
-                    self.screen.push(Block::User { text });
+                    self.screen.push(Block::User {
+                        text,
+                        image_labels: vec![],
+                    });
                 }
                 SessionControl::Continue
             }

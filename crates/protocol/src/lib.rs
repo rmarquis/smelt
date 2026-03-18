@@ -110,6 +110,21 @@ impl Content {
         }
     }
 
+    pub fn image_labels(&self) -> Vec<String> {
+        match self {
+            Content::Text(_) => vec![],
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::ImageUrl { label, .. } => {
+                        Some(format!("[{}]", label.as_deref().unwrap_or("image")))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
     pub fn image_count(&self) -> usize {
         match self {
             Content::Text(_) => 0,
