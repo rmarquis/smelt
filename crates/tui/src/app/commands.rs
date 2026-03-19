@@ -25,13 +25,9 @@ impl App {
                     self.screen.notify_error("no saved sessions".into());
                     CommandAction::Continue
                 } else {
-                    let cwd = std::env::current_dir()
-                        .ok()
-                        .and_then(|p| p.to_str().map(String::from))
-                        .unwrap_or_default();
                     CommandAction::OpenDialog(Box::new(render::ResumeDialog::new(
                         entries,
-                        cwd,
+                        self.cwd.clone(),
                         Some(terminal::size().map(|(_, h)| h / 2).unwrap_or(12)),
                     )))
                 }
@@ -284,7 +280,7 @@ impl App {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort,
             api_base: Some(self.api_base.clone()),
-            api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
+            api_key: Some(self.api_key()),
         });
     }
 

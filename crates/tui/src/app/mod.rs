@@ -776,7 +776,7 @@ impl App {
             reasoning_effort: self.reasoning_effort,
             history: self.history.clone(),
             api_base: Some(self.api_base.clone()),
-            api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
+            api_key: Some(self.api_key()),
             session_id: self.session.id.clone(),
             model_config_overrides: None,
             permission_overrides: None,

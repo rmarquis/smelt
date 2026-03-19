@@ -25,7 +25,7 @@ impl App {
             reasoning_effort: self.reasoning_effort,
             history: self.history.clone(),
             api_base: Some(self.api_base.clone()),
-            api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
+            api_key: Some(self.api_key()),
             session_id: self.session.id.clone(),
             model_config_overrides: None,
             permission_overrides: None,
@@ -47,34 +47,27 @@ impl App {
         let display = format!("/{}", cmd.name);
 
         // Resolve model/provider overrides
-        let (model, api_base, api_key) = if cmd.overrides.model.is_some()
-            || cmd.overrides.provider.is_some()
-        {
+        let (model, api_base, api_key) = {
             let target_model = cmd.overrides.model.as_deref();
             let target_provider = cmd.overrides.provider.as_deref();
-            if let Some(resolved) = self.available_models.iter().find(|m| {
-                let model_match = target_model.is_none_or(|tm| m.model_name == tm || m.key == tm);
-                let prov_match = target_provider.is_none_or(|tp| m.provider_name == tp);
-                model_match && prov_match
-            }) {
-                (
-                    resolved.model_name.clone(),
-                    resolved.api_base.clone(),
-                    std::env::var(&resolved.api_key_env).unwrap_or_default(),
-                )
-            } else {
-                (
-                    self.model.clone(),
-                    self.api_base.clone(),
-                    std::env::var(&self.api_key_env).unwrap_or_default(),
-                )
+            let resolved = (target_model.is_some() || target_provider.is_some())
+                .then(|| {
+                    self.available_models.iter().find(|m| {
+                        let model_match =
+                            target_model.is_none_or(|tm| m.model_name == tm || m.key == tm);
+                        let prov_match = target_provider.is_none_or(|tp| m.provider_name == tp);
+                        model_match && prov_match
+                    })
+                })
+                .flatten();
+            match resolved {
+                Some(r) => (
+                    r.model_name.clone(),
+                    r.api_base.clone(),
+                    std::env::var(&r.api_key_env).unwrap_or_default(),
+                ),
+                None => (self.model.clone(), self.api_base.clone(), self.api_key()),
             }
-        } else {
-            (
-                self.model.clone(),
-                self.api_base.clone(),
-                std::env::var(&self.api_key_env).unwrap_or_default(),
-            )
         };
 
         let reasoning = cmd
@@ -221,7 +214,7 @@ impl App {
                         history: context,
                         model: self.model.clone(),
                         api_base: Some(self.api_base.clone()),
-                        api_key: Some(std::env::var(&self.api_key_env).unwrap_or_default()),
+                        api_key: Some(self.api_key()),
                     });
                 }
             }
@@ -348,14 +341,7 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::ProcessCompleted { id, exit_code } => {
-                let msg = match exit_code {
-                    Some(0) => format!("Background process {id} has finished."),
-                    Some(c) => format!("Background process {id} exited with code {c}."),
-                    None => format!("Background process {id} exited."),
-                };
-                self.screen.push(Block::Text { content: msg });
-                self.screen
-                    .set_running_procs(self.engine.processes.running_count());
+                self.handle_process_completed(id, exit_code);
                 SessionControl::Continue
             }
             EngineEvent::CompactionComplete { messages } => {
@@ -367,11 +353,7 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::TitleGenerated { title, slug } => {
-                self.session.title = Some(title);
-                self.session.slug = Some(slug.clone());
-                self.screen.set_task_label(slug);
-                self.pending_title = false;
-                self.save_session();
+                self.handle_title_generated(title, slug);
                 SessionControl::Continue
             }
             EngineEvent::BtwResponse { content } => {
@@ -379,11 +361,7 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::InputPrediction { text } => {
-                // Only accept if the user hasn't started typing.
-                if self.input.buf.is_empty() {
-                    self.input_prediction = Some(text);
-                    self.screen.mark_dirty();
-                }
+                self.handle_input_prediction(text);
                 SessionControl::Continue
             }
             EngineEvent::Messages {
@@ -438,30 +416,16 @@ impl App {
                 self.apply_compaction(messages);
             }
             EngineEvent::TitleGenerated { title, slug } => {
-                self.session.title = Some(title);
-                self.session.slug = Some(slug.clone());
-                self.screen.set_task_label(slug);
-                self.pending_title = false;
-                self.save_session();
+                self.handle_title_generated(title, slug);
             }
             EngineEvent::BtwResponse { content } => {
                 self.screen.set_btw_response(content);
             }
             EngineEvent::InputPrediction { text } => {
-                if self.input.buf.is_empty() {
-                    self.input_prediction = Some(text);
-                    self.screen.mark_dirty();
-                }
+                self.handle_input_prediction(text);
             }
             EngineEvent::ProcessCompleted { id, exit_code } => {
-                let msg = match exit_code {
-                    Some(0) => format!("Background process {id} has finished."),
-                    Some(c) => format!("Background process {id} exited with code {c}."),
-                    None => format!("Background process {id} exited."),
-                };
-                self.screen.push(Block::Text { content: msg });
-                self.screen
-                    .set_running_procs(self.engine.processes.running_count());
+                self.handle_process_completed(id, exit_code);
             }
             EngineEvent::TurnError { message } => {
                 self.screen.set_throbber(render::Throbber::Done);
@@ -470,6 +434,36 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_title_generated(&mut self, title: String, slug: String) {
+        self.session.title = Some(title);
+        self.session.slug = Some(slug.clone());
+        self.screen.set_task_label(slug);
+        self.pending_title = false;
+        self.save_session();
+    }
+
+    fn handle_input_prediction(&mut self, text: String) {
+        if self.input.buf.is_empty() {
+            self.input_prediction = Some(text);
+            self.screen.mark_dirty();
+        }
+    }
+
+    pub(super) fn api_key(&self) -> String {
+        std::env::var(&self.api_key_env).unwrap_or_default()
+    }
+
+    fn handle_process_completed(&mut self, id: String, exit_code: Option<i32>) {
+        let msg = match exit_code {
+            Some(0) => format!("Background process {id} has finished."),
+            Some(c) => format!("Background process {id} exited with code {c}."),
+            None => format!("Background process {id} exited."),
+        };
+        self.screen.push(Block::Text { content: msg });
+        self.screen
+            .set_running_procs(self.engine.processes.running_count());
     }
 
     // ── Dialog resolution ────────────────────────────────────────────────

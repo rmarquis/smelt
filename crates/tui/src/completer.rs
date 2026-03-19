@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::process::Command;
 
+#[derive(Clone)]
 pub struct CompletionItem {
     pub label: String,
     pub description: Option<String>,
@@ -49,9 +50,10 @@ impl Completer {
 
     pub fn is_command(s: &str) -> bool {
         let base = s.split_whitespace().next().unwrap_or(s);
+        let slash_name = base.strip_prefix('/').unwrap_or("");
         Self::command_items()
             .iter()
-            .any(|(label, _)| base == format!("/{}", label))
+            .any(|(label, _)| *label == slash_name)
             || crate::custom_commands::resolve(s).is_some()
     }
 
@@ -76,8 +78,8 @@ impl Completer {
         }
     }
 
-    fn command_items() -> Vec<(&'static str, &'static str)> {
-        vec![
+    fn command_items() -> &'static [(&'static str, &'static str)] {
+        &[
             ("clear", "start new conversation"),
             ("new", "start new conversation"),
             ("resume", "resume saved session"),
@@ -100,8 +102,8 @@ impl Completer {
 
     pub fn commands(anchor: usize) -> Self {
         let mut all_items: Vec<CompletionItem> = Self::command_items()
-            .into_iter()
-            .map(|(label, desc)| CompletionItem {
+            .iter()
+            .map(|&(label, desc)| CompletionItem {
                 label: label.into(),
                 description: Some(desc.into()),
             })
@@ -200,14 +202,6 @@ impl Completer {
     }
 }
 
-impl Clone for CompletionItem {
-    fn clone(&self) -> Self {
-        Self {
-            label: self.label.clone(),
-            description: self.description.clone(),
-        }
-    }
-}
 
 /// Get tracked + untracked (but not ignored) files and directories via git.
 /// Falls back to a filesystem walk when not inside a git repository.

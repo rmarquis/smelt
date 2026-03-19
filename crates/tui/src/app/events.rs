@@ -18,11 +18,7 @@ impl App {
         if active_dialog.is_some() {
             // Terminal resize: full clear + redraw screen + redraw dialog.
             if let Event::Resize(w, h) = ev {
-                if w != self.last_width || h != self.last_height {
-                    self.last_width = w;
-                    self.last_height = h;
-                    self.screen.redraw(true);
-                }
+                self.handle_resize(w, h);
                 active_dialog.as_mut().unwrap().handle_resize();
                 return false;
             }
@@ -245,13 +241,8 @@ impl App {
     // ── Idle event handler ───────────────────────────────────────────────
 
     fn handle_event_idle(&mut self, ev: Event, t: &mut Timers) -> EventOutcome {
-        // Resize
         if let Event::Resize(w, h) = ev {
-            if w != self.last_width || h != self.last_height {
-                self.last_width = w;
-                self.last_height = h;
-                self.screen.redraw(true);
-            }
+            self.handle_resize(w, h);
             return EventOutcome::Noop;
         }
 
@@ -436,12 +427,7 @@ impl App {
                 width: w,
                 height: h,
             } => {
-                let (w16, h16) = (w as u16, h as u16);
-                if w16 != self.last_width || h16 != self.last_height {
-                    self.last_width = w16;
-                    self.last_height = h16;
-                    self.screen.redraw(true);
-                }
+                self.handle_resize(w as u16, h as u16);
                 EventOutcome::Noop
             }
             Action::Redraw => {
@@ -473,13 +459,8 @@ impl App {
     // ── Running event handler ────────────────────────────────────────────
 
     fn handle_event_running(&mut self, ev: Event, t: &mut Timers) -> EventOutcome {
-        // Resize
         if let Event::Resize(w, h) = ev {
-            if w != self.last_width || h != self.last_height {
-                self.last_width = w;
-                self.last_height = h;
-                self.screen.redraw(true);
-            }
+            self.handle_resize(w, h);
             return EventOutcome::Noop;
         }
 
@@ -612,6 +593,14 @@ impl App {
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────
+
+    fn handle_resize(&mut self, w: u16, h: u16) {
+        if w != self.last_width || h != self.last_height {
+            self.last_width = w;
+            self.last_height = h;
+            self.screen.redraw(true);
+        }
+    }
 
     /// Handle overlay keys (notification dismiss + btw scroll/dismiss).
     /// Returns `Some(EventOutcome)` if the event was consumed.

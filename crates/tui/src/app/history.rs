@@ -98,13 +98,9 @@ impl App {
             return;
         }
 
-        let cwd = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(String::from))
-            .unwrap_or_default();
         let mut dialog = render::ResumeDialog::new(
             entries,
-            cwd,
+            self.cwd.clone(),
             Some(terminal::size().map(|(_, h)| h / 2).unwrap_or(12)),
         );
         terminal::enable_raw_mode().ok();
@@ -320,13 +316,9 @@ impl App {
             return;
         }
         // Send last 5 user messages for title generation (recency-weighted).
+        let start = user_messages.len().saturating_sub(5);
         let recent: Vec<String> = user_messages
-            .into_iter()
-            .rev()
-            .take(5)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
+            .drain(start..)
             .map(|s| {
                 if s.len() > 500 {
                     s[..s.floor_char_boundary(500)].to_string()
@@ -361,7 +353,10 @@ impl App {
     pub(super) fn apply_compaction(&mut self, messages: Vec<protocol::Message>) {
         // The first message is the summary; the rest are kept turns already
         // in history. Just append the summary as a regular history entry.
-        let marker = messages.into_iter().next().unwrap();
+        let Some(marker) = messages.into_iter().next() else {
+            self.screen.set_throbber(render::Throbber::Done);
+            return;
+        };
 
         let summary = marker
             .content
