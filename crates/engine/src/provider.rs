@@ -1,7 +1,7 @@
 use crate::cancel::CancellationToken;
 use crate::log;
 use crate::tools::trim_tool_output;
-use protocol::{Content, Message, ReasoningEffort, Role, ToolCall};
+use protocol::{Content, FunctionCall, Message, ReasoningEffort, Role, ToolCall};
 use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -282,17 +282,32 @@ impl Provider {
                 .ok_or_else(|| ProviderError::InvalidResponse("no choices in response".into()))?;
             let msg = &choice["message"];
 
-            let content = msg["content"].as_str().map(|s| s.to_string());
-            let reasoning_content = msg["reasoning_content"]
+            let mut content = msg["content"].as_str().map(|s| s.to_string());
+            let mut reasoning_content = msg["reasoning_content"]
                 .as_str()
                 .or_else(|| msg["reasoning"].as_str())
                 .map(|s| s.to_string());
 
-            let tool_calls: Vec<ToolCall> = if let Some(tcs) = msg.get("tool_calls") {
+            let mut tool_calls: Vec<ToolCall> = if let Some(tcs) = msg.get("tool_calls") {
                 serde_json::from_value(tcs.clone()).unwrap_or_default()
             } else {
                 vec![]
             };
+
+            // Fallback: some backends (vLLM with reasoning+tool calling) may
+            // place <tool_call> markup inside `content` or `reasoning_content`
+            // instead of populating `tool_calls`. Extract them client-side.
+            if tool_calls.is_empty() {
+                let (from_content, cleaned_content) =
+                    extract_tool_calls_from_text(content.as_deref());
+                let (from_reasoning, cleaned_reasoning) =
+                    extract_tool_calls_from_text(reasoning_content.as_deref());
+                if !from_content.is_empty() || !from_reasoning.is_empty() {
+                    tool_calls = from_content.into_iter().chain(from_reasoning).collect();
+                    content = cleaned_content;
+                    reasoning_content = cleaned_reasoning;
+                }
+            }
 
             let prompt_tokens = data["usage"]["prompt_tokens"].as_u64().map(|n| n as u32);
             let completion_tokens = data["usage"]["completion_tokens"]
@@ -593,4 +608,144 @@ fn normalize_short(raw: &str) -> String {
         t = t.trim().to_string();
     }
     t
+}
+
+/// Extract `<tool_call>...</tool_call>` blocks from raw text.
+///
+/// Some backends (vLLM with reasoning + tool calling) place tool call markup
+/// inside `content` or `reasoning_content` instead of the `tool_calls` field.
+/// Following Ollama's approach (PR #14477), we treat `<tool_call>` as an
+/// implicit end of any thinking block and parse the tool calls ourselves.
+///
+/// Returns the parsed tool calls and the cleaned text (with tool call blocks
+/// removed). If the cleaned text is empty/whitespace, returns `None`.
+fn extract_tool_calls_from_text(text: Option<&str>) -> (Vec<ToolCall>, Option<String>) {
+    let Some(text) = text else {
+        return (vec![], None);
+    };
+
+    let mut calls = Vec::new();
+    let mut cleaned = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut idx = 0;
+
+    while let Some(open) = rest.find("<tool_call>") {
+        cleaned.push_str(&rest[..open]);
+        let after_open = &rest[open + "<tool_call>".len()..];
+
+        if let Some(close) = after_open.find("</tool_call>") {
+            let raw = after_open[..close].trim();
+            if let Some(tc) = parse_tool_call_json(raw, &mut idx) {
+                calls.push(tc);
+            }
+            rest = &after_open[close + "</tool_call>".len()..];
+        } else {
+            // Unclosed tag — try to parse the remainder as a tool call anyway
+            let raw = after_open.trim();
+            if let Some(tc) = parse_tool_call_json(raw, &mut idx) {
+                calls.push(tc);
+            }
+            rest = "";
+            break;
+        }
+    }
+    cleaned.push_str(rest);
+
+    // Also strip any orphaned </think> that may follow extracted tool calls
+    let cleaned = cleaned.trim().to_string();
+    let cleaned = if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    };
+
+    (calls, cleaned)
+}
+
+/// Parse a JSON tool call body: `{"name": "...", "arguments": {...}}`
+fn parse_tool_call_json(raw: &str, idx: &mut usize) -> Option<ToolCall> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let name = v["name"].as_str()?;
+    let arguments = match &v["arguments"] {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let id = format!("fallback-{idx}");
+    *idx += 1;
+    Some(ToolCall::new(
+        id,
+        FunctionCall {
+            name: name.to_string(),
+            arguments,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_tool_calls_from_content() {
+        let text = r#"Let me search for that.
+<tool_call>
+{"name": "search", "arguments": {"query": "rust async"}}
+</tool_call>"#;
+
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "search");
+        assert_eq!(calls[0].function.arguments, r#"{"query":"rust async"}"#);
+        assert_eq!(cleaned.unwrap(), "Let me search for that.");
+    }
+
+    #[test]
+    fn extract_tool_calls_from_reasoning() {
+        let text = r#"I need to call the tool
+<tool_call>
+{"name": "bash", "arguments": {"command": "ls"}}
+</tool_call>
+</think>"#;
+
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "bash");
+        // Remaining </think> is kept as cleaned text
+        assert_eq!(cleaned.unwrap(), "I need to call the tool\n\n</think>");
+    }
+
+    #[test]
+    fn extract_multiple_tool_calls() {
+        let text = r#"<tool_call>
+{"name": "read", "arguments": {"path": "a.rs"}}
+</tool_call>
+<tool_call>
+{"name": "read", "arguments": {"path": "b.rs"}}
+</tool_call>"#;
+
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].function.name, "read");
+        assert_eq!(calls[1].function.name, "read");
+        assert_eq!(calls[0].id, "fallback-0");
+        assert_eq!(calls[1].id, "fallback-1");
+        // Only whitespace remains
+        assert!(cleaned.is_none() || cleaned.as_deref() == Some(""));
+    }
+
+    #[test]
+    fn no_tool_calls_passthrough() {
+        let text = "Just regular content";
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert!(calls.is_empty());
+        assert_eq!(cleaned.unwrap(), "Just regular content");
+    }
+
+    #[test]
+    fn none_input() {
+        let (calls, cleaned) = extract_tool_calls_from_text(None);
+        assert!(calls.is_empty());
+        assert!(cleaned.is_none());
+    }
 }

@@ -500,6 +500,16 @@ pub struct ToolCall {
     pub function: FunctionCall,
 }
 
+impl ToolCall {
+    pub fn new(id: String, function: FunctionCall) -> Self {
+        Self {
+            id,
+            call_type: AlwaysFunction,
+            function,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
