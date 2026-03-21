@@ -287,7 +287,7 @@ commands. Each `.md` file becomes a `/command` you can invoke from the TUI.
 
 **Example** — `~/.config/agent/commands/commit.md`:
 
-````markdown
+```markdown
 ---
 description: commit staged changes
 model: gpt-4o
@@ -301,16 +301,12 @@ Create a conventional commit for the staged changes.
 
 Staged diff:
 
-```!
-git diff --cached
-```
+!`git diff --cached`
 
 Recent commits for style reference:
 
-```!
-git log --oneline -5
+!`git log --oneline -5`
 ```
-````
 
 Type `/commit` and the agent receives the evaluated prompt with command outputs
 inlined, while the chat only shows `/commit`.
@@ -332,9 +328,9 @@ inlined, while the chat only shows `/commit`.
 | `bash`             | `allow`/`ask`/`deny` glob patterns for bash       |
 | `web_fetch`        | `allow`/`ask`/`deny` glob patterns for URLs       |
 
-**Executable code blocks**: fenced blocks starting with ` ```! ` are executed
-via `sh -c` before sending. The block is replaced with the command output
-wrapped in a regular code block.
+**Shell execution**: use `` !`command` `` inline or ` ```! ` fenced code blocks
+to execute shell commands before sending. The output replaces the command in the
+template. Escape with `\` to prevent execution.
 
 ## Custom Instructions
 

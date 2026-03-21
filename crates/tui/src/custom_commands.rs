@@ -122,8 +122,10 @@ fn parse_frontmatter(content: &str) -> (CommandOverrides, &str) {
     }
 }
 
-/// Evaluate `!`-prefixed fenced code blocks by executing them and replacing
-/// with a regular code block containing the output.
+/// Evaluate executable blocks in custom command bodies:
+/// - Fenced code blocks starting with `` ```! `` are executed and replaced
+///   with a regular code block containing the output.
+/// - Inline `` !`command` `` is executed and replaced with the output.
 pub fn evaluate(body: &str) -> String {
     let mut result = String::with_capacity(body.len());
     let mut lines = body.lines().peekable();
@@ -141,29 +143,12 @@ pub fn evaluate(body: &str) -> String {
                 }
                 script.push_str(inner);
             }
-            // Execute
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&script)
-                .output()
-                .map(|o| {
-                    let mut s = String::from_utf8_lossy(&o.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    if !stderr.is_empty() {
-                        if !s.is_empty() {
-                            s.push('\n');
-                        }
-                        s.push_str(&stderr);
-                    }
-                    s.truncate(s.trim_end().len());
-                    s
-                })
-                .unwrap_or_else(|e| format!("error: {e}"));
+            let output = exec_command(&script);
             result.push_str("```\n");
             result.push_str(&output);
             result.push_str("\n```\n");
         } else {
-            result.push_str(line);
+            result.push_str(&eval_inline_exec(line));
             result.push('\n');
         }
     }
@@ -172,6 +157,58 @@ pub fn evaluate(body: &str) -> String {
     if result.ends_with('\n') && !body.ends_with('\n') {
         result.pop();
     }
+    result
+}
+
+/// Execute a shell command and return its combined stdout/stderr output.
+fn exec_command(script: &str) -> String {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .map(|o| {
+            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if !stderr.is_empty() {
+                if !s.is_empty() {
+                    s.push('\n');
+                }
+                s.push_str(&stderr);
+            }
+            s.truncate(s.trim_end().len());
+            s
+        })
+        .unwrap_or_else(|e| format!("error: {e}"))
+}
+
+/// Replace all `` !`command` `` occurrences in a line with the command output.
+fn eval_inline_exec(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut rest = line;
+
+    while let Some(start) = rest.find("!`") {
+        // Don't match escaped or double-backtick
+        if start > 0 && rest.as_bytes()[start - 1] == b'\\' {
+            result.push_str(&rest[..start - 1]);
+            result.push_str("!`");
+            rest = &rest[start + 2..];
+            continue;
+        }
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find('`') {
+            let cmd = &after[..end];
+            if !cmd.is_empty() {
+                result.push_str(&exec_command(cmd));
+            }
+            rest = &after[end + 1..];
+        } else {
+            // No closing backtick — keep literal
+            result.push_str("!`");
+            rest = after;
+        }
+    }
+    result.push_str(rest);
     result
 }
 
@@ -217,6 +254,34 @@ mod tests {
         let input = "```\ncode\n```";
         let result = evaluate(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn evaluate_inline_exec() {
+        let input = "version: !`echo 42`";
+        let result = evaluate(input);
+        assert_eq!(result, "version: 42");
+    }
+
+    #[test]
+    fn evaluate_inline_exec_multiple() {
+        let input = "!`echo a` and !`echo b`";
+        let result = evaluate(input);
+        assert_eq!(result, "a and b");
+    }
+
+    #[test]
+    fn evaluate_inline_exec_no_closing() {
+        let input = "broken !`no close";
+        let result = evaluate(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn evaluate_inline_exec_escaped() {
+        let input = "keep \\!`echo hi` literal";
+        let result = evaluate(input);
+        assert_eq!(result, "keep !`echo hi` literal");
     }
 
     #[test]

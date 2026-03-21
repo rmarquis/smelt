@@ -124,7 +124,8 @@ fn spawn_title_generation(
     api_key: Option<String>,
     event_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) {
-    let provider = build_provider_with_overrides(config, client, api_base.as_deref(), api_key.as_deref());
+    let provider =
+        build_provider_with_overrides(config, client, api_base.as_deref(), api_key.as_deref());
     let model = model.to_string();
     let tx = event_tx.clone();
     tokio::spawn(async move {
