@@ -66,7 +66,7 @@ impl App {
                     )))
                 }
             }
-            "/fork" => {
+            "/fork" | "/branch" => {
                 self.fork_session();
                 CommandAction::Continue
             }

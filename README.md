@@ -227,7 +227,7 @@ Type `/` to open the command picker:
 | `/color [name]`            | Set task slug color (session)          |
 | `/settings`                | Open settings menu                     |
 | `/export`                  | Copy conversation to clipboard         |
-| `/fork`                    | Fork current session                   |
+| `/fork`, `/branch`         | Fork current session                   |
 | `/stats`                   | Show token usage statistics            |
 | `/permissions`             | Manage session & workspace permissions |
 | `/ps`                      | Manage background processes            |

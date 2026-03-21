@@ -89,6 +89,7 @@ impl Completer {
             ("compact", "compact conversation history"),
             ("export", "copy conversation to clipboard"),
             ("fork", "fork current session"),
+            ("branch", "fork current session"),
             ("stats", "show token usage statistics"),
             ("theme", "change accent color"),
             ("color", "set task slug color"),
