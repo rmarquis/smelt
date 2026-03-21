@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "engine"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64",
  "glob",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1415,9 +1415,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1989,7 +1989,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tui"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "base64",
  "crossterm",
