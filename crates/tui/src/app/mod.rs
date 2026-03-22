@@ -300,6 +300,16 @@ impl App {
         if vim_enabled {
             input.set_vim_enabled(true);
         }
+        let theme_names: Vec<String> = crate::theme::PRESETS
+            .iter()
+            .map(|(n, _, _)| (*n).to_string())
+            .collect();
+        let model_keys: Vec<String> = available_models.iter().map(|m| m.key.clone()).collect();
+        input.command_arg_sources = vec![
+            ("/model".into(), model_keys),
+            ("/theme".into(), theme_names.clone()),
+            ("/color".into(), theme_names),
+        ];
         // Only load accent from state if not already set from config
         if crate::theme::accent_value() == crate::theme::DEFAULT_ACCENT {
             if let Some(accent) = saved.accent_color {

@@ -11,6 +11,7 @@ pub struct CompletionItem {
 pub enum CompleterKind {
     File,
     Command,
+    CommandArg,
     History,
 }
 
@@ -61,20 +62,26 @@ impl Completer {
     /// The result is `(prefix, hint)` where prefix is the `/cmd` part
     /// and hint is displayed dimmed after the prefix (e.g. preset names
     /// joined with ` | ` or a `<placeholder>`).
-    pub fn command_hint(buf: &str) -> Option<(&'static str, String)> {
+    ///
+    /// `arg_sources` provides the dynamic completion labels for commands
+    /// like `/model`, `/theme`, `/color`.
+    pub fn command_hint(
+        buf: &str,
+        arg_sources: &[(String, Vec<String>)],
+    ) -> Option<(String, String)> {
         let cmd = buf.split_whitespace().next()?;
         match cmd {
-            "/btw" => Some(("/btw", "<question>".into())),
-            "/compact" => Some(("/compact", "<focus>".into())),
-            "/theme" => {
-                let names: Vec<&str> = crate::theme::PRESETS.iter().map(|(n, _, _)| *n).collect();
-                Some(("/theme", format!("<{}>", names.join("|"))))
+            "/btw" => Some(("/btw".into(), "<question>".into())),
+            "/compact" => Some(("/compact".into(), "<focus>".into())),
+            _ => {
+                for (prefix, items) in arg_sources {
+                    if cmd == prefix {
+                        let hint = format!("<{}>", items.join("|"));
+                        return Some((prefix.clone(), hint));
+                    }
+                }
+                None
             }
-            "/color" => {
-                let names: Vec<&str> = crate::theme::PRESETS.iter().map(|(n, _, _)| *n).collect();
-                Some(("/color", format!("<{}>", names.join("|"))))
-            }
-            _ => None,
         }
     }
 
@@ -119,6 +126,25 @@ impl Completer {
         Self {
             anchor,
             kind: CompleterKind::Command,
+            query: String::new(),
+            results,
+            selected: 0,
+            all_items,
+        }
+    }
+
+    pub fn command_args(anchor: usize, items: &[String]) -> Self {
+        let all_items: Vec<CompletionItem> = items
+            .iter()
+            .map(|s| CompletionItem {
+                label: s.clone(),
+                description: None,
+            })
+            .collect();
+        let results = all_items.clone();
+        Self {
+            anchor,
+            kind: CompleterKind::CommandArg,
             query: String::new(),
             results,
             selected: 0,

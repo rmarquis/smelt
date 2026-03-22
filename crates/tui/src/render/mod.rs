@@ -1507,7 +1507,8 @@ impl Screen {
         let display_cursor = map_cursor(state.cursor_char(), &state.buf, &spans);
         let (visual_lines, cursor_line, cursor_col) =
             wrap_and_locate_cursor(&display_buf, &char_kinds, display_cursor, usable);
-        let cmd_hint = crate::completer::Completer::command_hint(&state.buf);
+        let cmd_hint =
+            crate::completer::Completer::command_hint(&state.buf, &state.command_arg_sources);
         let has_arg_space = cmd_hint.is_some()
             && state.buf.len() > cmd_hint.as_ref().unwrap().0.len()
             && state.buf.as_bytes()[cmd_hint.as_ref().unwrap().0.len()] == b' ';
@@ -2470,6 +2471,7 @@ fn draw_completions(
     let last = max_rows - 1;
     let prefix = match comp.kind {
         crate::completer::CompleterKind::Command => "/",
+        crate::completer::CompleterKind::CommandArg => "",
         crate::completer::CompleterKind::File => "./",
         crate::completer::CompleterKind::History => "",
     };

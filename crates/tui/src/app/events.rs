@@ -150,19 +150,7 @@ impl App {
                         self.restrict_to_workspace = restrict_to_workspace;
                     }
                     MenuResult::ModelSelect(key) => {
-                        if let Some(resolved) = self.available_models.iter().find(|m| m.key == key)
-                        {
-                            self.model = resolved.model_name.clone();
-                            self.api_base = resolved.api_base.clone();
-                            self.api_key_env = resolved.api_key_env.clone();
-                            self.screen.set_model_label(resolved.model_name.clone());
-                            state::set_selected_model(key.clone());
-                            self.engine.send(UiCommand::SetModel {
-                                model: resolved.model_name.clone(),
-                                api_base: resolved.api_base.clone(),
-                                api_key: std::env::var(&resolved.api_key_env).unwrap_or_default(),
-                            });
-                        }
+                        self.apply_model(&key);
                         self.screen.erase_prompt();
                     }
                     MenuResult::ThemeSelect(value) => {

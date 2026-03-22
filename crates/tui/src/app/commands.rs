@@ -14,7 +14,7 @@ impl App {
             "/clear" | "/new" => CommandAction::CancelAndClear,
             "/compact" => CommandAction::Compact { focus: None },
             _ if input.starts_with("/compact ") => {
-                let focus = input[9..].trim().to_string();
+                let focus = input.strip_prefix("/compact ").unwrap().trim().to_string();
                 CommandAction::Compact {
                     focus: if focus.is_empty() { None } else { Some(focus) },
                 }
@@ -82,6 +82,13 @@ impl App {
                 }
                 CommandAction::Continue
             }
+            _ if input.starts_with("/model ") => {
+                let key = input.strip_prefix("/model ").unwrap().trim();
+                if !self.apply_model(key) {
+                    self.screen.notify_error(format!("unknown model: {}", key));
+                }
+                CommandAction::Continue
+            }
             "/settings" => {
                 self.input.open_settings(
                     self.input.vim_enabled(),
@@ -112,7 +119,7 @@ impl App {
                 CommandAction::Continue
             }
             _ if input.starts_with("/theme ") => {
-                let name = input[7..].trim();
+                let name = input.strip_prefix("/theme ").unwrap().trim();
                 if let Some(value) = crate::theme::preset_by_name(name) {
                     crate::theme::set_accent(value);
                     state::set_accent(value);
@@ -123,7 +130,7 @@ impl App {
                 CommandAction::Continue
             }
             _ if input.starts_with("/color ") => {
-                let name = input[7..].trim();
+                let name = input.strip_prefix("/color ").unwrap().trim();
                 if let Some(value) = crate::theme::preset_by_name(name) {
                     crate::theme::set_slug_color(value);
                     self.screen.mark_dirty();
@@ -133,7 +140,7 @@ impl App {
                 CommandAction::Continue
             }
             _ if input.starts_with("/btw ") => {
-                let question = input[5..].trim().to_string();
+                let question = input.strip_prefix("/btw ").unwrap().trim().to_string();
                 if question.is_empty() {
                     self.screen.notify_error("usage: /btw <question>".into());
                 } else {
@@ -142,7 +149,8 @@ impl App {
                 CommandAction::Continue
             }
             _ if input.starts_with('!') && !self.input.skip_shell_escape() => {
-                if let Some((rx, kill)) = self.start_shell_escape(&input[1..]) {
+                if let Some((rx, kill)) = self.start_shell_escape(input.strip_prefix('!').unwrap())
+                {
                     CommandAction::Exec(rx, kill)
                 } else {
                     CommandAction::Continue
@@ -265,6 +273,25 @@ impl App {
         });
 
         Some((rx, kill))
+    }
+
+    /// Switch to a model by key, updating all relevant state. Returns false
+    /// if the key was not found.
+    pub(super) fn apply_model(&mut self, key: &str) -> bool {
+        let Some(resolved) = self.available_models.iter().find(|m| m.key == key) else {
+            return false;
+        };
+        self.model = resolved.model_name.clone();
+        self.api_base = resolved.api_base.clone();
+        self.api_key_env = resolved.api_key_env.clone();
+        self.screen.set_model_label(self.model.clone());
+        state::set_selected_model(key.to_string());
+        self.engine.send(UiCommand::SetModel {
+            model: self.model.clone(),
+            api_base: self.api_base.clone(),
+            api_key: std::env::var(&self.api_key_env).unwrap_or_default(),
+        });
+        true
     }
 
     pub(super) fn start_btw(

@@ -41,6 +41,9 @@ pub struct InputState {
     /// Tracks whether the current buffer content originated from a paste.
     /// Cleared on any manual character input.
     from_paste: bool,
+    /// Completable arguments for commands like `/model`, `/theme`, `/color`.
+    /// Each entry is `("/cmd", vec!["arg1", "arg2", ...])`.
+    pub command_arg_sources: Vec<(String, Vec<String>)>,
 }
 
 /// What the caller should do after `handle_event`.
@@ -74,6 +77,7 @@ impl InputState {
             history_saved_buf: None,
             stash: None,
             from_paste: false,
+            command_arg_sources: Vec::new(),
         }
     }
 
@@ -842,7 +846,7 @@ impl InputState {
                     let comp = self.completer.take().unwrap();
                     let kind = comp.kind;
                     self.accept_completion(&comp);
-                    if kind == CompleterKind::Command {
+                    if kind == CompleterKind::Command || kind == CompleterKind::CommandArg {
                         let display = self.message_display_text();
                         let content = self.build_content();
                         self.clear();
@@ -918,6 +922,10 @@ impl InputState {
                     self.history_saved_buf = None;
                 } else {
                     self.accept_completion(&comp);
+                    // Immediately activate arg completion if available.
+                    if comp.kind == CompleterKind::Command {
+                        self.recompute_completer();
+                    }
                 }
                 Some(Action::Redraw)
             }
@@ -929,23 +937,36 @@ impl InputState {
         if let Some(label) = comp.accept() {
             let end = self.cpos;
             let start = comp.anchor;
-            let trigger = &self.buf[start..start + 1];
-            let replacement = if trigger == "/" {
-                format!("/{} ", label)
+            if comp.kind == CompleterKind::CommandArg {
+                // Replace just the argument portion after the command prefix.
+                self.buf.replace_range(start..end, label);
+                self.cpos = start + label.len();
             } else {
-                format!("@{} ", label)
-            };
-            self.buf.replace_range(start..end, &replacement);
-            self.cpos = start + replacement.len();
+                let trigger = &self.buf[start..start + 1];
+                let replacement = if trigger == "/" {
+                    format!("/{} ", label)
+                } else {
+                    format!("@{} ", label)
+                };
+                self.buf.replace_range(start..end, &replacement);
+                self.cpos = start + replacement.len();
+            }
         }
     }
 
     /// Activate completer if the buffer looks like a command or file ref.
     fn sync_completer(&mut self) {
-        if find_slash_anchor(&self.buf, self.cpos).is_some() {
-            let mut comp = Completer::commands(0);
-            comp.update_query(self.buf[1..self.cpos].to_string());
-            self.completer = Some(comp);
+        if let Some((src_idx, arg_anchor)) = self.find_command_arg_zone() {
+            let items = self.command_arg_sources[src_idx].1.clone();
+            let query = self.arg_query(arg_anchor);
+            self.set_or_update_completer(
+                CompleterKind::CommandArg,
+                || Completer::command_args(arg_anchor, &items),
+                query,
+            );
+        } else if find_slash_anchor(&self.buf, self.cpos).is_some() {
+            let query = self.buf[1..self.cpos].to_string();
+            self.set_or_update_completer(CompleterKind::Command, || Completer::commands(0), query);
         } else {
             self.completer = None;
         }
@@ -981,25 +1002,65 @@ impl InputState {
                 comp.update_query(query);
                 self.completer = Some(comp);
             }
+        } else if let Some((src_idx, arg_anchor)) = self.find_command_arg_zone() {
+            let items = self.command_arg_sources[src_idx].1.clone();
+            let query = self.arg_query(arg_anchor);
+            self.set_or_update_completer(
+                CompleterKind::CommandArg,
+                || Completer::command_args(arg_anchor, &items),
+                query,
+            );
         } else if find_slash_anchor(&self.buf, self.cpos).is_some()
             || (self.cpos == 0 && self.buf.starts_with('/'))
         {
             let end = self.cpos.max(1);
             let query = self.buf[1..end].to_string();
-            if self
-                .completer
-                .as_ref()
-                .is_some_and(|c| c.kind == CompleterKind::Command)
-            {
-                self.completer.as_mut().unwrap().update_query(query);
-            } else {
-                let mut comp = Completer::commands(0);
-                comp.update_query(query);
-                self.completer = Some(comp);
-            }
+            self.set_or_update_completer(CompleterKind::Command, || Completer::commands(0), query);
         } else {
             self.completer = None;
         }
+    }
+
+    /// Reuse the current completer if it matches `kind`, otherwise create a new
+    /// one via `make`. Either way, update the query.
+    fn set_or_update_completer(
+        &mut self,
+        kind: CompleterKind,
+        make: impl FnOnce() -> Completer,
+        query: String,
+    ) {
+        if self.completer.as_ref().is_some_and(|c| c.kind == kind) {
+            self.completer.as_mut().unwrap().update_query(query);
+        } else {
+            let mut comp = make();
+            comp.update_query(query);
+            self.completer = Some(comp);
+        }
+    }
+
+    fn arg_query(&self, anchor: usize) -> String {
+        if self.cpos > anchor {
+            self.buf[anchor..self.cpos].to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Check if the cursor is inside a command argument zone (e.g. `/model foo`).
+    /// Returns `(source_index, arg_anchor)` where source_index indexes into
+    /// `command_arg_sources` and arg_anchor is the byte offset after the space.
+    fn find_command_arg_zone(&self) -> Option<(usize, usize)> {
+        for (i, (cmd, _)) in self.command_arg_sources.iter().enumerate() {
+            let anchor = cmd.len() + 1; // "/cmd" + space
+            if self.buf.len() >= anchor
+                && self.buf.starts_with(cmd.as_str())
+                && self.buf.as_bytes()[cmd.len()] == b' '
+                && self.cpos >= anchor
+            {
+                return Some((i, anchor));
+            }
+        }
+        None
     }
 
     /// Move cursor to the beginning of the given line number (0-indexed).
