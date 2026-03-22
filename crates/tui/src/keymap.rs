@@ -460,7 +460,7 @@ pub fn nav_lookup(code: KeyCode, modifiers: KeyModifiers) -> Option<NavAction> {
         (KeyCode::Esc, _) => Some(NavAction::Dismiss),
         (KeyCode::Char('c'), m) if m.contains(CTRL) => Some(NavAction::Dismiss),
         // Confirm
-        (KeyCode::Enter, _) => Some(NavAction::Confirm),
+        (KeyCode::Enter, m) if !m.contains(SHIFT) => Some(NavAction::Confirm),
         // Page scroll
         (KeyCode::Char('u'), m) if m.contains(CTRL) => Some(NavAction::PageUp),
         (KeyCode::Char('d'), m) if m.contains(CTRL) => Some(NavAction::PageDown),

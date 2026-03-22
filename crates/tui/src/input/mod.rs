@@ -883,8 +883,9 @@ impl InputState {
         match ev {
             Event::Key(KeyEvent {
                 code: KeyCode::Enter,
+                modifiers,
                 ..
-            }) => {
+            }) if !modifiers.contains(KeyModifiers::SHIFT) => {
                 if is_history {
                     let comp = self.completer.take().unwrap();
                     if let Some(label) = comp.accept() {
