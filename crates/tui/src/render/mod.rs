@@ -1230,10 +1230,12 @@ impl Screen {
                 gap_between(&Element::ActiveExec, &Element::Prompt)
             } else if self.active_tool.is_some() {
                 gap_between(&Element::ActiveTool, &Element::Prompt)
-            } else {
+            } else if block_rows > 0 {
                 self.history.blocks.last().map_or(0, |last| {
                     gap_between(&Element::Block(last), &Element::Prompt)
                 })
+            } else {
+                0
             };
             for _ in 0..gap {
                 crlf(&mut out);
@@ -1267,7 +1269,7 @@ impl Screen {
                 let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
                 self.prompt.anchor_row = Some(height.saturating_sub(prompt_section_rows));
             } else {
-                self.prompt.anchor_row = Some(top_row + block_rows);
+                self.prompt.anchor_row = Some(top_row + block_rows + gap);
             }
             // prev_dialog_row: where the prompt bar actually starts (after active
             // tool + gap).  Dialogs render here to line up with the prompt.
