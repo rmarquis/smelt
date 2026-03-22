@@ -176,11 +176,14 @@ impl App {
         if cancelled {
             self.engine.send(UiCommand::Cancel);
             self.screen.set_throbber(render::Throbber::Interrupted);
-            // Discard any pending title/slug so stale TitleGenerated events
-            // don't update the session after the turn was interrupted.
-            self.pending_title = false;
-            self.session.slug = None;
-            self.screen.clear_task_label();
+            // If a title/slug generation was in-flight, discard it so stale
+            // TitleGenerated events don't update the session. But if a slug
+            // was already set before this turn, keep it.
+            if self.pending_title {
+                self.pending_title = false;
+                self.session.slug = None;
+                self.screen.clear_task_label();
+            }
             let leftover = std::mem::take(&mut self.queued_messages);
             if !leftover.is_empty() {
                 let mut combined = leftover.join("\n");
