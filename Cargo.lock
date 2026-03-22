@@ -2004,6 +2004,7 @@ dependencies = [
  "sha2",
  "similar",
  "syntect",
+ "tempfile",
  "tokio",
  "two-face",
  "unicode-width",

@@ -15,6 +15,7 @@ pub use dialogs::{
 
 use crate::attachment::{AttachmentId, AttachmentStore};
 use crate::input::{InputSnapshot, InputState, MenuKind, ATTACHMENT_MARKER};
+use crate::keymap::hints;
 use crate::theme;
 use crate::utils::format_duration;
 use crossterm::{
@@ -1372,7 +1373,7 @@ impl Screen {
             let term_h = terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
             // Cap btw to half the terminal height, minus overhead for bar+input.
             let max_btw = (term_h / 2).saturating_sub(4);
-            let rows = render_btw(out, btw, usable, max_btw);
+            let rows = render_btw(out, btw, usable, max_btw, state.vim_enabled());
             extra_rows += rows;
             rows as usize
         } else {
@@ -1886,6 +1887,7 @@ fn render_btw(
     btw: &mut BtwBlock,
     usable: usize,
     max_content_lines: usize,
+    vim_enabled: bool,
 ) -> u16 {
     let max_lines = max_content_lines.max(1);
     let mut rows = 0u16;
@@ -1953,7 +1955,9 @@ fn render_btw(
             if can_scroll {
                 let end = (btw.scroll_offset + visible).min(total);
                 let _ = out.queue(Print(format!(
-                    "   [{end}/{total}]  ctrl+u/d: scroll  esc: close"
+                    "   [{end}/{total}]  {}  {}  esc: close",
+                    hints::nav(vim_enabled),
+                    hints::scroll(vim_enabled),
                 )));
             } else {
                 let _ = out.queue(Print("   esc: close"));

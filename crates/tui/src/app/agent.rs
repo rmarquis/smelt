@@ -945,7 +945,7 @@ impl App {
                     request_id: req.request_id,
                 });
                 self.screen.set_active_status(ToolStatus::Confirm);
-                let dialog = Box::new(ConfirmDialog::new(&req));
+                let dialog = Box::new(ConfirmDialog::new(&req, self.input.vim_enabled()));
                 self.open_blocking_dialog(dialog, active_dialog);
                 LoopAction::Continue
             }

@@ -202,10 +202,11 @@ pub struct ConfirmDialog {
     pub anchor_row: Option<u16>,
     /// Row where the options section begins (used for partial redraws).
     options_row: u16,
+    vim_enabled: bool,
 }
 
 impl ConfirmDialog {
-    pub fn new(req: &crate::render::ConfirmRequest) -> Self {
+    pub fn new(req: &crate::render::ConfirmRequest, vim_enabled: bool) -> Self {
         let is_plan = req.tool_name == "exit_plan_mode";
         let mut options: Vec<(String, ConfirmChoice)> = if is_plan {
             vec![
@@ -290,6 +291,7 @@ impl ConfirmDialog {
             options_row: 0,
             dirty: true,
             request_id: req.request_id,
+            vim_enabled,
         }
     }
 }
@@ -709,12 +711,21 @@ impl super::Dialog for ConfirmDialog {
             hints::join(&[hints::SEND, hints::CANCEL])
         } else if !self.textarea.is_empty() {
             if ly.total_preview > 0 {
-                hints::join(&[hints::CONFIRM_WITH_MSG, hints::EDIT_MSG, hints::SCROLL])
+                hints::join(&[
+                    hints::CONFIRM_WITH_MSG,
+                    hints::EDIT_MSG,
+                    hints::scroll(self.vim_enabled),
+                ])
             } else {
                 hints::join(&[hints::CONFIRM_WITH_MSG, hints::EDIT_MSG])
             }
         } else if ly.total_preview > 0 {
-            hints::join(&[hints::CONFIRM, hints::ADD_MSG, hints::SCROLL, hints::CANCEL])
+            hints::join(&[
+                hints::CONFIRM,
+                hints::ADD_MSG,
+                hints::scroll(self.vim_enabled),
+                hints::CANCEL,
+            ])
         } else {
             hints::join(&[hints::CONFIRM, hints::ADD_MSG, hints::CANCEL])
         };

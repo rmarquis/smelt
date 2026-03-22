@@ -507,6 +507,10 @@ impl App {
             Action::CycleReasoning => {
                 self.set_reasoning_effort(self.reasoning_effort.cycle());
             }
+            Action::EditInEditor => {
+                self.edit_in_editor();
+                self.screen.redraw(true);
+            }
             Action::NotifyError(msg) => {
                 self.screen.notify_error(msg);
                 self.screen.mark_dirty();
@@ -533,6 +537,11 @@ impl App {
             Action::CycleReasoning => {
                 self.set_reasoning_effort(self.reasoning_effort.cycle());
                 EventOutcome::Redraw
+            }
+            Action::EditInEditor => {
+                self.edit_in_editor();
+                self.screen.redraw(true);
+                EventOutcome::Noop
             }
             Action::Resize {
                 width: w,
@@ -568,6 +577,50 @@ impl App {
                 EventOutcome::Redraw
             }
             Action::Noop => EventOutcome::Noop,
+        }
+    }
+
+    fn edit_in_editor(&mut self) {
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".into());
+
+        let tmp = match tempfile::Builder::new().suffix(".md").tempfile() {
+            Ok(f) => f,
+            Err(e) => {
+                self.screen.notify_error(format!("tmpfile: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = std::fs::write(tmp.path(), &self.input.buf) {
+            self.screen.notify_error(format!("write tmp: {e}"));
+            return;
+        }
+
+        // Suspend raw mode so the editor gets a normal terminal.
+        terminal::disable_raw_mode().ok();
+
+        let status = std::process::Command::new(&editor).arg(tmp.path()).status();
+
+        // Resume raw mode.
+        terminal::enable_raw_mode().ok();
+
+        match status {
+            Ok(s) if s.success() => match std::fs::read_to_string(tmp.path()) {
+                Ok(new) => {
+                    self.input.save_undo();
+                    self.input.buf = new;
+                    self.input.cpos = self.input.buf.len();
+                }
+                Err(e) => self.screen.notify_error(format!("read tmp: {e}")),
+            },
+            Ok(s) => {
+                self.screen
+                    .notify_error(format!("{editor} exited with {s}"));
+            }
+            Err(e) => {
+                self.screen.notify_error(format!("{editor}: {e}"));
+            }
         }
     }
 

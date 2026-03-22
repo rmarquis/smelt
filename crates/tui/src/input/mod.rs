@@ -13,6 +13,90 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use protocol::Content;
 
 pub const ATTACHMENT_MARKER: char = '\u{FFFC}';
+
+// ── Kill ring ─────────────────────────────────────────────────────────────────
+
+const KILL_RING_MAX: usize = 32;
+
+/// Emacs-style kill ring with yank-pop support.
+struct KillRing {
+    current: String,
+    history: Vec<String>,
+    /// Byte range of the last yank insertion, for yank-pop replacement.
+    last_yank: Option<(usize, usize)>,
+    pop_idx: usize,
+}
+
+impl KillRing {
+    fn new() -> Self {
+        Self {
+            current: String::new(),
+            history: Vec::new(),
+            last_yank: None,
+            pop_idx: 0,
+        }
+    }
+
+    /// Push a new kill, rotating the previous current into history.
+    fn kill(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        if !self.current.is_empty() {
+            self.history.insert(0, std::mem::take(&mut self.current));
+            if self.history.len() > KILL_RING_MAX {
+                self.history.pop();
+            }
+        }
+        self.current = text;
+        self.last_yank = None;
+    }
+
+    /// Yank the current kill into `buf` at `cpos`. Returns new cpos.
+    fn yank(&mut self, buf: &mut String, cpos: usize) -> Option<usize> {
+        if self.current.is_empty() {
+            return None;
+        }
+        buf.insert_str(cpos, &self.current);
+        let end = cpos + self.current.len();
+        self.last_yank = Some((cpos, end));
+        self.pop_idx = 0;
+        Some(end)
+    }
+
+    /// Replace the last yank with the next history entry. Returns new cpos.
+    fn yank_pop(&mut self, buf: &mut String) -> Option<usize> {
+        let (start, end) = self.last_yank?;
+        if self.history.is_empty() {
+            return None;
+        }
+        let text = &self.history[self.pop_idx % self.history.len()];
+        let new_end = start + text.len();
+        buf.replace_range(start..end, text);
+        self.last_yank = Some((start, new_end));
+        self.pop_idx = (self.pop_idx + 1) % self.history.len();
+        Some(new_end)
+    }
+
+    /// Clear last-yank tracking (call on any non-yank editing action).
+    fn clear_yank(&mut self) {
+        self.last_yank = None;
+    }
+
+    /// Take the current kill text (for dialog sync).
+    fn take(&mut self) -> String {
+        std::mem::take(&mut self.current)
+    }
+
+    /// Set the current kill text (for dialog sync).
+    fn set(&mut self, text: String) {
+        self.current = text;
+    }
+
+    fn current(&self) -> &str {
+        &self.current
+    }
+}
 const PASTE_LINE_THRESHOLD: usize = 12;
 
 /// Snapshot of the input buffer state (used for Ctrl+S stash).
@@ -42,16 +126,11 @@ pub struct InputState {
     /// Tracks whether the current buffer content originated from a paste.
     /// Cleared on any manual character input.
     from_paste: bool,
-    /// Kill ring for Ctrl+K / Ctrl+U / Ctrl+Y (emacs-style kill/yank).
-    kill_ring: String,
-    /// Previous kills for M-y yank-pop cycling.
-    kill_history: Vec<String>,
-    /// Range of the last yank insertion (start, end) for yank-pop replacement.
-    last_yank: Option<(usize, usize)>,
-    /// Current index into kill_history during yank-pop cycling.
-    yank_pop_idx: usize,
+    kill_ring: KillRing,
     /// Undo stack for non-vim mode.
     undo_stack: Vec<(String, usize, Vec<AttachmentId>)>,
+    /// Chord state: true after Ctrl+X, waiting for second key.
+    pending_ctrl_x: bool,
     /// Completable arguments for commands like `/model`, `/theme`, `/color`.
     /// Each entry is `("/cmd", vec!["arg1", "arg2", ...])`.
     pub command_arg_sources: Vec<(String, Vec<String>)>,
@@ -65,6 +144,7 @@ pub enum Action {
     MenuResult(MenuResult),
     ToggleMode,
     CycleReasoning,
+    EditInEditor,
     Resize { width: usize, height: usize },
     NotifyError(String),
     Noop,
@@ -89,11 +169,9 @@ impl InputState {
             history_saved_buf: None,
             stash: None,
             from_paste: false,
-            kill_ring: String::new(),
-            kill_history: Vec::new(),
-            last_yank: None,
-            yank_pop_idx: 0,
+            kill_ring: KillRing::new(),
             undo_stack: Vec::new(),
+            pending_ctrl_x: false,
             command_arg_sources: Vec::new(),
         }
     }
@@ -149,12 +227,12 @@ impl InputState {
 
     /// Take the kill ring contents (moves ownership, leaves empty).
     pub fn take_kill_ring(&mut self) -> String {
-        std::mem::take(&mut self.kill_ring)
+        self.kill_ring.take()
     }
 
     /// Set the kill ring contents (used to sync back from dialogs).
     pub fn set_kill_ring(&mut self, contents: String) {
-        self.kill_ring = contents;
+        self.kill_ring.set(contents);
     }
 
     pub fn clear(&mut self) {
@@ -474,7 +552,7 @@ impl InputState {
         history: Option<&mut History>,
     ) -> Action {
         if !matches!(action, KeyAction::Yank | KeyAction::YankPop) {
-            self.last_yank = None;
+            self.kill_ring.clear_yank();
         }
         match action {
             // ── Actions the caller must handle ──────────────────────────
@@ -628,11 +706,17 @@ impl InputState {
             }
             KeyAction::Yank => {
                 self.save_undo();
-                self.yank();
+                if let Some(new_cpos) = self.kill_ring.yank(&mut self.buf, self.cpos) {
+                    self.cpos = new_cpos;
+                    self.recompute_completer();
+                }
                 Action::Redraw
             }
             KeyAction::YankPop => {
-                self.yank_pop();
+                if let Some(new_cpos) = self.kill_ring.yank_pop(&mut self.buf) {
+                    self.cpos = new_cpos;
+                    self.recompute_completer();
+                }
                 Action::Redraw
             }
             KeyAction::UppercaseWord => {
@@ -703,8 +787,8 @@ impl InputState {
         if let Some(ref mut vim) = self.vim {
             if let Event::Key(key_ev) = ev {
                 // Sync kill ring → vim register so `p` can paste emacs-killed text.
-                if vim.register() != self.kill_ring {
-                    vim.set_register(self.kill_ring.clone());
+                if vim.register() != self.kill_ring.current() {
+                    vim.set_register(self.kill_ring.current().to_string());
                 }
                 match vim.handle_key(
                     key_ev,
@@ -739,6 +823,9 @@ impl InputState {
                             self.sync_completer();
                         }
                         return Action::Redraw;
+                    }
+                    vim::Action::EditInEditor => {
+                        return Action::EditInEditor;
                     }
                     vim::Action::Passthrough => {
                         // Fall through to keymap / char insert below.
@@ -787,6 +874,20 @@ impl InputState {
             code, modifiers, ..
         }) = ev
         {
+            // Chord: C-x C-e → edit in $EDITOR.
+            if self.pending_ctrl_x {
+                self.pending_ctrl_x = false;
+                if code == KeyCode::Char('e') && modifiers.contains(KeyModifiers::CONTROL) {
+                    return Action::EditInEditor;
+                }
+                // Not a recognized chord — discard the C-x and process this
+                // key normally below.
+            }
+            if code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL) {
+                self.pending_ctrl_x = true;
+                return Action::Noop;
+            }
+
             // Build context for keymap lookup. The caller-specific fields
             // (agent_running, ghost_text) are set to defaults here — the app
             // event loop overrides them by calling lookup directly when needed.
@@ -1176,14 +1277,14 @@ impl InputState {
     /// Sync vim register → kill ring after vim modifies it.
     fn sync_vim_register(&mut self) {
         if let Some(ref vim) = self.vim {
-            if vim.register() != self.kill_ring {
-                self.kill_ring = vim.register().to_string();
+            if vim.register() != self.kill_ring.current() {
+                self.kill_ring.set(vim.register().to_string());
             }
         }
     }
 
     /// Save undo state before an editing operation.
-    fn save_undo(&mut self) {
+    pub fn save_undo(&mut self) {
         if let Some(ref mut vim) = self.vim {
             vim.save_undo(&self.buf, self.cpos, &self.attachment_ids);
         } else {
@@ -1309,7 +1410,7 @@ impl InputState {
             }
         }
         self.buf.drain(self.cpos..end);
-        self.push_kill(killed);
+        self.kill_ring.kill(killed);
         self.recompute_completer();
     }
 
@@ -1335,7 +1436,7 @@ impl InputState {
         }
         self.buf.drain(start..self.cpos);
         self.cpos = start;
-        self.push_kill(killed);
+        self.kill_ring.kill(killed);
         self.recompute_completer();
     }
 
@@ -1360,48 +1461,6 @@ impl InputState {
         }
         self.buf.drain(start..self.cpos);
         self.cpos = start;
-        self.recompute_completer();
-    }
-
-    fn push_kill(&mut self, text: String) {
-        if text.is_empty() {
-            return;
-        }
-        if !self.kill_ring.is_empty() {
-            self.kill_history
-                .insert(0, std::mem::take(&mut self.kill_ring));
-            if self.kill_history.len() > 32 {
-                self.kill_history.pop();
-            }
-        }
-        self.kill_ring = text;
-        self.last_yank = None;
-    }
-
-    fn yank(&mut self) {
-        if !self.kill_ring.is_empty() {
-            let start = self.cpos;
-            self.buf.insert_str(self.cpos, &self.kill_ring);
-            self.cpos += self.kill_ring.len();
-            self.last_yank = Some((start, self.cpos));
-            self.yank_pop_idx = 0;
-            self.recompute_completer();
-        }
-    }
-
-    fn yank_pop(&mut self) {
-        let Some((start, end)) = self.last_yank else {
-            return;
-        };
-        if self.kill_history.is_empty() {
-            return;
-        }
-        let text = &self.kill_history[self.yank_pop_idx % self.kill_history.len()];
-        let new_end = start + text.len();
-        self.buf.replace_range(start..end, text);
-        self.cpos = new_end;
-        self.last_yank = Some((start, new_end));
-        self.yank_pop_idx = (self.yank_pop_idx + 1) % self.kill_history.len();
         self.recompute_completer();
     }
 

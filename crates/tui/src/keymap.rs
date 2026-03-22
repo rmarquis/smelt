@@ -519,8 +519,20 @@ pub fn nav_lookup(code: KeyCode, modifiers: KeyModifiers) -> Option<NavAction> {
 /// Shared hint fragments for dialog footers.
 pub mod hints {
     // Common nav
-    pub const NAV: &str = "j/k: navigate";
-    pub const SCROLL: &str = "ctrl+u/d: scroll";
+    pub fn nav(vim: bool) -> &'static str {
+        if vim {
+            "j/k: navigate"
+        } else {
+            "\u{2191}/\u{2193}: navigate"
+        }
+    }
+    pub fn scroll(vim: bool) -> &'static str {
+        if vim {
+            "ctrl+u/d: scroll"
+        } else {
+            "pgup/pgdn: scroll"
+        }
+    }
     pub const CLOSE: &str = "esc: close";
     pub const CANCEL: &str = "esc: cancel";
     pub const CONFIRM: &str = "enter: confirm";
@@ -586,6 +598,7 @@ pub mod hints {
             "uppercase / lowercase / capitalize word",
         ),
         ("ctrl+_", "undo"),
+        ("ctrl+x ctrl+e", "edit in $EDITOR"),
         ("tab", "autocomplete / accept ghost text"),
         ("esc  esc esc", "dismiss / cancel agent / rewind"),
     ];
@@ -594,6 +607,7 @@ pub mod hints {
         ("ctrl+j / ctrl+k", "history next / prev  (normal mode)"),
         ("ctrl+u / ctrl+d", "half-page up / down  (normal mode)"),
         ("ctrl+r", "redo  (normal mode)"),
+        ("v", "edit in $EDITOR  (normal mode)"),
     ];
 
     /// Build the help sections for the current mode.

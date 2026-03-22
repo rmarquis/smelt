@@ -20,6 +20,8 @@ pub enum Action {
     HistoryPrev,
     /// Navigate history down.
     HistoryNext,
+    /// Open buffer in $EDITOR.
+    EditInEditor,
     /// Key not handled — caller should use its own logic.
     Passthrough,
 }
@@ -505,6 +507,12 @@ impl Vim {
             'u' => {
                 self.undo(buf, cpos, attachments);
                 Action::Consumed
+            }
+
+            // ── Edit in $EDITOR ─────────────────────────────────────────
+            'v' => {
+                self.reset_pending();
+                Action::EditInEditor
             }
 
             // ── Enter insert mode ───────────────────────────────────────

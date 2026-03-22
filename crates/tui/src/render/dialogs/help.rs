@@ -11,6 +11,7 @@ pub struct HelpDialog {
     list: ListState,
     sections: Vec<(&'static str, Vec<(&'static str, &'static str)>)>,
     total_rows: usize,
+    vim_enabled: bool,
 }
 
 impl HelpDialog {
@@ -22,9 +23,10 @@ impl HelpDialog {
             .map(|(i, (_, entries))| entries.len() + if i + 1 < sections.len() { 1 } else { 0 })
             .sum();
         Self {
-            list: ListState::new(0, None, 4),
+            list: ListState::new(0, None, 5),
             sections,
             total_rows,
+            vim_enabled,
         }
     }
 }
@@ -152,8 +154,8 @@ impl super::Dialog for HelpDialog {
         let _ = out.queue(SetAttribute(Attribute::Dim));
         let _ = out.queue(Print(&hints::join(&[
             hints::CLOSE,
-            hints::NAV,
-            hints::SCROLL,
+            hints::nav(self.vim_enabled),
+            hints::scroll(self.vim_enabled),
         ])));
         let _ = out.queue(SetAttribute(Attribute::Reset));
         let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
