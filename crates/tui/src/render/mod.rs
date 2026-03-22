@@ -1053,12 +1053,24 @@ impl Screen {
         self.prompt.drawn = false;
         self.prompt.dirty = true;
         self.prompt.prev_rows = 0;
+        // Account for the gap between the last block and the prompt so that
+        // draw_frame (which sees block_rows=0 since everything is flushed)
+        // positions the prompt correctly.
+        let gap = if self.active_exec.is_some() {
+            gap_between(&Element::ActiveExec, &Element::Prompt)
+        } else if self.active_tool.is_some() {
+            gap_between(&Element::ActiveTool, &Element::Prompt)
+        } else {
+            self.history.blocks.last().map_or(0, |last| {
+                gap_between(&Element::Block(last), &Element::Prompt)
+            })
+        };
         if purge {
             self.has_scrollback = false;
             self.content_start_row = Some(0);
-            self.prompt.anchor_row = Some(block_rows);
+            self.prompt.anchor_row = Some(block_rows + gap);
         } else {
-            self.prompt.anchor_row = Some(start + block_rows);
+            self.prompt.anchor_row = Some(start + block_rows + gap);
         }
     }
 
