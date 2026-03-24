@@ -17,29 +17,20 @@ pub mod utils;
 pub mod vim;
 pub mod workspace_permissions;
 
-/// Expand @path references in user input: if a token starts with @ and
-/// the rest is an existing file path, append the file contents.
+/// Expand `@path` and `"@path with spaces"` references in user input:
+/// if the path exists, append the file/directory contents.
 pub fn expand_at_refs(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
     let mut refs: Vec<String> = Vec::new();
-    let mut chars = input.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if c != '@' {
-            continue;
-        }
-        let start = i + 1;
-        let mut end = start;
-        while let Some(&(j, nc)) = chars.peek() {
-            if nc.is_whitespace() {
-                break;
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((_, path, end)) = render::scan_at_token(&chars, i) {
+            if std::path::Path::new(&path).exists() {
+                refs.push(path);
             }
-            end = j + nc.len_utf8();
-            chars.next();
-        }
-        if end > start {
-            let path = &input[start..end];
-            if std::path::Path::new(path).exists() {
-                refs.push(path.to_string());
-            }
+            i = end;
+        } else {
+            i += 1;
         }
     }
 

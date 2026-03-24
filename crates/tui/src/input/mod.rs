@@ -1129,6 +1129,8 @@ impl InputState {
                 let trigger = &self.buf[start..start + 1];
                 let replacement = if trigger == "/" {
                     format!("/{} ", label)
+                } else if label.contains(' ') {
+                    format!("@\"{}\" ", label)
                 } else {
                     format!("@{} ", label)
                 };
@@ -1307,6 +1309,17 @@ impl InputState {
         if self.cpos == 0 {
             return;
         }
+        // If deleting the closing `"` of a `"@path"` token, remove the whole token.
+        if let Some(start) = self.quoted_at_ref_start() {
+            // Clear from_paste if deleting from the beginning of the buffer
+            if start == 0 {
+                self.from_paste = false;
+            }
+            self.buf.drain(start..self.cpos);
+            self.cpos = start;
+            self.recompute_completer();
+            return;
+        }
         let prev = self.buf[..self.cpos]
             .char_indices()
             .next_back()
@@ -1320,6 +1333,25 @@ impl InputState {
         self.buf.drain(prev..self.cpos);
         self.cpos = prev;
         self.recompute_completer();
+    }
+
+    /// If the cursor is right after the closing `"` of a `"@path"` token,
+    /// return the byte offset of the opening `"`.
+    fn quoted_at_ref_start(&self) -> Option<usize> {
+        let before = &self.buf[..self.cpos];
+        if !before.ends_with('"') {
+            return None;
+        }
+        let inner = &before[..before.len() - 1];
+        let at_pos = inner.rfind("@\"")?;
+        if at_pos > 0 && !self.buf[..at_pos].ends_with(char::is_whitespace) {
+            return None;
+        }
+        // Reject if the content between @" and closing " contains another quote.
+        if inner[at_pos + 2..].contains('"') {
+            return None;
+        }
+        Some(at_pos)
     }
 
     fn delete_word_backward(&mut self) {

@@ -2402,30 +2402,51 @@ fn build_char_kinds(spans: &[Span]) -> Vec<SpanKind> {
     kinds
 }
 
-/// Check if position `i` in `chars` starts a valid `@path` reference.
-/// Returns `Some((token, end_index))` if the path after `@` exists on disk.
-pub(super) fn try_at_ref(chars: &[char], i: usize) -> Option<(String, usize)> {
+/// Scan an `@path` or `@"path with spaces"` token starting at position `i`.
+/// Returns `(token_string, path_str, end_index)`.
+pub(crate) fn scan_at_token(chars: &[char], i: usize) -> Option<(String, String, usize)> {
     if chars[i] != '@' {
         return None;
     }
-    let at_start = i == 0 || chars[i - 1].is_whitespace();
-    if !at_start {
+    if i > 0 && !chars[i - 1].is_whitespace() {
         return None;
     }
-    let mut end = i + 1;
-    while end < chars.len() && !chars[end].is_whitespace() {
-        end += 1;
-    }
-    if end <= i + 1 {
-        return None;
-    }
-    let token: String = chars[i..end].iter().collect();
-    let path_str = &token[1..];
-    if std::path::Path::new(path_str).exists() {
-        Some((token, end))
+
+    let quoted = i + 1 < chars.len() && chars[i + 1] == '"';
+    let end = if quoted {
+        let mut e = i + 2;
+        while e < chars.len() && chars[e] != '"' {
+            e += 1;
+        }
+        if e >= chars.len() || e == i + 2 {
+            return None;
+        }
+        e + 1
     } else {
-        None
-    }
+        let mut e = i + 1;
+        while e < chars.len() && !chars[e].is_whitespace() {
+            e += 1;
+        }
+        if e <= i + 1 {
+            return None;
+        }
+        e
+    };
+
+    let token: String = chars[i..end].iter().collect();
+    let path = if quoted {
+        token[2..token.len() - 1].to_string()
+    } else {
+        token[1..].to_string()
+    };
+    Some((token, path, end))
+}
+
+/// Check if position `i` in `chars` starts a valid `@path` reference.
+/// Returns `Some((token, end_index))` if the path after `@` exists on disk.
+pub(super) fn try_at_ref(chars: &[char], i: usize) -> Option<(String, usize)> {
+    let (token, path, end) = scan_at_token(chars, i)?;
+    std::path::Path::new(&path).exists().then_some((token, end))
 }
 
 fn build_display_spans(buf: &str, att_ids: &[AttachmentId], store: &AttachmentStore) -> Vec<Span> {
@@ -2453,16 +2474,10 @@ fn build_display_spans(buf: &str, att_ids: &[AttachmentId], store: &AttachmentSt
             }
             spans.push(Span::AtRef(token));
             i = end;
-        } else if chars[i] == '@' && (i == 0 || chars[i - 1].is_whitespace()) {
-            // @ at word start but not a valid path — consume the whole token as plain.
+        } else if let Some((token, _, end)) = scan_at_token(&chars, i) {
             if !plain.is_empty() {
                 spans.push(Span::Plain(std::mem::take(&mut plain)));
             }
-            let mut end = i + 1;
-            while end < chars.len() && !chars[end].is_whitespace() {
-                end += 1;
-            }
-            let token: String = chars[i..end].iter().collect();
             spans.push(Span::Plain(token));
             i = end;
         } else {
