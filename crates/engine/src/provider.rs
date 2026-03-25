@@ -1096,8 +1096,12 @@ fn parse_tool_call_json(raw: &str, idx: &mut usize) -> Option<ToolCall> {
     if let Some(tc) = parse_tool_call_json_inner(raw, idx) {
         return Some(tc);
     }
-    // Fall back to XML-attribute format
-    parse_tool_call_xml(raw, idx)
+    // Fall back to XML-attribute format (<function=name><parameter=k>v</parameter>)
+    if let Some(tc) = parse_tool_call_xml(raw, idx) {
+        return Some(tc);
+    }
+    // Fall back to arg_key/arg_value format (<function>name</function><arg_key>k</arg_key><arg_value>v</arg_value>)
+    parse_tool_call_arg_kv(raw, idx)
 }
 
 fn parse_tool_call_json_inner(raw: &str, idx: &mut usize) -> Option<ToolCall> {
@@ -1145,6 +1149,54 @@ fn parse_tool_call_xml(raw: &str, idx: &mut usize) -> Option<ToolCall> {
         let value = value.strip_suffix('\n').unwrap_or(&value).to_string();
         params.insert(key.to_string(), serde_json::Value::String(value));
         rest = &value_start[value_end + "</parameter>".len()..];
+    }
+
+    if params.is_empty() {
+        return None;
+    }
+
+    let arguments = serde_json::Value::Object(params).to_string();
+    let id = format!("fallback-{idx}");
+    *idx += 1;
+    Some(ToolCall::new(id, FunctionCall { name, arguments }))
+}
+
+/// Parse `<function>name</function><arg_key>k</arg_key><arg_value>v</arg_value>` format.
+///
+/// Some models (e.g. certain vLLM/reasoning backends) emit tool calls in this
+/// format instead of the `<function=name><parameter=k>v</parameter>` variant.
+/// The `thought` key is model reasoning and is stripped from the arguments.
+fn parse_tool_call_arg_kv(raw: &str, idx: &mut usize) -> Option<ToolCall> {
+    // Extract function name: <function>tool_name</function>
+    let func_start = raw.find("<function>")?;
+    let after_tag = &raw[func_start + "<function>".len()..];
+    let func_end = after_tag.find("</function>")?;
+    let name = after_tag[..func_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Extract arg_key/arg_value pairs
+    let mut params = serde_json::Map::new();
+    let mut rest = &after_tag[func_end + "</function>".len()..];
+    while let Some(key_start) = rest.find("<arg_key>") {
+        let after_key_tag = &rest[key_start + "<arg_key>".len()..];
+        let key_end = after_key_tag.find("</arg_key>")?;
+        let key = after_key_tag[..key_end].trim().to_string();
+        rest = &after_key_tag[key_end + "</arg_key>".len()..];
+
+        let val_start = rest.find("<arg_value>")?;
+        let after_val_tag = &rest[val_start + "<arg_value>".len()..];
+        let val_end = after_val_tag.find("</arg_value>")?;
+        let value = after_val_tag[..val_end].to_string();
+        let value = value.strip_prefix('\n').unwrap_or(&value).to_string();
+        let value = value.strip_suffix('\n').unwrap_or(&value).to_string();
+        rest = &after_val_tag[val_end + "</arg_value>".len()..];
+
+        // "thought" is model reasoning, not an actual argument
+        if key != "thought" {
+            params.insert(key, serde_json::Value::String(value));
+        }
     }
 
     if params.is_empty() {
@@ -1273,5 +1325,47 @@ class Base:
             .unwrap()
             .contains("test_clear.py"));
         assert_eq!(cleaned.unwrap(), "Let me try this:");
+    }
+
+    #[test]
+    fn extract_arg_kv_format_tool_call() {
+        let text = r#"
+<tool_call>
+<function>bash</function>
+<arg_key>thought</arg_key>
+<arg_value>Let me check what files are here.</arg_value>
+<arg_key>command</arg_key>
+<arg_value>ls -la</arg_value>
+</tool_call>"#;
+
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "bash");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        // "thought" should be stripped — it's model reasoning, not a tool argument
+        assert!(args.get("thought").is_none());
+        assert_eq!(args["command"], "ls -la");
+        assert!(cleaned.is_none() || cleaned.as_deref().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn extract_arg_kv_format_multiple_args() {
+        let text = r#"<tool_call>
+<function>write_file</function>
+<arg_key>file_path</arg_key>
+<arg_value>/tmp/test.py</arg_value>
+<arg_key>content</arg_key>
+<arg_value>
+print("hello")
+</arg_value>
+</tool_call>"#;
+
+        let (calls, cleaned) = extract_tool_calls_from_text(Some(text));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "write_file");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["file_path"], "/tmp/test.py");
+        assert_eq!(args["content"], "print(\"hello\")");
+        assert!(cleaned.is_none() || cleaned.as_deref().unwrap().trim().is_empty());
     }
 }
