@@ -422,7 +422,11 @@ impl Mode {
 
     /// Cycle to the next mode within the given allowed list.
     pub fn cycle_within(self, allowed: &[Self]) -> Self {
-        let list = if allowed.is_empty() { Self::ALL } else { allowed };
+        let list = if allowed.is_empty() {
+            Self::ALL
+        } else {
+            allowed
+        };
         let pos = list.iter().position(|&m| m == self);
         match pos {
             Some(i) => list[(i + 1) % list.len()],
