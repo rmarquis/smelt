@@ -379,8 +379,9 @@ async fn main() {
     };
 
     // Start the engine
+    let workspace = engine::paths::git_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut permissions = engine::Permissions::load();
-    permissions.set_workspace(cwd.clone());
+    permissions.set_workspace(workspace);
     permissions.set_restrict_to_workspace(restrict_to_workspace);
     let permissions = Arc::new(permissions);
     let initial_api_base = api_base.clone();
