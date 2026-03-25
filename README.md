@@ -33,6 +33,13 @@ read -s OPENAI_API_KEY && export OPENAI_API_KEY
 agent --model gpt-5.4 --api-base https://api.openai.com/v1 --api-key-env OPENAI_API_KEY
 ```
 
+**With Anthropic:**
+
+```bash
+read -s ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY
+agent --model claude-opus-4-5 --api-base https://api.anthropic.com/v1 --api-key-env ANTHROPIC_API_KEY
+```
+
 ## Features
 
 - **Tool use** — file read/write/edit, glob, grep, bash execution, notebook
