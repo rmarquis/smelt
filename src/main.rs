@@ -402,6 +402,7 @@ async fn main() {
         system_prompt_override,
         cwd,
         permissions: permissions.clone(),
+        interactive: !args.headless,
     });
 
     // Fetch context window in background (only needed for interactive mode)

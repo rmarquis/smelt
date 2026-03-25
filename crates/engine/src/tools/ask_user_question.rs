@@ -5,6 +5,10 @@ use std::collections::HashMap;
 pub struct AskUserQuestionTool;
 
 impl Tool for AskUserQuestionTool {
+    fn interactive_only(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "ask_user_question"
     }

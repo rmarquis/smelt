@@ -1,10 +1,20 @@
 use super::{str_arg, Tool, ToolContext, ToolFuture, ToolResult};
+use protocol::Mode;
 use serde_json::Value;
 use std::collections::HashMap;
 
 pub struct ExitPlanModeTool;
 
 impl Tool for ExitPlanModeTool {
+    fn interactive_only(&self) -> bool {
+        true
+    }
+
+    fn modes(&self) -> Option<&[Mode]> {
+        static MODES: [Mode; 1] = [Mode::Plan];
+        Some(&MODES)
+    }
+
     fn name(&self) -> &str {
         "exit_plan_mode"
     }

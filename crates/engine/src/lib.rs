@@ -61,6 +61,8 @@ pub struct EngineConfig {
     pub system_prompt_override: Option<String>,
     pub cwd: PathBuf,
     pub permissions: Arc<Permissions>,
+    /// True when a human is present (TUI mode). False for headless.
+    pub interactive: bool,
 }
 
 /// Handle to a running engine. Send commands, receive events.

@@ -81,6 +81,16 @@ pub trait Tool: Send + Sync {
     fn approval_patterns(&self, _args: &HashMap<String, Value>) -> Vec<String> {
         vec![]
     }
+
+    /// Whether this tool requires a human in the loop.
+    fn interactive_only(&self) -> bool {
+        false
+    }
+
+    /// Which modes this tool is available in. None means all modes.
+    fn modes(&self) -> Option<&[Mode]> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -104,10 +114,20 @@ impl ToolRegistry {
             .map(|t| t.as_ref())
     }
 
-    pub fn definitions(&self, permissions: &Permissions, mode: Mode) -> Vec<ToolDefinition> {
+    pub fn definitions(&self, permissions: &Permissions, mode: Mode, interactive: bool) -> Vec<ToolDefinition> {
         self.tools
             .iter()
-            .filter(|t| permissions.check_tool(mode, t.name()) != Decision::Deny)
+            .filter(|t| {
+                if t.interactive_only() && !interactive {
+                    return false;
+                }
+                if let Some(modes) = t.modes() {
+                    if !modes.contains(&mode) {
+                        return false;
+                    }
+                }
+                permissions.check_tool(mode, t.name()) != Decision::Deny
+            })
             .map(|t| {
                 ToolDefinition::new(FunctionSchema {
                     name: t.name().into(),
