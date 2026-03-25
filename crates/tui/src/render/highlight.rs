@@ -50,9 +50,6 @@ pub(crate) fn render_code_block(
         .find_syntax_by_extension(ext)
         .or_else(|| SYNTAX_SET.find_syntax_by_name(lang))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    if dim {
-        let _ = out.queue(SetAttribute(Attribute::Dim));
-    }
     let theme = &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended];
     let content_width = if let Some(b) = bctx { b.inner_w } else { width };
     let text_w = content_width.saturating_sub(1).max(1);
@@ -73,6 +70,9 @@ pub(crate) fn render_code_block(
                 b.print_left($out);
             } else if !indent.is_empty() {
                 let _ = $out.queue(Print(indent));
+            }
+            if dim {
+                let _ = $out.queue(SetAttribute(Attribute::Dim));
             }
         };
     }
