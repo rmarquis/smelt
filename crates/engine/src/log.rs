@@ -81,6 +81,13 @@ fn dirs() -> PathBuf {
     crate::paths::state_dir().join("logs")
 }
 
+/// Returns the logs directory, creating it if necessary.
+pub fn logs_dir() -> PathBuf {
+    let dir = dirs();
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
 pub fn entry(level: Level, event: &str, data: &impl Serialize) {
     if !level.enabled() {
         return;

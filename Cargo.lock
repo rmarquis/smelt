@@ -15,6 +15,7 @@ dependencies = [
  "clap",
  "crossterm",
  "engine",
+ "libc",
  "protocol",
  "reqwest",
  "tokio",

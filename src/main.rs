@@ -477,6 +477,9 @@ async fn main() {
     if args.headless {
         app.run_headless(args.message.unwrap()).await;
     } else {
+        // Redirect stderr to a log file so stray output from system processes
+        // (e.g. polkit, PAM) or libraries doesn't corrupt the TUI display.
+        redirect_stderr();
         println!();
         app.run(ctx_rx, args.message).await;
         if !app.session.messages.is_empty() {
@@ -484,4 +487,30 @@ async fn main() {
         }
     }
     tui::perf::print_summary();
+}
+
+/// Redirect stderr (fd 2) to a file in the logs directory so that any stray
+/// output from system daemons, libraries, or child processes doesn't pollute
+/// the TUI display.
+fn redirect_stderr() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let dir = engine::log::logs_dir();
+        let path = dir.join("stderr.log");
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let file_fd = file.as_raw_fd();
+            // dup2 the log file onto fd 2 (stderr).
+            // SAFETY: both fds are valid open file descriptors.
+            unsafe {
+                libc::dup2(file_fd, 2);
+            }
+            // `file` is dropped here but fd 2 now points to the same open file
+            // description, so it stays open.
+        }
+    }
 }
