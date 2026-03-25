@@ -1829,7 +1829,7 @@ impl Screen {
         let vim_indicator_rows = if comp_rows == 0 {
             if let Some(label) = vim_mode_label(state.vim_mode()) {
                 let _ = out.queue(Print("\r\n"));
-                let _ = out.queue(Print("  "));
+                let _ = out.queue(Print(" "));
                 let _ = out.queue(SetAttribute(Attribute::Bold));
                 let _ = out.queue(Print(label));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
