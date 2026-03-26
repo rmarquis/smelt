@@ -849,6 +849,7 @@ impl Screen {
         let height = terminal::size().map(|(_, h)| h).unwrap_or(24);
         let mut out = RenderOut::scroll();
         let _ = out.queue(cursor::MoveTo(0, end_row.min(height.saturating_sub(1))));
+        let _ = out.queue(Print("\r\n\r\n"));
         if clear_below {
             let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
         }
@@ -2200,7 +2201,7 @@ impl Screen {
         let mut comp_rows = comp_total;
 
         // Reserve space for the status line (always shown when no completions/menus).
-        let status_line_reserve: usize = if comp_total == 0 { 2 } else { 0 };
+        let status_line_reserve: usize = if comp_total == 0 { 1 } else { 0 };
 
         let fixed_base = stash_rows + queued_rows + 2 + status_line_reserve;
         let mut fixed = fixed_base + comp_rows;
@@ -2421,7 +2422,7 @@ impl Screen {
             bar_color,
         );
 
-        // Status line below the prompt: vim mode + procs + agents + blank line.
+        // Status line below the prompt: vim mode + procs + agents.
         // Always shown unless completions or menus are visible.
         let status_line_rows = if comp_rows == 0 {
             let vim_label = vim_mode_label(state.vim_mode());
@@ -2464,10 +2465,7 @@ impl Screen {
                 let _ = out.queue(ResetColor);
             }
             let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
-            // Blank line below the status line.
-            let _ = out.queue(Print("\r\n"));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
-            2
+            1
         } else {
             0
         };

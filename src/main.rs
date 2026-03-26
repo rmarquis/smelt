@@ -400,7 +400,6 @@ async fn main() {
                 };
                 let _ = crossterm::terminal::disable_raw_mode();
                 let _ = std::io::stdout().execute(crossterm::event::DisableBracketedPaste);
-                println!();
                 if let Some(id) = session_id {
                     tui::session::print_resume_hint(&id);
                 }

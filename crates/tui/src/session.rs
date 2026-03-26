@@ -368,15 +368,11 @@ fn sessions_dir() -> PathBuf {
 
 pub fn print_resume_hint(session_id: &str) {
     use crossterm::style::{Attribute, Print, SetAttribute};
-    use crossterm::terminal::{Clear, ClearType};
     use crossterm::QueueableCommand;
     use std::io::Write;
 
     let short = shortest_unique_prefix(session_id);
     let mut out = std::io::stdout();
-    // Clear the current line (may contain leftover bar/tab content).
-    let _ = out.queue(Clear(ClearType::CurrentLine));
-    let _ = out.queue(Print("\r"));
     let _ = out.queue(SetAttribute(Attribute::Dim));
     let _ = out.queue(Print(format!("resume with:\nagent --resume {short}\n")));
     let _ = out.queue(SetAttribute(Attribute::Reset));
