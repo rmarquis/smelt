@@ -408,6 +408,22 @@ impl App {
                     let removed = pending.remove(idx);
                     if removed.name == "spawn_agent" {
                         self.screen.finish_active_agent();
+                        // Extract agent_id from result and kill if blocking.
+                        let agent_id = result
+                            .content
+                            .strip_prefix("agent ")
+                            .and_then(|s| s.split_whitespace().next())
+                            .unwrap_or("")
+                            .to_string();
+                        if let Some(idx) =
+                            self.agents.iter().position(|a| a.agent_id == agent_id && a.blocking)
+                        {
+                            let pid = self.agents[idx].pid;
+                            engine::registry::kill_agent(pid);
+                            self.agents.remove(idx);
+                            self.refresh_agent_counts();
+                            self.sync_agent_snapshots();
+                        }
                     } else {
                         let status = if result.is_error {
                             ToolStatus::Err
