@@ -138,7 +138,7 @@ impl super::Dialog for HelpDialog {
                 crlf(&mut out);
             } else {
                 let _ = out.queue(Print("  "));
-                let _ = out.queue(SetForegroundColor(theme::MUTED));
+                let _ = out.queue(SetForegroundColor(theme::muted()));
                 let _ = out.queue(Print(label));
                 let _ = out.queue(crossterm::style::ResetColor);
                 let padding = " ".repeat(label_col.saturating_sub(label.len()));

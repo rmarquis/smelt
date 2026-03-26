@@ -514,6 +514,7 @@ impl App {
         mut ctx_rx: Option<tokio::sync::oneshot::Receiver<Option<u32>>>,
         initial_message: Option<String>,
     ) {
+        crate::theme::detect_background();
         terminal::enable_raw_mode().ok();
         let _ = io::stdout().execute(EnableBracketedPaste);
 
@@ -822,8 +823,7 @@ impl App {
                         }
                     }
                 }
-                self.screen
-                    .set_pending_dialog(!pending_dialogs.is_empty());
+                self.screen.set_pending_dialog(!pending_dialogs.is_empty());
             }
 
             // ── Render ───────────────────────────────────────────────────
@@ -1446,7 +1446,7 @@ fn log_thinking(content: &str) {
 }
 
 fn log_tool_start(tool_name: &str, summary: &str) {
-    let c = ansi_fg(crate::theme::TOOL_PENDING);
+    let c = ansi_fg(crate::theme::tool_pending());
     let r = reset();
     eprintln!("{c}  > {tool_name}{r} {summary}");
 }

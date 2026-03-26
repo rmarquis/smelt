@@ -179,7 +179,7 @@ impl BoxContext {
 
 fn reasoning_color(effort: protocol::ReasoningEffort) -> Color {
     match effort {
-        protocol::ReasoningEffort::Off => theme::REASON_OFF,
+        protocol::ReasoningEffort::Off => theme::reason_off(),
         protocol::ReasoningEffort::Low => theme::REASON_LOW,
         protocol::ReasoningEffort::Medium => theme::REASON_MED,
         protocol::ReasoningEffort::High => theme::REASON_HIGH,
@@ -2047,7 +2047,7 @@ impl Screen {
         } else {
             0
         };
-        let bar_color = theme::BAR;
+        let bar_color = theme::bar();
 
         // Build all bar spans with priorities. draw_bar drops highest
         // priority first until everything fits.
@@ -2095,7 +2095,7 @@ impl Screen {
         if let Some(ref model) = self.model_label {
             right_spans.push(BarSpan {
                 text: format!(" {}", model),
-                color: theme::MUTED,
+                color: theme::muted(),
                 bg: None,
                 attr: None,
                 priority: 2,
@@ -2123,7 +2123,7 @@ impl Screen {
             }
             right_spans.push(BarSpan {
                 text: format!(" {}", format_tokens(tokens)),
-                color: theme::MUTED,
+                color: theme::muted(),
                 bg: None,
                 attr: None,
                 priority: 1,
@@ -2361,7 +2361,7 @@ impl Screen {
                 // Render the `!` prefix with its own style (possibly selected).
                 let bang_selected = line_sel.is_some_and(|(s, _)| s == 0);
                 if bang_selected {
-                    let _ = out.queue(SetBackgroundColor(theme::SELECTION_BG));
+                    let _ = out.queue(SetBackgroundColor(theme::selection_bg()));
                 }
                 let _ = out.queue(SetForegroundColor(Color::Red));
                 let _ = out.queue(SetAttribute(Attribute::Bold));
@@ -2570,7 +2570,7 @@ fn render_stash(
     };
     let _ = out.queue(Print("  "));
     let _ = out.queue(SetAttribute(Attribute::Dim));
-    let _ = out.queue(SetForegroundColor(theme::MUTED));
+    let _ = out.queue(SetForegroundColor(theme::muted()));
     let _ = out.queue(Print(format!("{}{}", display, suffix)));
     let _ = out.queue(SetAttribute(Attribute::Reset));
     let _ = out.queue(ResetColor);
@@ -2608,7 +2608,7 @@ fn render_queued(out: &mut RenderOut, queued: &[String], usable: usize) -> u16 {
             if line.is_empty() {
                 let fill = if block_w > 0 { block_w + 1 } else { 2 };
                 let _ = out.queue(Print(" ".repeat(indent)));
-                let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                let _ = out.queue(SetBackgroundColor(theme::user_bg()));
                 let _ = out.queue(Print(" ".repeat(fill)));
                 let _ = out.queue(SetAttribute(Attribute::Reset));
                 let _ = out.queue(ResetColor);
@@ -2625,7 +2625,7 @@ fn render_queued(out: &mut RenderOut, queued: &[String], usable: usize) -> u16 {
                     1
                 };
                 let _ = out.queue(Print(" ".repeat(indent)));
-                let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                let _ = out.queue(SetBackgroundColor(theme::user_bg()));
                 let _ = out.queue(SetAttribute(Attribute::Bold));
                 let _ = out.queue(Print(" "));
                 blocks::print_user_highlights(out, chunk, &[], is_command);
@@ -2709,7 +2709,7 @@ fn render_btw(
             rows += 1;
 
             // Scroll hint or dismiss hint.
-            let _ = out.queue(SetForegroundColor(theme::MUTED));
+            let _ = out.queue(SetForegroundColor(theme::muted()));
             if can_scroll {
                 let end = (btw.scroll_offset + visible).min(total);
                 let _ = out.queue(Print(format!(
@@ -2732,7 +2732,7 @@ fn render_btw(
                 .as_millis()
                 / 150) as usize
                 % SPINNER_FRAMES.len();
-            let _ = out.queue(SetForegroundColor(theme::MUTED));
+            let _ = out.queue(SetForegroundColor(theme::muted()));
             let _ = out.queue(Print(format!("   {} thinking", SPINNER_FRAMES[frame])));
             let _ = out.queue(ResetColor);
             let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
@@ -3300,7 +3300,7 @@ fn render_styled_chars(
                 let _ = out.queue(ResetColor);
             }
             if want_sel {
-                let _ = out.queue(SetBackgroundColor(theme::SELECTION_BG));
+                let _ = out.queue(SetBackgroundColor(theme::selection_bg()));
             }
             if kind == SpanKind::AtRef || kind == SpanKind::Attachment {
                 let _ = out.queue(SetForegroundColor(theme::accent()));
@@ -3314,7 +3314,7 @@ fn render_styled_chars(
     if let Some((s, e)) = selection {
         if e > char_count && s <= char_count {
             if !in_sel {
-                let _ = out.queue(SetBackgroundColor(theme::SELECTION_BG));
+                let _ = out.queue(SetBackgroundColor(theme::selection_bg()));
             }
             let _ = out.queue(Print(' '));
             let _ = out.queue(ResetColor);

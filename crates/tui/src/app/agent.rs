@@ -1221,9 +1221,7 @@ impl App {
         // Queue dialogs when a blocking dialog is active or the user is typing.
         // The queue is drained in the main loop via re-dispatch, so auto-approval
         // checks re-run (handles "always allow" → recheck).
-        let should_queue = active_dialog
-            .as_ref()
-            .is_some_and(|d| d.blocks_agent())
+        let should_queue = active_dialog.as_ref().is_some_and(|d| d.blocks_agent())
             || (last_keypress
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(CONFIRM_DEFER_MS))
                 && !self.input.buf.is_empty());
@@ -1293,9 +1291,7 @@ impl App {
                     let dir = if path.is_dir() {
                         path.to_path_buf()
                     } else {
-                        path.parent()
-                            .unwrap_or(path)
-                            .to_path_buf()
+                        path.parent().unwrap_or(path).to_path_buf()
                     };
                     if downgraded || self.seen_outside_dirs.contains(&dir) {
                         self.seen_outside_dirs.insert(dir.clone());

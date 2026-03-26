@@ -20,6 +20,14 @@ pub(super) static SYNTAX_SET: LazyLock<SyntaxSet> =
 pub(super) static THEME_SET: LazyLock<two_face::theme::EmbeddedLazyThemeSet> =
     LazyLock::new(two_face::theme::extra);
 
+fn syntax_theme() -> &'static syntect::highlighting::Theme {
+    if theme::is_light() {
+        &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtendedLight]
+    } else {
+        &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended]
+    }
+}
+
 struct DiffLayout {
     indent: &'static str,
     gutter_width: usize,
@@ -49,7 +57,7 @@ pub(crate) fn render_code_block(
         .find_syntax_by_extension(ext)
         .or_else(|| SYNTAX_SET.find_syntax_by_name(lang))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let theme = &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended];
+    let theme = syntax_theme();
     let content_width = if let Some(b) = bctx { b.inner_w } else { width };
     let text_w = content_width.max(1);
     let expanded: Vec<String> = lines.iter().map(|l| l.replace('\t', "    ")).collect();
@@ -70,10 +78,10 @@ pub(crate) fn render_code_block(
             if let Some(b) = bctx {
                 b.print_left(out);
             }
-            let cols = print_split_regions(out, vrow, Some(theme::CODE_BLOCK_BG));
+            let cols = print_split_regions(out, vrow, Some(theme::code_block_bg()));
             let pad = content_width.saturating_sub(cols);
             if pad > 0 {
-                let _ = out.queue(SetBackgroundColor(theme::CODE_BLOCK_BG));
+                let _ = out.queue(SetBackgroundColor(theme::code_block_bg()));
                 let _ = out.queue(Print(" ".repeat(pad)));
             }
             if let Some(b) = bctx {
@@ -100,7 +108,7 @@ pub(super) fn render_highlighted(
     max_rows: u16,
 ) -> u16 {
     let indent = "   ";
-    let theme = &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended];
+    let theme = syntax_theme();
     let gutter_width = format!("{}", lines.len()).len();
     let prefix_len = indent.len() + 1 + gutter_width + 3;
     let max_content = term_width().saturating_sub(prefix_len + 1);
@@ -293,7 +301,7 @@ pub(super) fn print_inline_diff(
     let syntax = SYNTAX_SET
         .find_syntax_by_extension(ext)
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let theme = &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended];
+    let theme = syntax_theme();
 
     let indent = "   ";
     let dv = compute_diff_view(old, new, path, anchor);
@@ -833,7 +841,7 @@ impl<'a> BashHighlighter<'a> {
         let syntax = SYNTAX_SET
             .find_syntax_by_extension("sh")
             .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-        let theme = &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended];
+        let theme = syntax_theme();
         Self {
             h: HighlightLines::new(syntax, theme),
         }
@@ -1097,7 +1105,7 @@ pub(crate) fn render_markdown_table(
     let mut total_rows = 0u16;
 
     let bar = |out: &mut RenderOut, dim: bool| {
-        let _ = out.queue(SetForegroundColor(theme::BAR));
+        let _ = out.queue(SetForegroundColor(theme::bar()));
         if dim {
             let _ = out.queue(SetAttribute(Attribute::Dim));
         }

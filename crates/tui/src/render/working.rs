@@ -127,7 +127,7 @@ impl WorkingState {
                     },
                     BarSpan {
                         text: format!(" {}", format_duration(elapsed.as_secs())),
-                        color: theme::MUTED,
+                        color: theme::muted(),
                         bg: None,
                         attr: Some(Attribute::Dim),
                         priority: 0,
@@ -141,7 +141,7 @@ impl WorkingState {
                 let elapsed = start.elapsed();
                 let idx = (elapsed.as_millis() / 150) as usize % SPINNER_FRAMES.len();
                 let spinner_color = if matches!(state, Throbber::Retrying { .. }) {
-                    theme::MUTED
+                    theme::muted()
                 } else {
                     Color::Reset
                 };
@@ -155,7 +155,7 @@ impl WorkingState {
                     },
                     BarSpan {
                         text: format!(" {}", format_duration(elapsed.as_secs())),
-                        color: theme::MUTED,
+                        color: theme::muted(),
                         bg: None,
                         attr: Some(Attribute::Dim),
                         priority: 0,
@@ -165,14 +165,14 @@ impl WorkingState {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
                             text: " · ".into(),
-                            color: theme::MUTED,
+                            color: theme::muted(),
                             bg: None,
                             attr: Some(Attribute::Dim),
                             priority: 3, // drop first
                         });
                         spans.push(BarSpan {
                             text: format!("{:.1} tok/s", avg),
-                            color: theme::MUTED,
+                            color: theme::muted(),
                             bg: None,
                             attr: Some(Attribute::Dim),
                             priority: 3, // drop first
@@ -186,7 +186,7 @@ impl WorkingState {
                         .unwrap_or(delay);
                     spans.push(BarSpan {
                         text: format!(" (retrying in {}s #{})", remaining.as_secs(), attempt),
-                        color: theme::MUTED,
+                        color: theme::muted(),
                         bg: None,
                         attr: Some(Attribute::Dim),
                         priority: 0,
@@ -198,7 +198,7 @@ impl WorkingState {
                 let secs = self.final_elapsed.map(|d| d.as_secs()).unwrap_or(0);
                 let mut spans = vec![BarSpan {
                     text: format!(" done {}", format_duration(secs)),
-                    color: theme::MUTED,
+                    color: theme::muted(),
                     bg: None,
                     attr: Some(Attribute::Dim),
                     priority: 0,
@@ -207,14 +207,14 @@ impl WorkingState {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
                             text: " · ".into(),
-                            color: theme::MUTED,
+                            color: theme::muted(),
                             bg: None,
                             attr: Some(Attribute::Dim),
                             priority: 3,
                         });
                         spans.push(BarSpan {
                             text: format!("{:.1} tok/s", avg),
-                            color: theme::MUTED,
+                            color: theme::muted(),
                             bg: None,
                             attr: Some(Attribute::Dim),
                             priority: 3,
@@ -226,7 +226,7 @@ impl WorkingState {
             Throbber::Interrupted => {
                 vec![BarSpan {
                     text: " interrupted".into(),
-                    color: theme::MUTED,
+                    color: theme::muted(),
                     bg: None,
                     attr: Some(Attribute::Dim),
                     priority: 0,

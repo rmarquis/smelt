@@ -606,7 +606,7 @@ impl super::Dialog for ConfirmDialog {
                 let segments = wrap_line(summary, max_cols);
                 for seg in &segments {
                     let _ = out.queue(Print(" "));
-                    let _ = out.queue(SetForegroundColor(theme::MUTED));
+                    let _ = out.queue(SetForegroundColor(theme::muted()));
                     let _ = out.queue(Print(seg));
                     let _ = out.queue(ResetColor);
                     crlf(&mut out);
@@ -618,7 +618,7 @@ impl super::Dialog for ConfirmDialog {
                 let separator: String = "\u{254c}".repeat(w);
                 // Top separator (only for tools that request it)
                 if self.preview.has_top_separator() {
-                    let _ = out.queue(SetForegroundColor(theme::BAR));
+                    let _ = out.queue(SetForegroundColor(theme::bar()));
                     let _ = out.queue(Print(&separator));
                     let _ = out.queue(ResetColor);
                     crlf(&mut out);
@@ -628,7 +628,7 @@ impl super::Dialog for ConfirmDialog {
                     .render(&mut out, self.preview_scroll as u16, ly.viewport_rows, w);
                 row += ly.viewport_rows;
                 // Bottom separator -- show scroll indicator when content is clipped
-                let _ = out.queue(SetForegroundColor(theme::BAR));
+                let _ = out.queue(SetForegroundColor(theme::bar()));
                 if ly.total_preview > ly.viewport_rows {
                     let pos = format!(
                         " [{}/{}]",
@@ -637,7 +637,7 @@ impl super::Dialog for ConfirmDialog {
                     );
                     let sep_len = w.saturating_sub(pos.len());
                     let _ = out.queue(Print("\u{254c}".repeat(sep_len)));
-                    let _ = out.queue(SetForegroundColor(theme::MUTED));
+                    let _ = out.queue(SetForegroundColor(theme::muted()));
                     let _ = out.queue(Print(&pos));
                 } else {
                     let _ = out.queue(Print(&separator));

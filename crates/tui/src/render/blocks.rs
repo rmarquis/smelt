@@ -110,7 +110,7 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
             for logical_line in &logical_lines {
                 if logical_line.is_empty() {
                     let fill = if block_w > 0 { block_w + 1 } else { 2 };
-                    let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                    let _ = out.queue(SetBackgroundColor(theme::user_bg()));
                     let _ = out.queue(Print(" ".repeat(fill)));
                     let _ = out.queue(SetAttribute(Attribute::Reset));
                     let _ = out.queue(ResetColor);
@@ -126,7 +126,7 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
                     } else {
                         1
                     };
-                    let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+                    let _ = out.queue(SetBackgroundColor(theme::user_bg()));
                     let _ = out.queue(SetAttribute(Attribute::Bold));
                     let _ = out.queue(Print(" "));
                     print_user_highlights(out, chunk, image_labels, is_command);
@@ -206,7 +206,7 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
             let char_len = command.chars().count() + 1;
             let pad_width = (char_len + 2).min(width);
             let trailing = pad_width.saturating_sub(char_len + 1);
-            let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+            let _ = out.queue(SetBackgroundColor(theme::user_bg()));
             let _ = out.queue(SetForegroundColor(theme::EXEC));
             let _ = out.queue(SetAttribute(Attribute::Bold));
             let _ = out.queue(Print(" !"));
@@ -282,7 +282,7 @@ fn render_agent_block(
     let _ = out.queue(SetAttribute(Attribute::NormalIntensity));
 
     if !blocking {
-        let _ = out.queue(SetForegroundColor(crate::theme::MUTED));
+        let _ = out.queue(SetForegroundColor(crate::theme::muted()));
         let _ = out.queue(Print(" started"));
         let _ = out.queue(SetAttribute(Attribute::Reset));
         let _ = out.queue(ResetColor);
@@ -311,7 +311,7 @@ fn render_agent_block(
     if let Some(d) = elapsed {
         if d.as_secs_f64() >= 0.1 {
             let _ = out.queue(SetAttribute(Attribute::Dim));
-            let _ = out.queue(SetForegroundColor(crate::theme::MUTED));
+            let _ = out.queue(SetForegroundColor(crate::theme::muted()));
             let _ = out.queue(Print(format!("  {}", format_duration(d.as_secs()))));
             let _ = out.queue(SetAttribute(Attribute::NormalIntensity));
         }
@@ -376,7 +376,7 @@ pub(super) fn render_tool(
         ToolStatus::Ok => theme::SUCCESS,
         ToolStatus::Err | ToolStatus::Denied => theme::ERROR,
         ToolStatus::Confirm => theme::accent(),
-        ToolStatus::Pending => theme::TOOL_PENDING,
+        ToolStatus::Pending => theme::tool_pending(),
     };
     let time = if matches!(
         name,
@@ -1090,7 +1090,7 @@ pub(super) fn render_active_exec(out: &mut RenderOut, exec: &ActiveExec, width: 
     let elapsed = exec.start_time.elapsed();
     let time_str = format!(" {}", format_duration(elapsed.as_secs()));
 
-    let _ = out.queue(SetBackgroundColor(theme::USER_BG));
+    let _ = out.queue(SetBackgroundColor(theme::user_bg()));
     let _ = out.queue(SetForegroundColor(theme::EXEC));
     let _ = out.queue(SetAttribute(Attribute::Bold));
     let _ = out.queue(Print(" !"));
