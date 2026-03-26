@@ -1485,7 +1485,7 @@ impl Provider {
         &self,
         messages: &[Message],
         model: &str,
-        focus: Option<&str>,
+        instructions: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<String, ProviderError> {
         const COMPACT_PROMPT: &str = include_str!("prompts/compact.txt");
@@ -1512,10 +1512,10 @@ impl Provider {
             .join("\n\n");
 
         let mut system_text = COMPACT_PROMPT.trim().to_string();
-        if let Some(focus) = focus {
+        if let Some(instructions) = instructions {
             system_text.push_str(&format!(
                 "\n\nThe user has asked you to pay special attention to the following when summarizing:\n{}",
-                focus
+                instructions
             ));
         }
 

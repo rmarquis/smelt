@@ -121,10 +121,10 @@ pub async fn engine_task(
                         };
                         turn.run(input_content, history).await;
                     }
-                    UiCommand::Compact { keep_turns, history, model, focus } => {
+                    UiCommand::Compact { keep_turns, history, model, instructions } => {
                         let provider = build_provider(&config, &client);
                         let cancel = crate::cancel::CancellationToken::new();
-                        match compact_history(&provider, &history, keep_turns, &model, focus.as_deref(), &cancel).await {
+                        match compact_history(&provider, &history, keep_turns, &model, instructions.as_deref(), &cancel).await {
                             Ok(messages) => {
                                 let _ = event_tx.send(EngineEvent::CompactionComplete { messages });
                             }
@@ -1195,7 +1195,7 @@ async fn compact_history(
     messages: &[Message],
     keep_turns: usize,
     model: &str,
-    focus: Option<&str>,
+    instructions: Option<&str>,
     cancel: &crate::cancel::CancellationToken,
 ) -> Result<Vec<Message>, ProviderError> {
     let mut user_count = 0;
@@ -1216,7 +1216,9 @@ async fn compact_history(
     }
 
     let to_summarize = &messages[..cut];
-    let summary = provider.compact(to_summarize, model, focus, cancel).await?;
+    let summary = provider
+        .compact(to_summarize, model, instructions, cancel)
+        .await?;
 
     let mut new_messages = vec![Message::user(Content::text(format!(
         "Summary of prior conversation:\n\n{summary}"

@@ -425,7 +425,7 @@ Type `/` to open the command picker:
 | `/clear`, `/new`           | Start a new conversation               |
 | `/resume`                  | Resume a saved session                 |
 | `/model`                   | Switch model                           |
-| `/compact [focus]`         | Compact conversation history           |
+| `/compact [instructions]`  | Compact conversation history           |
 | `/vim`                     | Toggle vim mode                        |
 | `/theme [name]`            | Change accent color                    |
 | `/color [name]`            | Set task slug color (session)          |
@@ -446,7 +446,7 @@ Use `/compact` to summarize older conversation history, freeing up context
 window space. The summary appears as a dim divider in the conversation and
 replaces the older messages sent to the API.
 
-Optionally provide a focus to guide what the summary preserves:
+Optionally provide instructions to guide what the summary preserves:
 
 ```
 /compact keep details about the auth refactor

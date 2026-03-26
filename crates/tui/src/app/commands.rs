@@ -12,11 +12,15 @@ impl App {
         match input {
             "/exit" | "/quit" | ":q" | ":qa" | ":wq" | ":wqa" => CommandAction::Quit,
             "/clear" | "/new" => CommandAction::CancelAndClear,
-            "/compact" => CommandAction::Compact { focus: None },
+            "/compact" => CommandAction::Compact { instructions: None },
             _ if input.starts_with("/compact ") => {
-                let focus = input.strip_prefix("/compact ").unwrap().trim().to_string();
+                let instructions = input.strip_prefix("/compact ").unwrap().trim().to_string();
                 CommandAction::Compact {
-                    focus: if focus.is_empty() { None } else { Some(focus) },
+                    instructions: if instructions.is_empty() {
+                        None
+                    } else {
+                        Some(instructions)
+                    },
                 }
             }
             "/resume" => {

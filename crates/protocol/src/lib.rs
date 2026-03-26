@@ -365,7 +365,7 @@ pub enum UiCommand {
         keep_turns: usize,
         history: Vec<Message>,
         model: String,
-        focus: Option<String>,
+        instructions: Option<String>,
     },
 
     /// Generate a title for the session based on recent user messages.

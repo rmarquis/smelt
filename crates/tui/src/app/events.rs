@@ -199,12 +199,12 @@ impl App {
                                 self.screen.erase_prompt();
                                 *agent = Some(self.begin_custom_command_turn(*cmd));
                             }
-                            InputOutcome::Compact { focus } => {
+                            InputOutcome::Compact { instructions } => {
                                 self.screen.erase_prompt();
                                 if self.history.is_empty() {
                                     self.screen.notify_error("nothing to compact".into());
                                 } else {
-                                    self.compact_history(focus);
+                                    self.compact_history(instructions);
                                 }
                             }
                             InputOutcome::Exec(rx, kill) => {
@@ -729,7 +729,9 @@ impl App {
             CommandAction::CancelAndClear => {
                 return InputOutcome::CancelAndClear;
             }
-            CommandAction::Compact { focus } => return InputOutcome::Compact { focus },
+            CommandAction::Compact { instructions } => {
+                return InputOutcome::Compact { instructions }
+            }
             CommandAction::OpenDialog(dlg) => return InputOutcome::OpenDialog(dlg),
             CommandAction::Exec(rx, kill) => return InputOutcome::Exec(rx, kill),
             CommandAction::Continue => {}

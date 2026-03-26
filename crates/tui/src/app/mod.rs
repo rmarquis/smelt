@@ -183,7 +183,7 @@ enum CommandAction {
     Quit,
     CancelAndClear,
     Compact {
-        focus: Option<String>,
+        instructions: Option<String>,
     },
     OpenDialog(Box<dyn render::Dialog>),
     Exec(
@@ -284,7 +284,7 @@ enum InputOutcome {
     StartAgent,
     CancelAndClear,
     Compact {
-        focus: Option<String>,
+        instructions: Option<String>,
     },
     Quit,
     OpenDialog(Box<dyn render::Dialog>),
@@ -688,12 +688,12 @@ impl App {
                                     let content = Content::text(text.clone());
                                     agent = Some(self.begin_agent_turn(&text, content));
                                 }
-                                InputOutcome::Compact { focus } => {
+                                InputOutcome::Compact { instructions } => {
                                     self.screen.erase_prompt();
                                     if self.history.is_empty() {
                                         self.screen.notify_error("nothing to compact".into());
                                     } else {
-                                        self.compact_history(focus);
+                                        self.compact_history(instructions);
                                     }
                                 }
                                 InputOutcome::CustomCommand(cmd) => {

@@ -419,14 +419,14 @@ impl App {
         });
     }
 
-    pub fn compact_history(&mut self, focus: Option<String>) {
+    pub fn compact_history(&mut self, instructions: Option<String>) {
         self.pending_compact_epoch = self.compact_epoch;
         self.screen.set_throbber(render::Throbber::Compacting);
         self.engine.send(UiCommand::Compact {
             keep_turns: 2,
             history: self.history.clone(),
             model: self.model.clone(),
-            focus,
+            instructions,
         });
     }
 

@@ -79,7 +79,7 @@ impl Completer {
         let cmd = buf.split_whitespace().next()?;
         match cmd {
             "/btw" => Some(("/btw".into(), "<question>".into())),
-            "/compact" => Some(("/compact".into(), "<focus>".into())),
+            "/compact" => Some(("/compact".into(), "<instructions>".into())),
             _ => {
                 for (prefix, items) in arg_sources {
                     if cmd == prefix {
