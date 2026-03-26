@@ -491,17 +491,26 @@ impl Vim {
                 Action::Consumed
             }
             'J' => {
-                let after = &buf[*cpos..];
-                if let Some(nl) = after.find('\n') {
+                let count = self.take_count().max(2);
+                let eol = line_end(buf, *cpos);
+                if eol < buf.len() {
                     self.save_undo(buf, *cpos, attachments);
-                    let abs = *cpos + nl;
-                    // Remove newline and leading whitespace on next line.
-                    let mut end = abs + 1;
-                    while end < buf.len() && buf.as_bytes()[end] == b' ' {
-                        end += 1;
+                    let mut join_pos = *cpos;
+                    for _ in 1..count {
+                        let after = &buf[join_pos..];
+                        if let Some(nl) = after.find('\n') {
+                            let abs = join_pos + nl;
+                            let mut end = abs + 1;
+                            while end < buf.len() && buf.as_bytes()[end] == b' ' {
+                                end += 1;
+                            }
+                            buf.replace_range(abs..end, " ");
+                            join_pos = abs;
+                        } else {
+                            break;
+                        }
                     }
-                    buf.replace_range(abs..end, " ");
-                    *cpos = abs;
+                    *cpos = join_pos;
                 }
                 Action::Consumed
             }
@@ -523,8 +532,8 @@ impl Vim {
                     } else {
                         let after = advance_chars(buf, *cpos, 1).min(buf.len());
                         buf.insert_str(after, &self.register);
-                        // Cursor on last char of pasted text.
-                        *cpos = after + self.register.len();
+                        let paste_end = after + self.register.len();
+                        *cpos = prev_char_boundary(buf, paste_end).max(after);
                         clamp_normal(buf, cpos);
                     }
                 }
@@ -546,8 +555,8 @@ impl Vim {
                         buf.insert_str(*cpos, &self.register);
                         let plen = self.register.len();
                         if plen > 0 {
-                            // Cursor on last char of pasted text.
-                            *cpos += plen;
+                            let paste_end = *cpos + plen;
+                            *cpos = prev_char_boundary(buf, paste_end).max(*cpos);
                             clamp_normal(buf, cpos);
                         }
                     }
@@ -642,20 +651,7 @@ impl Vim {
             ';' => {
                 if let Some((kind, ch)) = self.last_find {
                     let n = self.take_count();
-                    let mut pos = *cpos;
-                    for _ in 0..n {
-                        // For t/T repeats, temporarily advance past current
-                        // position so we don't re-find the same character.
-                        let search_pos = match kind {
-                            FindKind::ForwardTill => next_char_boundary(buf, pos),
-                            FindKind::BackwardTill => prev_char_boundary(buf, pos),
-                            _ => pos,
-                        };
-                        if let Some(p) = find_char(buf, search_pos, kind, ch) {
-                            pos = p;
-                        }
-                    }
-                    *cpos = pos;
+                    *cpos = repeat_find(buf, *cpos, kind, ch, n);
                 }
                 self.reset_pending();
                 Action::Consumed
@@ -663,19 +659,7 @@ impl Vim {
             ',' => {
                 if let Some((kind, ch)) = self.last_find {
                     let n = self.take_count();
-                    let rev = kind.reversed();
-                    let mut pos = *cpos;
-                    for _ in 0..n {
-                        let search_pos = match rev {
-                            FindKind::ForwardTill => next_char_boundary(buf, pos),
-                            FindKind::BackwardTill => prev_char_boundary(buf, pos),
-                            _ => pos,
-                        };
-                        if let Some(p) = find_char(buf, search_pos, rev, ch) {
-                            pos = p;
-                        }
-                    }
-                    *cpos = pos;
+                    *cpos = repeat_find(buf, *cpos, kind.reversed(), ch, n);
                 }
                 self.reset_pending();
                 Action::Consumed
@@ -819,9 +803,23 @@ impl Vim {
                 Action::Consumed
             }
             'G' => {
-                self.take_count();
-                *cpos = buf.len();
+                let had_count = self.count1.is_some();
+                let n = self.take_count();
+                *cpos = if had_count {
+                    goto_line(buf, n.saturating_sub(1))
+                } else {
+                    buf.len()
+                };
                 clamp_normal(buf, cpos);
+                Action::Consumed
+            }
+
+            // ── Match bracket ────────────────────────────────────────────
+            '%' => {
+                self.reset_counts();
+                if let Some(p) = find_matching_bracket(buf, *cpos) {
+                    *cpos = p;
+                }
                 Action::Consumed
             }
 
@@ -951,6 +949,17 @@ impl Vim {
             'V' if self.mode == ViMode::Visual => {
                 self.mode = ViMode::VisualLine;
                 Action::Consumed
+            }
+
+            // ── Substitute (s → change, S → linewise change) ────────
+            's' => {
+                // Visual s is the same as c.
+                self.handle_visual_char('c', buf, cpos, attachments)
+            }
+            'S' => {
+                // Visual S forces linewise, then changes.
+                self.mode = ViMode::VisualLine;
+                self.handle_visual_char('c', buf, cpos, attachments)
             }
 
             // ── Operators on selection ──────────────────────────────────
@@ -1197,9 +1206,21 @@ impl Vim {
                 Action::Consumed
             }
             'G' => {
-                self.take_count();
-                *cpos = buf.len();
+                let had_count = self.count1.is_some();
+                let n = self.take_count();
+                *cpos = if had_count {
+                    goto_line(buf, n.saturating_sub(1))
+                } else {
+                    buf.len()
+                };
                 clamp_normal(buf, cpos);
+                Action::Consumed
+            }
+            '%' => {
+                self.reset_counts();
+                if let Some(p) = find_matching_bracket(buf, *cpos) {
+                    *cpos = p;
+                }
                 Action::Consumed
             }
             'g' => {
@@ -1225,27 +1246,14 @@ impl Vim {
             ';' => {
                 if let Some((kind, ch)) = self.last_find {
                     let n = self.take_count();
-                    let mut pos = *cpos;
-                    for _ in 0..n {
-                        if let Some(p) = find_char(buf, pos, kind, ch) {
-                            pos = p;
-                        }
-                    }
-                    *cpos = pos;
+                    *cpos = repeat_find(buf, *cpos, kind, ch, n);
                 }
                 Action::Consumed
             }
             ',' => {
                 if let Some((kind, ch)) = self.last_find {
                     let n = self.take_count();
-                    let rev = kind.reversed();
-                    let mut pos = *cpos;
-                    for _ in 0..n {
-                        if let Some(p) = find_char(buf, pos, rev, ch) {
-                            pos = p;
-                        }
-                    }
-                    *cpos = pos;
+                    *cpos = repeat_find(buf, *cpos, kind.reversed(), ch, n);
                 }
                 Action::Consumed
             }
@@ -1307,6 +1315,7 @@ impl Vim {
                     buf.replace_range(pos..end, &replacement);
                     pos += replacement.len();
                 }
+                *cpos = prev_char_boundary(buf, pos).max(*cpos);
                 clamp_normal(buf, cpos);
             }
         }
@@ -1373,28 +1382,7 @@ impl Vim {
                     FindKind::BackwardTill => (advance_chars(buf, pos, 1), *cpos),
                 };
                 if start < end {
-                    match op {
-                        Op::Delete => {
-                            self.save_undo(buf, *cpos, attachments);
-                            self.yank(&buf[start..end], false);
-                            buf.drain(start..end);
-                            *cpos = start;
-                            clamp_normal(buf, cpos);
-                        }
-                        Op::Change => {
-                            self.save_undo(buf, *cpos, attachments);
-                            self.yank(&buf[start..end], false);
-                            buf.drain(start..end);
-                            *cpos = start;
-                            self.enter_insert_mode();
-                            self.reset_counts();
-                            return Action::Consumed;
-                        }
-                        Op::Yank => {
-                            self.yank(&buf[start..end], false);
-                            *cpos = start;
-                        }
-                    }
+                    return self.apply_charwise_op(op, buf, cpos, attachments, start, end);
                 }
             }
         }
@@ -1466,31 +1454,8 @@ impl Vim {
         if let KeyCode::Char(c) = key.code {
             if let Some((start, end)) = text_object(buf, *cpos, inner, c) {
                 let n = self.effective_count();
-                // For text objects, count means repeat the object n times (expand).
-                // Simplified: just use the single object range.
                 let _ = n;
-                match op {
-                    Op::Delete => {
-                        self.save_undo(buf, *cpos, attachments);
-                        self.yank(&buf[start..end], false);
-                        buf.drain(start..end);
-                        *cpos = start;
-                        clamp_normal(buf, cpos);
-                    }
-                    Op::Change => {
-                        self.save_undo(buf, *cpos, attachments);
-                        self.yank(&buf[start..end], false);
-                        buf.drain(start..end);
-                        *cpos = start;
-                        self.enter_insert_mode();
-                        self.reset_counts();
-                        return Action::Consumed;
-                    }
-                    Op::Yank => {
-                        self.yank(&buf[start..end], false);
-                        *cpos = start;
-                    }
-                }
+                return self.apply_charwise_op(op, buf, cpos, attachments, start, end);
             }
         }
         self.reset_pending();
@@ -1601,6 +1566,14 @@ impl Vim {
             KeyCode::Char('0') => (Some(line_start(buf, origin)), false),
             KeyCode::Char('^' | '_') => (Some(first_non_blank(buf, origin)), false),
             KeyCode::Char('$') => (Some(line_end(buf, origin)), false),
+            KeyCode::Char('%') => {
+                if let Some(t) = find_matching_bracket(buf, origin) {
+                    let lo = origin.min(t);
+                    let hi = advance_chars(buf, origin.max(t), 1);
+                    return self.apply_charwise_op(op, buf, cpos, attachments, lo, hi);
+                }
+                (None, false)
+            }
             KeyCode::Char('G') => (Some(buf.len()), true), // linewise
             KeyCode::Char('g') => {
                 self.sub = SubState::WaitingOpG(op);
@@ -1656,28 +1629,7 @@ impl Vim {
             return Action::Consumed;
         }
 
-        match op {
-            Op::Delete => {
-                self.save_undo(buf, *cpos, attachments);
-                self.yank(&buf[start..end], false);
-                buf.drain(start..end);
-                *cpos = start;
-                clamp_normal(buf, cpos);
-            }
-            Op::Change => {
-                self.save_undo(buf, *cpos, attachments);
-                self.yank(&buf[start..end], false);
-                buf.drain(start..end);
-                *cpos = start;
-                self.enter_insert_mode();
-                return Action::Consumed;
-            }
-            Op::Yank => {
-                self.yank(&buf[start..end], false);
-                *cpos = start;
-            }
-        }
-        Action::Consumed
+        self.apply_charwise_op(op, buf, cpos, attachments, start, end)
     }
 
     fn execute_linewise_op(
@@ -1701,6 +1653,41 @@ impl Vim {
         }
         let end = line_end(buf, end_pos);
         self.apply_linewise_op(op, buf, cpos, attachments, start, end)
+    }
+
+    /// Apply a charwise operator over the byte range [start..end).
+    fn apply_charwise_op(
+        &mut self,
+        op: Op,
+        buf: &mut String,
+        cpos: &mut usize,
+        attachments: &mut [AttachmentId],
+        start: usize,
+        end: usize,
+    ) -> Action {
+        match op {
+            Op::Delete => {
+                self.save_undo(buf, *cpos, attachments);
+                self.yank(&buf[start..end], false);
+                buf.drain(start..end);
+                *cpos = start;
+                clamp_normal(buf, cpos);
+            }
+            Op::Change => {
+                self.save_undo(buf, *cpos, attachments);
+                self.yank(&buf[start..end], false);
+                buf.drain(start..end);
+                *cpos = start;
+                self.enter_insert_mode();
+                self.reset_counts();
+                return Action::Consumed;
+            }
+            Op::Yank => {
+                self.yank(&buf[start..end], false);
+                *cpos = start;
+            }
+        }
+        Action::Consumed
     }
 
     /// Apply a linewise operator over the content range [start..end].
@@ -2134,6 +2121,77 @@ fn find_char(buf: &str, cpos: usize, kind: FindKind, ch: char) -> Option<usize> 
             None
         }
     }
+}
+
+/// Repeat a find-char motion `n` times, adjusting for till variants so
+/// repeated `;`/`,` don't get stuck on the same character.
+fn repeat_find(buf: &str, mut pos: usize, kind: FindKind, ch: char, n: usize) -> usize {
+    for _ in 0..n {
+        let search_pos = match kind {
+            FindKind::ForwardTill => next_char_boundary(buf, pos),
+            FindKind::BackwardTill => prev_char_boundary(buf, pos),
+            _ => pos,
+        };
+        if let Some(p) = find_char(buf, search_pos, kind, ch) {
+            pos = p;
+        }
+    }
+    pos
+}
+
+// ── Match bracket ───────────────────────────────────────────────────────────
+
+fn find_matching_bracket(buf: &str, cpos: usize) -> Option<usize> {
+    // Find the first bracket char at or after cpos on the current line.
+    let eol = line_end(buf, cpos);
+    let mut start = cpos;
+    while start < eol {
+        let c = buf[start..].chars().next()?;
+        if matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>') {
+            break;
+        }
+        start += c.len_utf8();
+    }
+    if start >= eol && (start >= buf.len() || buf.as_bytes()[start] == b'\n') {
+        return None;
+    }
+    let bracket = buf[start..].chars().next()?;
+    let (open, close, forward) = match bracket {
+        '(' => ('(', ')', true),
+        ')' => ('(', ')', false),
+        '[' => ('[', ']', true),
+        ']' => ('[', ']', false),
+        '{' => ('{', '}', true),
+        '}' => ('{', '}', false),
+        '<' => ('<', '>', true),
+        '>' => ('<', '>', false),
+        _ => return None,
+    };
+    let mut depth = 0i32;
+    if forward {
+        for (i, c) in buf[start..].char_indices() {
+            if c == open {
+                depth += 1;
+            } else if c == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+        }
+    } else {
+        for (i, c) in buf[..=start].char_indices().rev() {
+            if c == close {
+                depth += 1;
+            } else if c == open {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
 }
 
 // ── Text objects ────────────────────────────────────────────────────────────
@@ -3366,5 +3424,131 @@ mod tests {
         // Single undo should restore original.
         vim.handle_key(key('u'), &mut buf, &mut cpos, &mut attachments);
         assert_eq!(buf, "hello world");
+    }
+
+    // ── Tests for fixed bugs ────────────────────────────────────────
+
+    #[test]
+    fn test_visual_s_substitutes() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("hello world");
+        vim.handle_key(key('v'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('e'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('s'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, " world");
+        assert_eq!(vim.mode(), ViMode::Insert);
+    }
+
+    #[test]
+    fn test_visual_s_capital_linewise() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("aaa\nbbb\nccc");
+        cpos = 4; // on 'bbb'
+        vim.handle_key(key('v'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('l'), &mut buf, &mut cpos, &mut attachments);
+        // S forces linewise change.
+        vim.handle_key(key('S'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(vim.mode(), ViMode::Insert);
+        // The entire line "bbb" should be cleared (linewise change).
+        assert!(buf.contains("aaa"));
+        assert!(buf.contains("ccc"));
+        assert!(!buf.contains("bbb"));
+    }
+
+    #[test]
+    fn test_g_with_count() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("aaa\nbbb\nccc");
+        cpos = 8; // on 'ccc'
+        vim.handle_key(key('2'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('G'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 4); // start of line 2 ("bbb")
+    }
+
+    #[test]
+    fn test_g_without_count_goes_to_end() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("aaa\nbbb\nccc");
+        vim.handle_key(key('G'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 10); // last char 'c'
+    }
+
+    #[test]
+    fn test_r_with_count_cursor_on_last_replaced() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("hello");
+        vim.handle_key(key('3'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('r'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('x'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, "xxxlo");
+        assert_eq!(cpos, 2); // on the last replaced 'x'
+    }
+
+    #[test]
+    fn test_capital_p_cursor_on_last_pasted_char() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("world");
+        vim.register = "hello".to_string();
+        vim.register_linewise = false;
+        vim.handle_key(key('P'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, "helloworld");
+        assert_eq!(cpos, 4); // on 'o' of "hello"
+    }
+
+    #[test]
+    fn test_j_with_count() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("aaa\nbbb\nccc");
+        vim.handle_key(key('3'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('J'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, "aaa bbb ccc");
+    }
+
+    #[test]
+    fn test_j_default_joins_two_lines() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("aaa\nbbb\nccc");
+        vim.handle_key(key('J'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, "aaa bbb\nccc");
+    }
+
+    #[test]
+    fn test_percent_forward() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("foo(bar)baz");
+        cpos = 3; // on '('
+        vim.handle_key(key('%'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 7); // on ')'
+    }
+
+    #[test]
+    fn test_percent_backward() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("foo(bar)baz");
+        cpos = 7; // on ')'
+        vim.handle_key(key('%'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 3); // on '('
+    }
+
+    #[test]
+    fn test_percent_from_before_bracket() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("foo(bar)baz");
+        cpos = 0; // on 'f', should find first bracket on line
+        vim.handle_key(key('%'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 7); // on ')'
+    }
+
+    #[test]
+    fn test_d_percent() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("foo(bar)baz");
+        cpos = 3; // on '('
+        vim.handle_key(key('d'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('%'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(buf, "foobaz");
+        assert_eq!(cpos, 3);
+    }
+
+    #[test]
+    fn test_visual_semicolon_till_advances() {
+        let (mut vim, mut buf, mut cpos, mut attachments) = setup("abcabc");
+        // t to 'c' → lands on 'b' (pos 1)
+        vim.handle_key(key('t'), &mut buf, &mut cpos, &mut attachments);
+        vim.handle_key(key('c'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 1); // on 'b'
+                             // Enter visual mode.
+        vim.handle_key(key('v'), &mut buf, &mut cpos, &mut attachments);
+        // Repeat ; should advance to next 'c' match (pos 4).
+        vim.handle_key(key(';'), &mut buf, &mut cpos, &mut attachments);
+        assert_eq!(cpos, 4); // on second 'b'
     }
 }
