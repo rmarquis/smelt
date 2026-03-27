@@ -13,6 +13,10 @@ pub enum MenuAction {
     Dismiss,
     /// Navigation happened, redraw needed.
     Redraw,
+    /// Character typed (for filterable menus like model picker).
+    Typed(char),
+    /// Backspace pressed (for filterable menus).
+    Backspace,
     /// Key not consumed.
     Noop,
 }
@@ -26,13 +30,49 @@ pub struct Menu {
 }
 
 impl Menu {
-    pub fn handle_event(&mut self, ev: &Event) -> MenuAction {
+    pub fn handle_event(&mut self, ev: &Event, filterable: bool) -> MenuAction {
         let Event::Key(KeyEvent {
             code, modifiers, ..
         }) = ev
         else {
             return MenuAction::Noop;
         };
+
+        // Filterable menus (model picker): Ctrl+J/K nav, typing filters.
+        if filterable {
+            match (*code, *modifiers) {
+                (KeyCode::Esc, _) => return MenuAction::Dismiss,
+                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return MenuAction::Dismiss;
+                }
+                (KeyCode::Enter, m) if !m.contains(KeyModifiers::SHIFT) => {
+                    return MenuAction::Select(self.selected);
+                }
+                (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return MenuAction::Tab;
+                }
+                (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return self.move_down();
+                }
+                (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return self.move_up();
+                }
+                (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return self.move_down();
+                }
+                (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return self.move_up();
+                }
+                (KeyCode::Up, _) => return self.move_up(),
+                (KeyCode::Down, _) => return self.move_down(),
+                (KeyCode::Tab, _) => return MenuAction::Tab,
+                (KeyCode::Backspace, _) => return MenuAction::Backspace,
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    return MenuAction::Typed(c);
+                }
+                _ => return MenuAction::Noop,
+            }
+        }
 
         // Menu-specific keys (before shared nav lookup).
         match (*code, *modifiers) {
@@ -55,30 +95,34 @@ impl Menu {
                 }
             }
             Some(NavAction::Edit) => MenuAction::Tab,
-            Some(NavAction::Up) => {
-                if self.len == 0 {
-                    return MenuAction::Noop;
-                }
-                self.selected = if self.selected > 0 {
-                    self.selected - 1
-                } else {
-                    self.len - 1
-                };
-                MenuAction::Redraw
-            }
-            Some(NavAction::Down) => {
-                if self.len == 0 {
-                    return MenuAction::Noop;
-                }
-                self.selected = if self.selected + 1 < self.len {
-                    self.selected + 1
-                } else {
-                    0
-                };
-                MenuAction::Redraw
-            }
+            Some(NavAction::Up) => self.move_up(),
+            Some(NavAction::Down) => self.move_down(),
             _ => MenuAction::Noop,
         }
+    }
+
+    fn move_up(&mut self) -> MenuAction {
+        if self.len == 0 {
+            return MenuAction::Noop;
+        }
+        self.selected = if self.selected > 0 {
+            self.selected - 1
+        } else {
+            self.len - 1
+        };
+        MenuAction::Redraw
+    }
+
+    fn move_down(&mut self) -> MenuAction {
+        if self.len == 0 {
+            return MenuAction::Noop;
+        }
+        self.selected = if self.selected + 1 < self.len {
+            self.selected + 1
+        } else {
+            0
+        };
+        MenuAction::Redraw
     }
 }
 
@@ -93,8 +137,12 @@ pub enum MenuKind {
         restrict_to_workspace: bool,
     },
     Model {
-        /// (key, model_name, provider_name) for each entry.
+        /// All available models (unfiltered).
+        all_models: Vec<(String, String, String)>,
+        /// Filtered models matching the current query.
         models: Vec<(String, String, String)>,
+        /// Current filter query typed by the user.
+        query: String,
     },
     Stats {
         left: Vec<crate::metrics::StatsLine>,

@@ -1,11 +1,16 @@
-use clap::Parser;
+mod setup;
+
+use clap::{Parser, Subcommand};
 use crossterm::ExecutableCommand;
 use protocol::{Mode, ReasoningEffort};
 use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Coding agent TUI")]
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Commands>,
     /// Initial message to send (auto-submits on startup)
     message: Option<String>,
     #[arg(long, value_name = "PATH", help = "Path to a custom config file")]
@@ -17,7 +22,7 @@ struct Args {
     #[arg(
         long,
         value_name = "TYPE",
-        help = "Provider type: openai-compatible, openai, anthropic"
+        help = "Provider type: openai-compatible, openai, anthropic, codex"
     )]
     r#type: Option<String>,
     #[arg(short, long)]
@@ -108,6 +113,12 @@ struct Args {
     set: Vec<String>,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+    /// Manage provider authentication (add providers, Codex login/logout)
+    Auth,
+}
+
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -118,6 +129,13 @@ async fn main() {
     }));
 
     let args = Args::parse();
+
+    // Handle subcommands before loading config.
+    if let Some(Commands::Auth) = args.command {
+        setup::run_auth_command().await;
+        return;
+    }
+
     let mut cfg = match args.config {
         Some(ref path) => {
             let c = tui::config::Config::load_from(std::path::Path::new(path));
@@ -147,7 +165,28 @@ async fn main() {
         }
     }
     let app_state = tui::state::State::load();
-    let available_models = cfg.resolve_models();
+    let mut available_models = cfg.resolve_models();
+
+    // For Codex providers, fetch models dynamically from the API (with cache).
+    // Codex: load cached models for fast startup, refresh in background.
+    if cfg.has_codex_provider() {
+        let cached = engine::provider::codex::load_cached_models();
+        if cached.is_empty() {
+            // No cache — must fetch synchronously so we have models to show.
+            let client = reqwest::Client::new();
+            let fresh = engine::provider::codex::refresh_models_cache(&client).await;
+            let slugs: Vec<String> = fresh.into_iter().map(|m| m.slug).collect();
+            cfg.inject_codex_models(&mut available_models, &slugs);
+        } else {
+            let slugs: Vec<String> = cached.into_iter().map(|m| m.slug).collect();
+            cfg.inject_codex_models(&mut available_models, &slugs);
+            // Refresh in background so the cache is fresh for next time.
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let _ = engine::provider::codex::refresh_models_cache(&client).await;
+            });
+        }
+    }
 
     // Resolve the active model: CLI flags > defaults.model (if set) > last_used (if no default) > first in config
     let (api_base, api_key, api_key_env, mut provider_type, model, mut model_config) = {
@@ -186,33 +225,29 @@ async fn main() {
                 r.model_name.clone(),
                 r.config.clone(),
             )
-        } else {
-            let Some(base) = args.api_base.clone() else {
-                match cfg.source {
-                    Some(tui::config::ConfigSource::NotFound) => {
-                        eprintln!(
-                            "error: no config file found at {}\n\
-                             Provide --api-base and --model, or create a config file.",
-                            cfg.path.display()
-                        );
-                    }
-                    Some(tui::config::ConfigSource::ParseError) => {
-                        eprintln!(
-                            "error: config file at {} failed to parse (see warning above)\n\
-                             Fix the config or provide --api-base and --model.",
-                            cfg.path.display()
-                        );
-                    }
-                    _ => {
-                        eprintln!(
-                            "error: no providers with models found in {}\n\
-                             Add a provider with models, or provide --api-base and --model.",
-                            cfg.path.display()
-                        );
-                    }
-                }
+        } else if cfg.source == Some(tui::config::ConfigSource::NotFound) && args.api_base.is_none()
+        {
+            // No config at all — run the interactive setup wizard.
+            if !setup::run_initial_setup(&cfg.path).await {
                 std::process::exit(1);
-            };
+            }
+            cfg = tui::config::Config::load_from(&cfg.path);
+            let models = cfg.resolve_models();
+            if let Some(r) = models.first() {
+                let key = std::env::var(&r.api_key_env).unwrap_or_default();
+                (
+                    r.api_base.clone(),
+                    key,
+                    r.api_key_env.clone(),
+                    r.provider_type.clone(),
+                    r.model_name.clone(),
+                    r.config.clone(),
+                )
+            } else {
+                eprintln!("error: setup completed but no models found in config");
+                std::process::exit(1);
+            }
+        } else if let Some(base) = args.api_base.clone() {
             let key_env = args.api_key_env.clone().unwrap_or_default();
             let key = std::env::var(&key_env).unwrap_or_default();
             let Some(model) = args.model.clone() else {
@@ -229,6 +264,24 @@ async fn main() {
                 model,
                 tui::config::ModelConfig::default(),
             )
+        } else {
+            match cfg.source {
+                Some(tui::config::ConfigSource::ParseError) => {
+                    eprintln!(
+                        "error: config file at {} failed to parse (see warning above)\n\
+                         Fix the config or provide --api-base and --model.",
+                        cfg.path.display()
+                    );
+                }
+                _ => {
+                    eprintln!(
+                        "error: no providers with models found in {}\n\
+                         Add a provider with models, or provide --api-base and --model.",
+                        cfg.path.display()
+                    );
+                }
+            }
+            std::process::exit(1);
         }
     };
 

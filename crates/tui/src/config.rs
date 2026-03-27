@@ -179,7 +179,7 @@ pub struct ResolvedModel {
     pub model_name: String,
     pub api_base: String,
     pub api_key_env: String,
-    /// Provider type from config: "openai", "anthropic", or "openai-compatible" (default).
+    /// Provider type from config: "openai", "anthropic", "codex", or "openai-compatible" (default).
     pub provider_type: String,
     pub config: ModelConfig,
 }
@@ -222,6 +222,26 @@ impl Config {
             let provider_name = provider.name.clone().unwrap_or_default();
             let api_base = provider.api_base.clone().unwrap_or_default();
             let api_key_env = provider.api_key_env.clone().unwrap_or_default();
+            let provider_type = provider
+                .provider_type
+                .clone()
+                .unwrap_or_else(|| "openai-compatible".to_string());
+
+            // Codex models are fetched dynamically — emit a placeholder so the
+            // provider is detected even when no models are listed in config.
+            if provider_type == "codex" && provider.models.is_empty() {
+                out.push(ResolvedModel {
+                    key: format!("{}/codex", provider_name),
+                    provider_name: provider_name.clone(),
+                    model_name: String::new(),
+                    api_base: api_base.clone(),
+                    api_key_env: api_key_env.clone(),
+                    provider_type: provider_type.clone(),
+                    config: ModelConfig::default(),
+                });
+                continue;
+            }
+
             for model in &provider.models {
                 let model_name = model.name.clone().unwrap_or_default();
                 if model_name.is_empty() {
@@ -238,15 +258,47 @@ impl Config {
                     model_name,
                     api_base: api_base.clone(),
                     api_key_env: api_key_env.clone(),
-                    provider_type: provider
-                        .provider_type
-                        .clone()
-                        .unwrap_or_else(|| "openai-compatible".to_string()),
+                    provider_type: provider_type.clone(),
                     config: model.clone(),
                 });
             }
         }
         out
+    }
+
+    /// Replace codex placeholders with dynamically fetched model slugs.
+    pub fn inject_codex_models(&self, resolved: &mut Vec<ResolvedModel>, slugs: &[String]) {
+        let Some(codex_provider) = self
+            .providers
+            .iter()
+            .find(|p| p.provider_type.as_deref() == Some("codex"))
+        else {
+            return;
+        };
+
+        let provider_name = codex_provider.name.clone().unwrap_or_default();
+        let api_base = codex_provider.api_base.clone().unwrap_or_default();
+
+        resolved.retain(|m| m.provider_type != "codex");
+
+        for slug in slugs {
+            resolved.push(ResolvedModel {
+                key: format!("{provider_name}/{slug}"),
+                provider_name: provider_name.clone(),
+                model_name: slug.clone(),
+                api_base: api_base.clone(),
+                api_key_env: String::new(),
+                provider_type: "codex".to_string(),
+                config: ModelConfig::default(),
+            });
+        }
+    }
+
+    /// Returns true if the config has a codex provider.
+    pub fn has_codex_provider(&self) -> bool {
+        self.providers
+            .iter()
+            .any(|p| p.provider_type.as_deref() == Some("codex"))
     }
 
     /// Get the default model key from defaults.model

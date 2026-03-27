@@ -1,8 +1,9 @@
 # agent
 
 A Rust TUI coding agent. Connects to any OpenAI-compatible API (Ollama, OpenAI,
-Anthropic, OpenRouter, etc.) and provides an interactive terminal interface for
-code generation, analysis, and assistance.
+Anthropic, Google Gemini, OpenRouter, etc.) or your ChatGPT subscription via
+OpenAI Codex, and provides an interactive terminal interface for code generation,
+analysis, and assistance.
 
 > [!WARNING]
 >
@@ -19,6 +20,9 @@ code generation, analysis, and assistance.
 cargo install --git https://github.com/leonardcser/agent.git
 ```
 
+Running `agent` with no config file will launch an **interactive setup wizard**
+that walks you through selecting a provider and model.
+
 **With Ollama (local):**
 
 ```bash
@@ -31,6 +35,13 @@ agent --model qwen3.5:0.8b --api-base http://localhost:11434/v1
 ```bash
 read -s OPENAI_API_KEY && export OPENAI_API_KEY
 agent --model gpt-5.4 --api-base https://api.openai.com/v1 --api-key-env OPENAI_API_KEY
+```
+
+**With OpenAI Codex (ChatGPT Pro/Plus subscription):**
+
+```bash
+agent auth          # log in with your ChatGPT account
+agent --model gpt-5.4    # use any Codex-supported model
 ```
 
 **With Anthropic:**
@@ -59,6 +70,8 @@ agent --model claude-opus-4-5 --api-base https://api.anthropic.com/v1 --api-key-
 - **Input prediction** — ghost text suggesting your next message
 - **Image support** — paste from clipboard or reference image files
 - **Headless mode** — scriptable, no TUI
+- **Interactive setup** — guided first-run wizard and `agent auth` for managing
+  providers
 
 ## Configuration
 
@@ -67,7 +80,7 @@ Config file: `~/.config/agent/config.yaml` (respects `$XDG_CONFIG_HOME`).
 ```yaml
 providers:
   - name: ollama
-    type: openai-compatible # or: openai, anthropic
+    type: openai-compatible # or: openai, anthropic, codex, gemini
     api_base: http://localhost:11434/v1
     models:
       - qwen3.5:27b
@@ -78,6 +91,10 @@ providers:
     api_key_env: OPENAI_API_KEY
     models:
       - gpt-5.4
+
+  - name: codex
+    type: codex # uses ChatGPT subscription — models fetched automatically
+    api_base: https://chatgpt.com/backend-api/codex
 
 defaults:
   model: ollama/qwen3.5:27b # provider_name/model_name

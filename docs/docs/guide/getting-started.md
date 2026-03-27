@@ -14,6 +14,15 @@ cd agent
 cargo install --path .
 ```
 
+## First-Time Setup
+
+If you run `agent` without a config file, an **interactive setup wizard** walks
+you through selecting a provider and model. It writes your config and you're
+ready to go.
+
+You can also manage providers later with `agent auth` (see
+[Authentication](#authentication) below).
+
 ## Connecting to a Provider
 
 The quickest way to start is with CLI flags — no config file needed.
@@ -39,6 +48,18 @@ SGLang, llama.cpp.
           --api-key-env OPENAI_API_KEY
     ```
 
+=== ":fontawesome-brands-openai: OpenAI Codex"
+
+    No API key needed — authenticate with your ChatGPT Pro/Plus subscription:
+
+    ```bash
+    agent auth   # log in via browser OAuth
+    agent --model gpt-5.4
+    ```
+
+    The Codex provider uses OAuth to connect to your ChatGPT subscription.
+    Tokens are stored locally and refreshed automatically.
+
 === ":simple-anthropic: Anthropic"
 
     ```bash
@@ -62,11 +83,12 @@ The `--type` flag is auto-detected from the URL:
 | URL contains | Detected type |
 | --- | --- |
 | `api.openai.com` | `openai` |
+| `chatgpt.com` | `codex` |
 | `api.anthropic.com` | `anthropic` |
 | anything else | `openai-compatible` |
 
-Override with `--type openai`, `--type anthropic`, or `--type openai-compatible`
-if auto-detection gets it wrong.
+Override with `--type openai`, `--type codex`, `--type anthropic`,
+or `--type openai-compatible` if auto-detection gets it wrong.
 
 ## Writing a Config File
 
@@ -88,12 +110,29 @@ providers:
     models:
       - gpt-5.4
 
+  - name: codex
+    type: codex  # models fetched automatically from the API
+    api_base: https://chatgpt.com/backend-api/codex
+
 defaults:
   model: ollama/qwen3.5:27b   # provider_name/model_name
 ```
 
 Now just run `agent` — it connects to your default model automatically. Switch
 models at runtime with `/model`.
+
+## Authentication
+
+### `agent auth`
+
+The `agent auth` subcommand lets you manage provider connections:
+
+- **Add a new provider** — guided prompts for API base, key, and model
+- **Log in to OpenAI Codex** — browser OAuth (default) or device-code flow for headless environments (SSH, containers)
+- **Log out of OpenAI Codex** — removes stored tokens
+
+Codex tokens are stored securely in your system keyring and refreshed
+automatically.
 
 See the full [Configuration Reference](../reference/configuration.md) for all
 options.

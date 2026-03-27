@@ -401,7 +401,11 @@ impl InputState {
                 len,
                 select_on_enter: true,
             },
-            kind: MenuKind::Model { models },
+            kind: MenuKind::Model {
+                all_models: models.clone(),
+                models,
+                query: String::new(),
+            },
         });
     }
 
@@ -481,12 +485,45 @@ impl InputState {
         match &self.menu {
             Some(ms) => match &ms.kind {
                 MenuKind::Settings { .. } => 6,
-                MenuKind::Model { models } => (models.len() + 2).min(12),
+                MenuKind::Model { models, query, .. } => {
+                    // 5 model rows max + separator + thinking + optional query line
+                    let model_rows = models.len().min(5);
+                    let query_row = if query.is_empty() { 0 } else { 1 };
+                    model_rows + 2 + query_row
+                }
                 MenuKind::Theme { presets, .. } => presets.len().min(14),
                 MenuKind::Color { presets, .. } => presets.len().min(14),
                 MenuKind::Stats { left, right } => crate::metrics::stats_row_count(left, right),
             },
             None => 0,
+        }
+    }
+
+    /// Returns the model filter query if a model picker is active.
+    pub fn model_query(&self) -> Option<&str> {
+        self.menu.as_ref().and_then(|ms| match &ms.kind {
+            MenuKind::Model { query, .. } if !query.is_empty() => Some(query.as_str()),
+            _ => None,
+        })
+    }
+
+    fn filter_models(
+        all_models: &[(String, String, String)],
+        models: &mut Vec<(String, String, String)>,
+        query: &str,
+    ) {
+        if query.is_empty() {
+            *models = all_models.to_vec();
+        } else {
+            let mut scored: Vec<_> = all_models
+                .iter()
+                .filter_map(|m| {
+                    let score = crate::fuzzy::fuzzy_score(&m.1, query)?;
+                    Some((score, m.clone()))
+                })
+                .collect();
+            scored.sort_by_key(|(s, _)| *s);
+            *models = scored.into_iter().map(|(_, m)| m).collect();
         }
     }
 
@@ -1144,7 +1181,38 @@ impl InputState {
 
     fn handle_menu_event(&mut self, ev: &Event) -> Action {
         let ms = self.menu.as_mut().unwrap();
-        match ms.nav.handle_event(ev) {
+        let filterable = matches!(ms.kind, MenuKind::Model { .. });
+        match ms.nav.handle_event(ev, filterable) {
+            MenuAction::Typed(c) => {
+                if let MenuKind::Model {
+                    ref all_models,
+                    ref mut models,
+                    ref mut query,
+                } = ms.kind
+                {
+                    query.push(c);
+                    Self::filter_models(all_models, models, query);
+                    ms.nav.len = models.len();
+                    ms.nav.selected = 0;
+                }
+                Action::Redraw
+            }
+            MenuAction::Backspace => {
+                if let MenuKind::Model {
+                    ref all_models,
+                    ref mut models,
+                    ref mut query,
+                } = ms.kind
+                {
+                    query.pop();
+                    Self::filter_models(all_models, models, query);
+                    ms.nav.len = models.len();
+                    if ms.nav.selected >= models.len() {
+                        ms.nav.selected = 0;
+                    }
+                }
+                Action::Redraw
+            }
             MenuAction::Toggle(idx) => {
                 if let MenuKind::Settings {
                     ref mut vim_enabled,
@@ -1177,7 +1245,7 @@ impl InputState {
             MenuAction::Select(idx) => {
                 let ms = self.menu.take().unwrap();
                 match ms.kind {
-                    MenuKind::Model { ref models } => {
+                    MenuKind::Model { ref models, .. } => {
                         if let Some((key, _, _)) = models.get(idx) {
                             Action::MenuResult(MenuResult::ModelSelect(key.clone()))
                         } else {

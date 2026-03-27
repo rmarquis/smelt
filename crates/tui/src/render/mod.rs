@@ -3450,27 +3450,63 @@ fn draw_menu(
             draw_color_presets(out, presets, selected, max_rows)
         }
         MenuKind::Stats { left, right } => draw_stats(out, left, right, max_rows),
-        MenuKind::Model { models } => {
-            if models.is_empty() {
-                return 0;
-            }
-            let col = models
-                .iter()
-                .map(|(_, name, _)| name.len())
-                .max()
-                .unwrap_or(0)
-                + 4;
+        MenuKind::Model { models, query, .. } => {
             let mut drawn = 0;
-            for (idx, (_, model_name, provider_name)) in models.iter().enumerate() {
-                if drawn >= max_rows {
-                    break;
-                }
-                if drawn > 0 {
-                    let _ = out.queue(Print("\r\n"));
-                }
-                draw_menu_row(out, model_name, provider_name, col, idx == selected);
+
+            // Show filter query if active.
+            if !query.is_empty() && drawn < max_rows {
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+                let _ = out.queue(Print("  filter: "));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                let _ = out.queue(SetForegroundColor(theme::accent()));
+                let _ = out.queue(Print(query));
+                let _ = out.queue(ResetColor);
+                let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
                 drawn += 1;
             }
+
+            if models.is_empty() {
+                if drawn > 0 && drawn < max_rows {
+                    let _ = out.queue(Print("\r\n"));
+                    let _ = out.queue(SetAttribute(Attribute::Dim));
+                    let _ = out.queue(Print("  no matches"));
+                    let _ = out.queue(SetAttribute(Attribute::Reset));
+                    let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+                    drawn += 1;
+                }
+            } else {
+                let max_visible = 5.min(max_rows.saturating_sub(drawn));
+                let total = models.len();
+                let col = models
+                    .iter()
+                    .map(|(_, name, _)| name.len())
+                    .max()
+                    .unwrap_or(0)
+                    + 4;
+
+                // Scroll window around selected item.
+                let mut start = 0;
+                if total > max_visible {
+                    let half = max_visible / 2;
+                    start = selected.saturating_sub(half);
+                    if start + max_visible > total {
+                        start = total - max_visible;
+                    }
+                }
+                let end = (start + max_visible).min(total);
+
+                for (idx, (_, model_name, provider_name)) in
+                    models.iter().enumerate().skip(start).take(end - start)
+                {
+                    if drawn > 0 {
+                        let _ = out.queue(Print("\r\n"));
+                    }
+                    draw_menu_row(out, model_name, provider_name, col, idx == selected);
+                    drawn += 1;
+                }
+            }
+
+            // Always show thinking line.
             if drawn > 0 && drawn + 2 <= max_rows {
                 let _ = out.queue(Print("\r\n"));
                 let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));

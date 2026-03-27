@@ -621,6 +621,7 @@ impl<'a> Turn<'a> {
 
     /// Main agentic loop for a single turn.
     async fn run(&mut self, content: Content, history: Vec<Message>) {
+        self.provider.reset_turn_state();
         self.messages = Vec::with_capacity(history.len() + 2);
         self.messages.push(Message::system(&self.system_prompt));
         self.messages.extend(history);

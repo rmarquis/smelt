@@ -40,34 +40,8 @@ const ZERO: ModelPricing = ModelPricing {
 /// top-to-bottom; more specific entries (e.g. "opus") come before broader ones
 /// (e.g. just "claude"). First match wins.
 const PRICING_TABLE: &[(&[&str], ModelPricing)] = &[
-    // ── Anthropic ────────────────────────────────────────────────────
-    (
-        &["claude", "opus"],
-        ModelPricing {
-            input: 15.0,
-            output: 75.0,
-            cache_read: 1.5,
-            cache_write: 18.75,
-        },
-    ),
-    (
-        &["claude", "sonnet"],
-        ModelPricing {
-            input: 3.0,
-            output: 15.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-        },
-    ),
-    (
-        &["claude", "haiku"],
-        ModelPricing {
-            input: 0.8,
-            output: 4.0,
-            cache_read: 0.08,
-            cache_write: 1.0,
-        },
-    ),
+    // ── OpenAI Codex (ChatGPT subscription — zero cost) ────────────
+    (&["codex"], ZERO),
     // ── OpenAI ───────────────────────────────────────────────────────
     (
         &["gpt-4.1", "nano"],
@@ -139,6 +113,34 @@ const PRICING_TABLE: &[(&[&str], ModelPricing)] = &[
             output: 10.0,
             cache_read: 1.25,
             cache_write: 0.0,
+        },
+    ),
+    // ── Anthropic ────────────────────────────────────────────────────
+    (
+        &["claude", "opus"],
+        ModelPricing {
+            input: 15.0,
+            output: 75.0,
+            cache_read: 1.5,
+            cache_write: 18.75,
+        },
+    ),
+    (
+        &["claude", "sonnet"],
+        ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+        },
+    ),
+    (
+        &["claude", "haiku"],
+        ModelPricing {
+            input: 0.8,
+            output: 4.0,
+            cache_read: 0.08,
+            cache_write: 1.0,
         },
     ),
     // ── Google Gemini ────────────────────────────────────────────────

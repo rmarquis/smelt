@@ -82,4 +82,5 @@ All paths respect `$XDG_STATE_HOME` (default: `~/.local/state`).
 | `~/.local/state/agent/plans/` | Plan mode plan files |
 | `~/.local/state/agent/workspaces/` | Workspace permissions |
 | `~/.local/state/agent/registry/` | Multi-agent registry |
+| `~/.local/state/agent/codex_auth.json` | Codex OAuth tokens |
 | `~/.local/state/agent/logs/` | Log files |

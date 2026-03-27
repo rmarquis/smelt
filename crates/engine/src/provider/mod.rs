@@ -1,5 +1,6 @@
 mod anthropic;
 mod chat_completions;
+pub mod codex;
 mod extract;
 mod openai;
 mod sse;
@@ -166,11 +167,25 @@ impl ProviderError {
     }
 }
 
+fn backoff_delay(attempt: usize) -> Duration {
+    Duration::from_millis(500 * 2u64.pow(attempt as u32))
+}
+
+/// Parse the `retry-after` header from an HTTP response (seconds).
+fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    let val = resp.headers().get("retry-after")?.to_str().ok()?;
+    val.parse::<f64>()
+        .ok()
+        .filter(|&s| s > 0.0)
+        .map(Duration::from_secs_f64)
+}
+
 // ── Provider kind ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenAi,
+    Codex,
     Anthropic,
     Local,
 }
@@ -178,7 +193,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn default_reasoning_cycle(self) -> &'static [ReasoningEffort] {
         match self {
-            Self::OpenAi | Self::Anthropic => &[
+            Self::OpenAi | Self::Codex | Self::Anthropic => &[
                 ReasoningEffort::Off,
                 ReasoningEffort::Low,
                 ReasoningEffort::Medium,
@@ -197,6 +212,7 @@ impl ProviderKind {
     pub fn from_config(provider_type: &str) -> Self {
         match provider_type {
             "openai" => Self::OpenAi,
+            "codex" => Self::Codex,
             "anthropic" => Self::Anthropic,
             _ => Self::Local,
         }
@@ -205,6 +221,8 @@ impl ProviderKind {
     pub fn detect_from_url(api_base: &str) -> Self {
         if api_base.contains("api.openai.com") {
             Self::OpenAi
+        } else if api_base.contains("chatgpt.com") {
+            Self::Codex
         } else if api_base.contains("api.anthropic.com") {
             Self::Anthropic
         } else {
@@ -215,6 +233,7 @@ impl ProviderKind {
     pub fn as_config_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::Codex => "codex",
             Self::Anthropic => "anthropic",
             Self::Local => "openai-compatible",
         }
@@ -249,6 +268,9 @@ pub struct Provider {
     client: Client,
     kind: ProviderKind,
     model_config: crate::config::ModelConfig,
+    /// Sticky routing token for Codex — set from the first response in a turn,
+    /// echoed back on subsequent requests within the same turn.
+    turn_state: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Rewrite an Agent-role message as a user message for API serialization.
@@ -271,7 +293,13 @@ impl Provider {
             client,
             kind,
             model_config: Default::default(),
+            turn_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Reset the sticky routing state. Call this at the start of each new turn.
+    pub fn reset_turn_state(&self) {
+        *self.turn_state.lock().unwrap() = None;
     }
 
     pub fn with_model_config(mut self, config: crate::config::ModelConfig) -> Self {
@@ -281,19 +309,6 @@ impl Provider {
 
     pub fn tool_calling(&self) -> bool {
         self.model_config.tool_calling()
-    }
-
-    fn max_tokens_key(&self) -> &'static str {
-        match self.kind {
-            ProviderKind::OpenAi => "max_completion_tokens",
-            _ => "max_tokens",
-        }
-    }
-
-    fn insert_no_thinking(&self, body: &mut serde_json::Value) {
-        if self.kind == ProviderKind::Local {
-            body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
-        }
     }
 
     pub fn apply_model_overrides(&mut self, overrides: &protocol::ModelConfigOverrides) {
@@ -325,11 +340,31 @@ impl Provider {
         opts: &ChatOptions<'_>,
     ) -> Result<LLMResponse, ProviderError> {
         let is_anthropic = self.kind == ProviderKind::Anthropic;
+        let is_codex = self.kind == ProviderKind::Codex;
+
+        // Codex: resolve OAuth access token (refreshing if needed).
+        let mut codex_auth = if is_codex {
+            Some(
+                codex::ensure_access_token_full(&self.client)
+                    .await
+                    .map_err(ProviderError::Auth)?,
+            )
+        } else {
+            None
+        };
+        let mut codex_401_retried = false;
 
         let (url, mut body) = match self.kind {
             ProviderKind::OpenAi => {
                 let url = format!("{}/responses", self.api_base);
                 let body = openai::build_body(messages, tools, model, effort, &self.model_config);
+                (url, body)
+            }
+            ProviderKind::Codex => {
+                let url = codex::CODEX_API_ENDPOINT.to_string();
+                let mut body =
+                    openai::build_body(messages, tools, model, effort, &self.model_config);
+                body["store"] = serde_json::json!(false);
                 (url, body)
             }
             ProviderKind::Anthropic => {
@@ -351,7 +386,7 @@ impl Provider {
             }
         };
 
-        let use_stream = opts.on_delta.is_some();
+        let use_stream = opts.on_delta.is_some() || is_codex;
         if use_stream {
             body["stream"] = serde_json::json!(true);
             // Request usage data in the final streaming chunk.
@@ -377,7 +412,18 @@ impl Provider {
             let request_start = Instant::now();
 
             let mut req = self.client.post(&url).json(&body);
-            if !self.api_key.is_empty() {
+            if is_codex {
+                if let Some(ref tokens) = codex_auth {
+                    req = req.bearer_auth(&tokens.access_token);
+                    if let Some(id) = &tokens.account_id {
+                        req = req.header("ChatGPT-Account-Id", id);
+                    }
+                    req = req.header("originator", "agent");
+                    if let Some(ref ts) = *self.turn_state.lock().unwrap() {
+                        req = req.header("x-codex-turn-state", ts.as_str());
+                    }
+                }
+            } else if !self.api_key.is_empty() {
                 if is_anthropic {
                     req = req.header("x-api-key", &self.api_key);
                 } else {
@@ -401,7 +447,7 @@ impl Provider {
                             "error": format!("{e:?}"),
                         }));
                         if attempt < max_retries {
-                            let delay = Duration::from_millis(500 * 2u64.pow(attempt as u32));
+                            let delay = backoff_delay(attempt);
                             if attempt > 0 {
                                 if let Some(f) = opts.on_retry { f(delay, attempt as u32); }
                             }
@@ -415,6 +461,7 @@ impl Provider {
 
             if !resp.status().is_success() {
                 let code = resp.status().as_u16();
+                let retry_after = parse_retry_after(&resp);
                 let text = resp.text().await.unwrap_or_default();
 
                 let mut err = ProviderError::from_http(code, text);
@@ -428,12 +475,32 @@ impl Provider {
                     &serde_json::json!({
                         "attempt": attempt,
                         "status": code,
+                        "retry_after_secs": retry_after.map(|d| d.as_secs_f64()),
                         "error": err.to_string(),
                     }),
                 );
 
+                // Codex 401 recovery: refresh tokens and retry once.
+                if is_codex && matches!(err, ProviderError::Auth(_)) && !codex_401_retried {
+                    codex_401_retried = true;
+                    if let Some(ref stale) = codex_auth {
+                        if let Ok(refreshed) =
+                            codex::refresh_tokens(&self.client, &stale.refresh_token).await
+                        {
+                            log::entry(
+                                log::Level::Info,
+                                "codex_401_recovery",
+                                &serde_json::json!({ "account_id": refreshed.account_id }),
+                            );
+                            codex_auth = Some(refreshed);
+                            continue;
+                        }
+                    }
+                }
+
                 if err.is_retryable() && attempt < max_retries {
-                    let delay = Duration::from_millis(500 * 2u64.pow(attempt as u32));
+                    let backoff = backoff_delay(attempt);
+                    let delay = retry_after.map_or(backoff, |ra| ra.max(backoff));
                     if attempt > 0 {
                         if let Some(f) = opts.on_retry {
                             f(delay, attempt as u32);
@@ -445,9 +512,22 @@ impl Provider {
                 return Err(err);
             }
 
-            let parsed = if let Some(on_delta) = opts.on_delta {
+            if is_codex && self.turn_state.lock().unwrap().is_none() {
+                if let Some(val) = resp.headers().get("x-codex-turn-state") {
+                    if let Ok(s) = val.to_str() {
+                        *self.turn_state.lock().unwrap() = Some(s.to_string());
+                    }
+                }
+            }
+
+            let noop_delta: &(dyn Fn(StreamDelta<'_>) + Send + Sync) = &|_| {};
+            let on_delta = opts.on_delta.unwrap_or(noop_delta);
+
+            let parsed = if use_stream {
                 match self.kind {
-                    ProviderKind::OpenAi => openai::read_stream(resp, opts.cancel, on_delta).await,
+                    ProviderKind::OpenAi | ProviderKind::Codex => {
+                        openai::read_stream(resp, opts.cancel, on_delta).await
+                    }
                     ProviderKind::Anthropic => {
                         anthropic::read_stream(resp, opts.cancel, on_delta).await
                     }
@@ -472,7 +552,7 @@ impl Provider {
                 );
 
                 match self.kind {
-                    ProviderKind::OpenAi => openai::parse_response(&data)?,
+                    ProviderKind::OpenAi | ProviderKind::Codex => openai::parse_response(&data)?,
                     ProviderKind::Anthropic => anthropic::parse_response(&data)?,
                     ProviderKind::Local => chat_completions::parse_response(&data)?,
                 }
@@ -587,35 +667,23 @@ impl Provider {
         Ok(summary)
     }
 
-    /// Fire-and-forget short completion (always uses Chat Completions API).
-    async fn complete_raw(&self, body: serde_json::Value) -> Result<String, ProviderError> {
-        let url = format!("{}/chat/completions", self.api_base);
-        let mut req = self.client.post(&url).json(&body);
-        if !self.api_key.is_empty() {
-            req = req.bearer_auth(&self.api_key);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ProviderError::Network(e.to_string()))?;
-        if !resp.status().is_success() {
-            let code = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::from_http(code, text));
-        }
-
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::InvalidResponse(e.to_string()))?;
-        let text = data["choices"]
-            .get(0)
-            .and_then(|c| c["message"]["content"].as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
+    /// Simple helper: run a system+user message pair through `chat()` and return the text.
+    async fn complete_simple(
+        &self,
+        messages: &[Message],
+        model: &str,
+    ) -> Result<String, ProviderError> {
+        let cancel = CancellationToken::new();
+        let resp = self
+            .chat(
+                messages,
+                &[],
+                model,
+                ReasoningEffort::Off,
+                &ChatOptions::new(&cancel),
+            )
+            .await?;
+        let text = resp.content.unwrap_or_default().trim().to_string();
         if text.is_empty() {
             Err(ProviderError::InvalidResponse("empty response".into()))
         } else {
@@ -628,53 +696,15 @@ impl Provider {
         messages: &[protocol::Message],
         model: &str,
     ) -> Result<String, ProviderError> {
-        let api_messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                let mut v = serde_json::to_value(m).unwrap();
-                if m.role == Role::Agent {
-                    fixup_agent_message(m, &mut v);
-                }
-                v
-            })
-            .collect();
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": api_messages,
-            "stop": ["\n"],
-        });
-        body[self.max_tokens_key()] = serde_json::json!(128);
-        self.insert_no_thinking(&mut body);
-        self.complete_raw(body).await
+        self.complete_simple(messages, model).await
     }
 
-    async fn complete_short(
-        &self,
-        prompt: &str,
-        model: &str,
-        max_tokens: u32,
-        temperature: f32,
-        multiline: bool,
-    ) -> Result<String, ProviderError> {
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "Reasoning: low"},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": temperature,
-        });
-        body[self.max_tokens_key()] = serde_json::json!(max_tokens);
-        self.insert_no_thinking(&mut body);
-        if !multiline {
-            body["stop"] = serde_json::json!(["\n"]);
-        }
-        let text = self.complete_raw(body).await?;
-        if multiline {
-            Ok(text.trim().to_string())
-        } else {
-            Ok(normalize_short(&text))
-        }
+    async fn complete_short(&self, prompt: &str, model: &str) -> Result<String, ProviderError> {
+        let messages = vec![
+            Message::system("Reasoning: low".to_string()),
+            Message::user(Content::text(prompt)),
+        ];
+        self.complete_simple(&messages, model).await
     }
 
     pub async fn extract_web_content(
@@ -683,23 +713,15 @@ impl Provider {
         prompt: &str,
         model: &str,
     ) -> Result<String, ProviderError> {
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Answer the user's question based solely on the provided web page content. Be concise and direct."
-                },
-                {
-                    "role": "user",
-                    "content": format!("<content>\n{content}\n</content>\n\n{prompt}"),
-                },
-            ],
-            "temperature": 0.0,
-        });
-        body[self.max_tokens_key()] = serde_json::json!(4096);
-        self.insert_no_thinking(&mut body);
-        self.complete_raw(body).await
+        let messages = vec![
+            Message::system(
+                "Answer the user's question based solely on the provided web page content. Be concise and direct.".to_string(),
+            ),
+            Message::user(Content::text(format!(
+                "<content>\n{content}\n</content>\n\n{prompt}"
+            ))),
+        ];
+        self.complete_simple(&messages, model).await
     }
 
     pub async fn complete_title(
@@ -722,7 +744,7 @@ impl Provider {
             numbered.join("\n")
         );
 
-        let raw = self.complete_short(&prompt, model, 64, 0.2, true).await?;
+        let raw = self.complete_short(&prompt, model).await?;
         let (title, slug) = parse_title_and_slug(&raw);
 
         Ok((title, slug))

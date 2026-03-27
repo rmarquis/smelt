@@ -97,7 +97,7 @@ impl WorkingState {
     pub fn spinner_char(&self) -> Option<&'static str> {
         let state = self.throbber?;
         match state {
-            Throbber::Working | Throbber::Compacting => {
+            Throbber::Working | Throbber::Compacting | Throbber::Retrying { .. } => {
                 let start = self.since?;
                 let idx = (start.elapsed().as_millis() / 150) as usize % SPINNER_FRAMES.len();
                 Some(SPINNER_FRAMES[idx])

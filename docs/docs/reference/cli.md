@@ -2,9 +2,17 @@
 
 ```
 agent [MESSAGE]
+agent auth
 ```
 
-When a message is provided, it auto-submits on startup.
+When a message is provided, it auto-submits on startup. Running with no
+arguments and no config file launches the interactive setup wizard.
+
+## Subcommands
+
+| Subcommand | Description |
+| --- | --- |
+| `agent auth` | Manage provider authentication (add providers, Codex login/logout) |
 
 ## Connection
 
@@ -14,7 +22,7 @@ When a message is provided, it auto-submits on startup.
 | `-m, --model <MODEL>` | Model to use (overrides config) |
 | `--api-base <URL>` | API base URL (overrides config) |
 | `--api-key-env <VAR>` | Env var holding the API key |
-| `--type <TYPE>` | Provider type: `openai-compatible`, `openai`, `anthropic` (auto-detected from URL when omitted) |
+| `--type <TYPE>` | Provider type: `openai`, `codex`, `anthropic`, `gemini`, `openai-compatible` (auto-detected from URL when omitted) |
 
 ## Behavior
 

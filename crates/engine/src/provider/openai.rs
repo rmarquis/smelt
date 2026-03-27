@@ -23,14 +23,16 @@ pub(super) fn build_body(
     effort: ReasoningEffort,
     config: &ModelConfig,
 ) -> serde_json::Value {
+    let mut instructions = String::new();
     let mut input = Vec::new();
     for m in messages {
         match m.role {
             Role::System => {
-                input.push(serde_json::json!({
-                    "role": "developer",
-                    "content": m.content.as_ref().map(|c| c.as_text()).unwrap_or_default(),
-                }));
+                let text = m.content.as_ref().map(|c| c.as_text()).unwrap_or_default();
+                if !instructions.is_empty() {
+                    instructions.push('\n');
+                }
+                instructions.push_str(text);
             }
             Role::User => {
                 let content_val = match &m.content {
@@ -120,7 +122,8 @@ pub(super) fn build_body(
         })
         .collect();
 
-    let mut body = serde_json::json!({ "model": model, "input": input });
+    let mut body =
+        serde_json::json!({ "model": model, "instructions": instructions, "input": input });
 
     if !api_tools.is_empty() {
         body["tools"] = serde_json::json!(api_tools);

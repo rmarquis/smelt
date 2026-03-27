@@ -2,8 +2,9 @@
 
 Config file: `~/.config/agent/config.yaml` (respects `$XDG_CONFIG_HOME`).
 
-If the config file is missing, all defaults are used. If it exists but fails to
-parse, a warning is printed and defaults are used.
+If no config file exists, an interactive setup wizard runs on first launch.
+If the file exists but fails to parse, a warning is printed and defaults are
+used.
 
 ## Full Example
 
@@ -29,6 +30,10 @@ providers:
     api_key_env: OPENAI_API_KEY
     models:
       - gpt-5.4
+
+  - name: codex
+    type: codex  # models fetched automatically from the API
+    api_base: https://chatgpt.com/backend-api/codex
 
   - name: anthropic
     type: anthropic
@@ -113,7 +118,7 @@ Each entry under `providers` defines a connection to an LLM API.
 | Field | Description |
 | --- | --- |
 | `name` | Unique identifier (used in `defaults.model` as prefix) |
-| `type` | `openai-compatible`, `openai`, or `anthropic` |
+| `type` | `openai`, `codex`, `anthropic`, `gemini`, or `openai-compatible` |
 | `api_base` | API endpoint URL |
 | `api_key_env` | Environment variable holding the API key |
 | `models` | List of available models |
@@ -122,9 +127,11 @@ Each entry under `providers` defines a connection to an LLM API.
 
 | Type | Endpoint | Works With |
 | --- | --- | --- |
-| `openai-compatible` | `/v1/chat/completions` | Ollama, vLLM, SGLang, llama.cpp |
 | `openai` | `/v1/responses` | OpenAI, OpenRouter |
+| `codex` | `chatgpt.com/backend-api/codex` (OAuth) | OpenAI Codex (ChatGPT subscription) |
 | `anthropic` | `/v1/messages` + thinking | Anthropic |
+| `gemini` | `/models/{model}:generateContent` | Google Gemini |
+| `openai-compatible` | `/v1/chat/completions` | Ollama, vLLM, SGLang, llama.cpp |
 
 ### Model Configuration
 
@@ -149,8 +156,9 @@ models:
 
 #### Pricing
 
-Cost tracking is built in for popular models (Claude, GPT, Gemini, DeepSeek).
-The session cost is shown in the status bar and total cost appears in `/stats`.
+Cost tracking is built in for popular models (GPT, Claude, Gemini, DeepSeek).
+Codex models are zero-cost (included with your ChatGPT subscription). The
+session cost is shown in the status bar and total cost appears in `/stats`.
 
 For models not in the built-in table, or to override built-in prices, set cost
 fields on the model config. All values are USD per 1 million tokens. Unknown

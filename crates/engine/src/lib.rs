@@ -1,6 +1,7 @@
 mod agent;
 pub mod cancel;
 pub mod config;
+pub mod config_file;
 pub mod image;
 pub mod log;
 pub mod mcp;
