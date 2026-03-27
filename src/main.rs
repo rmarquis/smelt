@@ -443,15 +443,17 @@ async fn main() {
     };
 
     let engine_handle = engine::start(engine::EngineConfig {
-        api_base,
-        api_key,
-        provider_type,
-        model_config: (&model_config).into(),
+        api: engine::ApiConfig {
+            base: api_base,
+            key: api_key,
+            key_env: api_key_env.clone(),
+            provider_type,
+            model_config: (&model_config).into(),
+        },
         instructions,
         system_prompt_override,
         cwd: cwd.clone(),
         permissions: permissions.clone(),
-        api_key_env: api_key_env.clone(),
         multi_agent: if multi_agent {
             Some(engine::MultiAgentConfig {
                 depth: args.depth.unwrap_or(0),

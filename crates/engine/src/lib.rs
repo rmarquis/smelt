@@ -127,21 +127,24 @@ pub struct MultiAgentConfig {
     pub agent_id: Option<String>,
 }
 
-/// Configuration for the engine. Constructed once by the binary.
-pub struct EngineConfig {
-    pub api_base: String,
-    pub api_key: String,
-    /// Provider type: "openai", "anthropic", or "openai-compatible".
+/// API connection and model configuration, grouped for clarity.
+pub struct ApiConfig {
+    pub base: String,
+    pub key: String,
+    pub key_env: String,
     pub provider_type: String,
     pub model_config: ModelConfig,
+}
+
+/// Configuration for the engine. Constructed once by the binary.
+pub struct EngineConfig {
+    pub api: ApiConfig,
     pub instructions: Option<String>,
     /// When set, replaces the entire system prompt (skips the built-in
     /// template, mode overlays, and AGENTS.md instructions).
     pub system_prompt_override: Option<String>,
     pub cwd: PathBuf,
     pub permissions: Arc<Permissions>,
-    /// Name of the environment variable holding the API key.
-    pub api_key_env: String,
     /// Multi-agent settings. `None` when multi-agent is disabled.
     pub multi_agent: Option<MultiAgentConfig>,
     /// True when a human is present (TUI mode). False for headless/subagent.
@@ -297,10 +300,10 @@ pub fn start(config: EngineConfig) -> EngineHandle {
             max_agents: ma.max_agents,
             parent_pid: ma.parent_pid,
             slug: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            api_base: config.api_base.clone(),
-            api_key_env: config.api_key_env.clone(),
-            model: config.model_config.name.clone().unwrap_or_default(),
-            provider_type: config.provider_type.clone(),
+            api_base: config.api.base.clone(),
+            api_key_env: config.api.key_env.clone(),
+            model: config.api.model_config.name.clone().unwrap_or_default(),
+            provider_type: config.api.provider_type.clone(),
             agent_msg_tx: agent_msg_tx.clone(),
             spawned_tx: Some(spawned_tx),
         })

@@ -397,9 +397,7 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::Thinking { content } => {
-                if !self.screen.has_streaming_thinking() {
-                    self.screen.push(Block::Thinking { content });
-                }
+                self.screen.push(Block::Thinking { content });
                 SessionControl::Continue
             }
             EngineEvent::TextDelta { delta } => {
@@ -407,10 +405,8 @@ impl App {
                 SessionControl::Continue
             }
             EngineEvent::Text { content } => {
-                let was_streaming = self.screen.flush_streaming_text();
-                if !was_streaming {
-                    self.screen.push(Block::Text { content });
-                }
+                self.screen.flush_streaming_text();
+                self.screen.push(Block::Text { content });
                 SessionControl::Continue
             }
             EngineEvent::ToolStarted {

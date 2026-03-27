@@ -1,6 +1,6 @@
 use crate::log;
 use crate::permissions::{Decision, Permissions};
-use crate::provider::{self, Provider, ProviderError, ToolDefinition};
+use crate::provider::{self, ChatOptions, Provider, ProviderError, ToolDefinition};
 use crate::tools::{self, ToolContext, ToolRegistry, ToolResult};
 use crate::EngineConfig;
 use protocol::{
@@ -167,7 +167,7 @@ pub async fn engine_task(
                         spawn_predict_request(&config, &client, &model, history, api_base, api_key, &event_tx, generation);
                     }
                     UiCommand::SetModel { provider_type, .. } => {
-                        config.provider_type = provider_type;
+                        config.api.provider_type = provider_type;
                     }
                     _ => {} // Steer, Cancel, etc. only relevant during a turn
                 }
@@ -278,9 +278,7 @@ fn spawn_btw_request(
                 &[],
                 &model,
                 reasoning_effort,
-                &cancel,
-                None,
-                None,
+                &ChatOptions::new(&cancel),
             )
             .await
         {
@@ -372,12 +370,12 @@ fn build_provider_with_overrides(
     api_key: Option<&str>,
 ) -> Provider {
     Provider::new(
-        api_base.unwrap_or(&config.api_base).to_string(),
-        api_key.unwrap_or(&config.api_key).to_string(),
-        &config.provider_type,
+        api_base.unwrap_or(&config.api.base).to_string(),
+        api_key.unwrap_or(&config.api.key).to_string(),
+        &config.api.provider_type,
         client.clone(),
     )
-    .with_model_config(config.model_config.clone())
+    .with_model_config(config.api.model_config.clone())
 }
 
 // ── Turn ────────────────────────────────────────────────────────────────────
@@ -510,7 +508,7 @@ impl<'a> Turn<'a> {
     ) {
         self.model = model;
         self.provider = Provider::new(api_base, api_key, &provider_type, self.http_client.clone())
-            .with_model_config(self.config.model_config.clone());
+            .with_model_config(self.config.api.model_config.clone());
     }
 
     /// Handle a command that arrived during a turn but isn't turn-specific.
@@ -721,21 +719,25 @@ impl<'a> Turn<'a> {
                 continue;
             }
 
-            if let Some(ref reasoning) = reasoning {
-                let trimmed = reasoning.trim();
-                if !trimmed.is_empty() {
-                    self.emit(EngineEvent::Thinking {
-                        content: trimmed.to_string(),
-                    });
+            // Only emit batch Thinking/Text when streaming wasn't active.
+            // When streaming, ThinkingDelta/TextDelta already delivered the content.
+            if partial_text.is_empty() && partial_reasoning.is_empty() {
+                if let Some(ref reasoning) = reasoning {
+                    let trimmed = reasoning.trim();
+                    if !trimmed.is_empty() {
+                        self.emit(EngineEvent::Thinking {
+                            content: trimmed.to_string(),
+                        });
+                    }
                 }
-            }
 
-            if let Some(ref content) = content {
-                let trimmed = content.as_text().trim();
-                if !trimmed.is_empty() {
-                    self.emit(EngineEvent::Text {
-                        content: trimmed.to_string(),
-                    });
+                if let Some(ref content) = content {
+                    let trimmed = content.as_text().trim();
+                    if !trimmed.is_empty() {
+                        self.emit(EngineEvent::Text {
+                            content: trimmed.to_string(),
+                        });
+                    }
                 }
             }
 
@@ -1124,14 +1126,17 @@ impl<'a> Turn<'a> {
                     });
                 }
             };
+            let opts = ChatOptions {
+                cancel: &self.cancel,
+                on_retry: Some(&on_retry),
+                on_delta: Some(&on_delta),
+            };
             let chat_future = self.provider.chat(
                 &self.messages,
                 tool_defs,
                 &self.model,
                 self.reasoning_effort,
-                &self.cancel,
-                Some(&on_retry),
-                Some(&on_delta),
+                &opts,
             );
             tokio::pin!(chat_future);
 

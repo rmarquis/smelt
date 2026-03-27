@@ -482,12 +482,6 @@ pub struct Screen {
     history: BlockHistory,
     active_thinking: Option<ActiveThinking>,
     active_text: Option<ActiveText>,
-    /// True if any ThinkingDelta was received this turn (prevents duplicate
-    /// push when the final EngineEvent::Thinking arrives).
-    had_streaming_thinking: bool,
-    /// True if any TextDelta was received this turn (prevents duplicate
-    /// push when the final EngineEvent::Text arrives).
-    had_streaming_text: bool,
     active_tools: Vec<ActiveTool>,
     active_agent: Option<ActiveAgent>,
     active_exec: Option<ActiveExec>,
@@ -563,8 +557,6 @@ impl Screen {
             history: BlockHistory::new(),
             active_thinking: None,
             active_text: None,
-            had_streaming_thinking: false,
-            had_streaming_text: false,
             active_tools: Vec::new(),
             active_agent: None,
             active_exec: None,
@@ -916,7 +908,6 @@ impl Screen {
     // ── Streaming thinking ────────────────────────────────────────────
 
     pub fn append_streaming_thinking(&mut self, delta: &str) {
-        self.had_streaming_thinking = true;
         let at = self.active_thinking.get_or_insert_with(|| ActiveThinking {
             current_line: String::new(),
             paragraph: String::new(),
@@ -947,12 +938,8 @@ impl Screen {
         self.prompt.dirty = true;
     }
 
-    pub fn has_streaming_thinking(&self) -> bool {
-        self.had_streaming_thinking
-    }
-
-    /// Flush remaining thinking content. Returns true if streaming was ever active.
-    pub fn flush_streaming_thinking(&mut self) -> bool {
+    /// Flush remaining thinking content.
+    pub fn flush_streaming_thinking(&mut self) {
         if let Some(mut at) = self.active_thinking.take() {
             // Commit any remaining content (paragraph + current line).
             if !at.current_line.is_empty() {
@@ -969,13 +956,11 @@ impl Screen {
             }
             self.prompt.dirty = true;
         }
-        self.had_streaming_thinking
     }
 
     // ── Streaming text ─────────────────────────────────────────────────
 
     pub fn append_streaming_text(&mut self, delta: &str) {
-        self.had_streaming_text = true;
         // Text starting means thinking is done — commit remaining thinking.
         if self.active_thinking.is_some() {
             self.flush_streaming_thinking();
@@ -1081,8 +1066,8 @@ impl Screen {
         }
     }
 
-    /// Flush remaining streaming text. Returns true if streaming was ever active.
-    pub fn flush_streaming_text(&mut self) -> bool {
+    /// Flush remaining streaming text.
+    pub fn flush_streaming_text(&mut self) {
         self.flush_streaming_thinking();
         if let Some(mut at) = self.active_text.take() {
             // If inside an unclosed code block, commit current_line as a code line.
@@ -1110,11 +1095,6 @@ impl Screen {
             Self::commit_paragraph(&mut self.history, &mut at);
             self.prompt.dirty = true;
         }
-        let was = self.had_streaming_text;
-        // Reset flags for the next turn.
-        self.had_streaming_thinking = false;
-        self.had_streaming_text = false;
-        was
     }
 
     pub fn start_tool(
@@ -1619,8 +1599,6 @@ impl Screen {
         self.history.clear();
         self.active_thinking = None;
         self.active_text = None;
-        self.had_streaming_thinking = false;
-        self.had_streaming_text = false;
         self.active_tools.clear();
         self.active_agent = None;
         self.active_exec = None;
