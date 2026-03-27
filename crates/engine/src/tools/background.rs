@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::mpsc;
+
+static NEXT_PROC_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Maximum number of output lines retained per background process.
 /// Older lines are dropped once this limit is reached.
@@ -121,6 +124,11 @@ impl ProcessRegistry {
                         }
                     }
                     _ = kill_rx.recv() => {
+                        #[cfg(unix)]
+                        if let Some(pid) = child.id() {
+                            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                        }
+                        #[cfg(not(unix))]
                         let _ = child.kill().await;
                         break;
                     }
@@ -177,8 +185,7 @@ impl ProcessRegistry {
     }
 
     pub fn next_id(&self) -> String {
-        let map = self.0.lock().unwrap();
-        let n = map.len() + 1;
+        let n = NEXT_PROC_ID.fetch_add(1, Ordering::Relaxed);
         format!("proc_{n}")
     }
 

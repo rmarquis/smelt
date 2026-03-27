@@ -64,6 +64,9 @@ impl Tool for WebFetchTool {
     }
 
     fn approval_patterns(&self, args: &HashMap<String, Value>) -> Vec<String> {
+        // Only generate a pattern for the requested URL's domain. If the
+        // response redirects to a different domain we re-prompt rather than
+        // silently following (see execute / fetch_raw).
         domain_pattern(&str_arg(args, "url")).into_iter().collect()
     }
 
@@ -171,6 +174,17 @@ impl WebFetchTool {
             Err(_) => return ToolResult::err("Fetch thread panicked"),
         };
 
+        // Check if redirects landed on a different domain than requested.
+        let final_url = response.url().clone();
+        if final_url.host_str() != parsed_url.host_str() {
+            return ToolResult::err(format!(
+                "Redirect crossed domains: requested {} but landed on {}. \
+                 Re-run with the final URL if intended.",
+                parsed_url.host_str().unwrap_or("?"),
+                final_url.host_str().unwrap_or("?"),
+            ));
+        }
+
         let status = response.status();
         if !status.is_success() {
             return ToolResult::err(format!("HTTP {status}"));
@@ -184,11 +198,15 @@ impl WebFetchTool {
             .to_lowercase();
 
         if IMAGE_TYPES.iter().any(|t| content_type.contains(t)) {
-            let bytes = match response.bytes() {
-                Ok(b) => b,
-                Err(e) => return ToolResult::err(format!("Failed to read image: {e}")),
-            };
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Err(e) = response
+                .take(MAX_RESPONSE_SIZE as u64)
+                .read_to_end(&mut buf)
+            {
+                return ToolResult::err(format!("Failed to read image: {e}"));
+            }
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
             let mime = content_type.split(';').next().unwrap_or("image/png").trim();
             return ToolResult::ok(format!("![image](data:{mime};base64,{b64})"));
         }
