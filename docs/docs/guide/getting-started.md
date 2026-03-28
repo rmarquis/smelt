@@ -2,17 +2,30 @@
 
 ## Installation
 
-```bash
-cargo install --git https://github.com/leonardcser/smelt.git
-```
+=== "Prebuilt Binaries"
 
-Or build from source:
+    Download the latest binary for your platform from
+    [GitHub Releases](https://github.com/leonardcser/smelt/releases) and place
+    it somewhere on your `$PATH`:
 
-```bash
-git clone https://github.com/leonardcser/smelt.git
-cd smelt
-cargo install --path .
-```
+    ```bash
+    tar xzf smelt-*.tar.gz
+    sudo mv smelt /usr/local/bin/
+    ```
+
+=== "From Source"
+
+    ```bash
+    cargo install --git https://github.com/leonardcser/smelt.git
+    ```
+
+    Or clone and build locally:
+
+    ```bash
+    git clone https://github.com/leonardcser/smelt.git
+    cd smelt
+    cargo install --path .
+    ```
 
 ## First-Time Setup
 

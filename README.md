@@ -2,8 +2,8 @@
 
 A Rust TUI coding agent. Connects to any OpenAI-compatible API (Ollama, OpenAI,
 Anthropic, Google Gemini, OpenRouter, etc.) or your ChatGPT subscription via
-OpenAI Codex, and provides an interactive terminal interface for code generation,
-analysis, and assistance.
+OpenAI Codex, and provides an interactive terminal interface for code
+generation, analysis, and assistance.
 
 > [!WARNING]
 >
@@ -14,7 +14,13 @@ analysis, and assistance.
   <img src="assets/demo.gif" alt="demo" width="800">
 </p>
 
-## Quick Start
+## Install
+
+**Prebuilt binaries:**
+
+Download from [GitHub Releases](https://github.com/leonardcser/smelt/releases).
+
+**From source:**
 
 ```bash
 cargo install --git https://github.com/leonardcser/smelt.git
