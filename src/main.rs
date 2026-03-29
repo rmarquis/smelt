@@ -64,7 +64,7 @@ struct Args {
     #[arg(
         long,
         conflicts_with = "no_system_prompt",
-        help = "Override the system prompt"
+        help = "Override the system prompt (string or file path)"
     )]
     system_prompt: Option<String>,
     #[arg(
@@ -475,7 +475,20 @@ async fn main() {
     let system_prompt_override = if args.no_system_prompt {
         Some(String::new())
     } else {
-        args.system_prompt.clone()
+        args.system_prompt.map(|s| {
+            let path = std::path::Path::new(&s);
+            if path.is_file() {
+                std::fs::read_to_string(path).unwrap_or_else(|e| {
+                    eprintln!(
+                        "error: failed to read system prompt file {}: {e}",
+                        path.display()
+                    );
+                    std::process::exit(1);
+                })
+            } else {
+                s
+            }
+        })
     };
 
     // Start the engine

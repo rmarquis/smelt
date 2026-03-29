@@ -42,7 +42,7 @@ Auto-detection:
 | `--reasoning-effort <LEVEL>` | Starting reasoning: `off`, `low`, `medium`, `high`, `max` |
 | `--reasoning-cycle <LEVELS>` | Levels for `Ctrl+T` cycling (comma-separated)             |
 | `--no-tool-calling`          | Disable tools (chat-only)                                 |
-| `--system-prompt <PROMPT>`   | Override the system prompt                                |
+| `--system-prompt <PROMPT>`   | Override the system prompt (string or file path)          |
 | `--no-system-prompt`         | Disable system prompt and AGENTS.md                       |
 | `--set <KEY=VALUE>`          | Override a config setting (repeatable)                    |
 
