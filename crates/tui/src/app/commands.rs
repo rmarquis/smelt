@@ -155,6 +155,14 @@ impl App {
                 self.screen.mark_dirty();
                 CommandAction::Continue
             }
+            "/cost" => {
+                let turns = self.screen.user_turns().len();
+                let lines =
+                    crate::metrics::render_session_cost(self.session_cost_usd, &self.model, turns);
+                self.input.open_cost(lines);
+                self.screen.mark_dirty();
+                CommandAction::Continue
+            }
             _ if input.starts_with("/theme ") => {
                 let name = input.strip_prefix("/theme ").unwrap().trim();
                 if let Some(value) = crate::theme::preset_by_name(name) {

@@ -392,6 +392,18 @@ impl InputState {
         });
     }
 
+    pub fn open_cost(&mut self, lines: Vec<crate::metrics::StatsLine>) {
+        self.completer = None;
+        self.menu = Some(MenuState {
+            nav: Menu {
+                selected: 0,
+                len: 0,
+                select_on_enter: false,
+            },
+            kind: MenuKind::Cost { lines },
+        });
+    }
+
     pub fn open_model_picker(&mut self, models: Vec<(String, String, String)>) {
         let len = models.len();
         self.completer = None;
@@ -477,6 +489,7 @@ impl InputState {
                 MenuResult::Dismissed
             }
             MenuKind::Stats { .. } => MenuResult::Stats,
+            MenuKind::Cost { .. } => MenuResult::Cost,
         })
     }
 
@@ -494,6 +507,7 @@ impl InputState {
                 MenuKind::Theme { presets, .. } => presets.len().min(14),
                 MenuKind::Color { presets, .. } => presets.len().min(14),
                 MenuKind::Stats { left, right } => crate::metrics::stats_row_count(left, right),
+                MenuKind::Cost { lines } => lines.len(),
             },
             None => 0,
         }

@@ -1541,6 +1541,7 @@ mod tests {
         assert!(is_allowed_while_running("/settings").is_ok());
         assert!(is_allowed_while_running("/theme").is_ok());
         assert!(is_allowed_while_running("/stats").is_ok());
+        assert!(is_allowed_while_running("/cost").is_ok());
         assert!(is_allowed_while_running("!ls").is_ok());
     }
 

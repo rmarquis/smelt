@@ -160,7 +160,7 @@ impl App {
                         // Session-only, no persistence needed
                         self.screen.mark_dirty();
                     }
-                    MenuResult::Stats | MenuResult::Dismissed => {}
+                    MenuResult::Stats | MenuResult::Cost | MenuResult::Dismissed => {}
                 }
                 self.input.restore_stash();
                 self.screen.mark_dirty();

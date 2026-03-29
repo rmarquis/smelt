@@ -3450,6 +3450,7 @@ fn draw_menu(
             draw_color_presets(out, presets, selected, max_rows)
         }
         MenuKind::Stats { left, right } => draw_stats(out, left, right, max_rows),
+        MenuKind::Cost { lines } => draw_stats_sequential(out, lines, 0, max_rows),
         MenuKind::Model { models, query, .. } => {
             let mut drawn = 0;
 

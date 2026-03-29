@@ -109,6 +109,7 @@ impl Completer {
             ("fork", "fork current session"),
             ("branch", "fork current session"),
             ("stats", "show token usage statistics"),
+            ("cost", "show session cost"),
             ("theme", "change accent color"),
             ("color", "set task slug color"),
             ("btw", "ask a side question"),

@@ -361,6 +361,28 @@ pub fn stats_line_visual_width(line: &StatsLine) -> usize {
     }
 }
 
+pub fn render_session_cost(cost_usd: f64, model: &str, turns: usize) -> Vec<StatsLine> {
+    let mut lines = Vec::new();
+    lines.push(StatsLine::Heading("session cost".into()));
+    lines.push(StatsLine::Kv {
+        label: "cost".into(),
+        value: if cost_usd > 0.0 {
+            format_cost(cost_usd)
+        } else {
+            "$0".into()
+        },
+    });
+    lines.push(StatsLine::Kv {
+        label: "model".into(),
+        value: model.to_string(),
+    });
+    lines.push(StatsLine::Kv {
+        label: "turns".into(),
+        value: turns.to_string(),
+    });
+    lines
+}
+
 fn fmt(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

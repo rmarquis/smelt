@@ -148,6 +148,9 @@ pub enum MenuKind {
         left: Vec<crate::metrics::StatsLine>,
         right: Vec<crate::metrics::StatsLine>,
     },
+    Cost {
+        lines: Vec<crate::metrics::StatsLine>,
+    },
     Theme {
         /// (name, detail, ansi_value)
         presets: Vec<(&'static str, &'static str, u8)>,
@@ -181,5 +184,6 @@ pub enum MenuResult {
     ThemeSelect(u8),
     ColorSelect(u8),
     Stats,
+    Cost,
     Dismissed,
 }

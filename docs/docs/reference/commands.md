@@ -17,6 +17,7 @@ Type `/` to open the command picker with fuzzy search.
 | `/theme [name]`           | Change accent color                           |
 | `/color [name]`           | Set task slug color                           |
 | `/stats`                  | Show token usage, cost, and activity history  |
+| `/cost`                   | Show current session cost                     |
 | `/vim`                    | Toggle vim mode                               |
 | `/permissions`            | Manage saved permissions                      |
 | `/ps`                     | Manage background processes                   |
