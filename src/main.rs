@@ -346,7 +346,9 @@ async fn main() {
 
     let vim_enabled = cfg.settings.vim_mode.unwrap_or(false);
     let auto_compact = args.subagent || args.headless || cfg.settings.auto_compact.unwrap_or(false);
-    let show_speed = cfg.settings.show_speed.unwrap_or(true);
+    let show_tps = cfg.settings.show_tps.unwrap_or(true);
+    let show_tokens = cfg.settings.show_tokens.unwrap_or(true);
+    let show_cost = cfg.settings.show_cost.unwrap_or(true);
     let input_prediction = cfg.settings.input_prediction.unwrap_or(true);
     let task_slug = cfg.settings.task_slug.unwrap_or(true);
     let restrict_to_workspace = cfg.settings.restrict_to_workspace.unwrap_or(true);
@@ -589,7 +591,9 @@ async fn main() {
         engine_handle,
         vim_enabled,
         auto_compact,
-        show_speed,
+        show_tps,
+        show_tokens,
+        show_cost,
         input_prediction,
         task_slug,
         restrict_to_workspace,

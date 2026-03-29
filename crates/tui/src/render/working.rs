@@ -106,7 +106,7 @@ impl WorkingState {
         }
     }
 
-    pub fn throbber_spans(&self, show_speed: bool) -> Vec<BarSpan> {
+    pub fn throbber_spans(&self, show_tps: bool) -> Vec<BarSpan> {
         let Some(state) = self.throbber else {
             return vec![];
         };
@@ -161,7 +161,7 @@ impl WorkingState {
                         priority: 0,
                     },
                 ];
-                if show_speed {
+                if show_tps {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
                             text: " · ".into(),
@@ -203,7 +203,7 @@ impl WorkingState {
                     attr: Some(Attribute::Dim),
                     priority: 0,
                 }];
-                if show_speed {
+                if show_tps {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
                             text: " · ".into(),

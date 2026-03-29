@@ -133,7 +133,9 @@ impl App {
                     MenuResult::Settings {
                         vim,
                         auto_compact,
-                        show_speed,
+                        show_tps,
+                        show_tokens,
+                        show_cost,
                         show_prediction,
                         show_slug,
                         restrict_to_workspace,
@@ -141,8 +143,12 @@ impl App {
                         self.input.set_vim_enabled(vim);
                         state::set_vim_enabled(vim);
                         self.auto_compact = auto_compact;
-                        self.show_speed = show_speed;
-                        self.screen.set_show_speed(show_speed);
+                        self.show_tps = show_tps;
+                        self.screen.set_show_tps(show_tps);
+                        self.show_tokens = show_tokens;
+                        self.screen.set_show_tokens(show_tokens);
+                        self.show_cost = show_cost;
+                        self.screen.set_show_cost(show_cost);
                         self.show_prediction = show_prediction;
                         self.show_slug = show_slug;
                         self.screen.set_show_slug(show_slug);
@@ -564,13 +570,19 @@ impl App {
                 // Live-preview settings toggles.
                 if let Some(ref ms) = self.input.menu {
                     if let MenuKind::Settings {
-                        show_speed,
+                        show_tps,
+                        show_tokens,
+                        show_cost,
                         show_slug,
                         ..
                     } = ms.kind
                     {
-                        self.show_speed = show_speed;
-                        self.screen.set_show_speed(show_speed);
+                        self.show_tps = show_tps;
+                        self.screen.set_show_tps(show_tps);
+                        self.show_tokens = show_tokens;
+                        self.screen.set_show_tokens(show_tokens);
+                        self.show_cost = show_cost;
+                        self.screen.set_show_cost(show_cost);
                         self.show_slug = show_slug;
                         self.screen.set_show_slug(show_slug);
                     }

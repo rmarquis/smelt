@@ -131,7 +131,9 @@ pub enum MenuKind {
     Settings {
         vim_enabled: bool,
         auto_compact: bool,
-        show_speed: bool,
+        show_tps: bool,
+        show_tokens: bool,
+        show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
         restrict_to_workspace: bool,
@@ -175,7 +177,9 @@ pub enum MenuResult {
     Settings {
         vim: bool,
         auto_compact: bool,
-        show_speed: bool,
+        show_tps: bool,
+        show_tokens: bool,
+        show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
         restrict_to_workspace: bool,

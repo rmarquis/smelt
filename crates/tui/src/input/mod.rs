@@ -350,11 +350,14 @@ impl InputState {
         self.attachment_ids = ids;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn open_settings(
         &mut self,
         vim_enabled: bool,
         auto_compact: bool,
-        show_speed: bool,
+        show_tps: bool,
+        show_tokens: bool,
+        show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
         restrict_to_workspace: bool,
@@ -363,13 +366,15 @@ impl InputState {
         self.menu = Some(MenuState {
             nav: Menu {
                 selected: 0,
-                len: 6,
+                len: 8,
                 select_on_enter: false,
             },
             kind: MenuKind::Settings {
                 vim_enabled,
                 auto_compact,
-                show_speed,
+                show_tps,
+                show_tokens,
+                show_cost,
                 show_prediction,
                 show_slug,
                 restrict_to_workspace,
@@ -466,14 +471,18 @@ impl InputState {
             MenuKind::Settings {
                 vim_enabled,
                 auto_compact,
-                show_speed,
+                show_tps,
+                show_tokens,
+                show_cost,
                 show_prediction,
                 show_slug,
                 restrict_to_workspace,
             } => MenuResult::Settings {
                 vim: vim_enabled,
                 auto_compact,
-                show_speed,
+                show_tps,
+                show_tokens,
+                show_cost,
                 show_prediction,
                 show_slug,
                 restrict_to_workspace,
@@ -1231,7 +1240,9 @@ impl InputState {
                 if let MenuKind::Settings {
                     ref mut vim_enabled,
                     ref mut auto_compact,
-                    ref mut show_speed,
+                    ref mut show_tps,
+                    ref mut show_tokens,
+                    ref mut show_cost,
                     ref mut show_prediction,
                     ref mut show_slug,
                     ref mut restrict_to_workspace,
@@ -1240,10 +1251,12 @@ impl InputState {
                     match idx {
                         0 => *vim_enabled ^= true,
                         1 => *auto_compact ^= true,
-                        2 => *show_speed ^= true,
-                        3 => *show_prediction ^= true,
-                        4 => *show_slug ^= true,
-                        5 => *restrict_to_workspace ^= true,
+                        2 => *show_tps ^= true,
+                        3 => *show_tokens ^= true,
+                        4 => *show_cost ^= true,
+                        5 => *show_prediction ^= true,
+                        6 => *show_slug ^= true,
+                        7 => *restrict_to_workspace ^= true,
                         _ => {}
                     }
                 }

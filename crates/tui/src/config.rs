@@ -82,7 +82,9 @@ pub struct ProviderConfig {
 pub struct SettingsConfig {
     pub vim_mode: Option<bool>,
     pub auto_compact: Option<bool>,
-    pub show_speed: Option<bool>,
+    pub show_tps: Option<bool>,
+    pub show_tokens: Option<bool>,
+    pub show_cost: Option<bool>,
     pub input_prediction: Option<bool>,
     pub task_slug: Option<bool>,
     pub restrict_to_workspace: Option<bool>,
@@ -103,7 +105,9 @@ impl SettingsConfig {
         match key {
             "vim_mode" => self.vim_mode = b()?,
             "auto_compact" => self.auto_compact = b()?,
-            "show_speed" => self.show_speed = b()?,
+            "show_tps" => self.show_tps = b()?,
+            "show_tokens" => self.show_tokens = b()?,
+            "show_cost" => self.show_cost = b()?,
             "input_prediction" => self.input_prediction = b()?,
             "task_slug" => self.task_slug = b()?,
             "restrict_to_workspace" => self.restrict_to_workspace = b()?,

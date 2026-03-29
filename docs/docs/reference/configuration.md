@@ -85,7 +85,9 @@ All toggleable at runtime via `/settings`.
 | ----------------------- | ------- | -------------------------------------------------------------------- |
 | `vim_mode`              | `false` | Vi keybindings                                                       |
 | `auto_compact`          | `false` | Auto-summarize at 80% context usage (always on in headless/subagent) |
-| `show_speed`            | `true`  | Tokens/sec in status bar                                             |
+| `show_tps`              | `true`  | Tokens/sec in status bar                                             |
+| `show_tokens`           | `true`  | Context token count in status bar                                    |
+| `show_cost`             | `true`  | Session cost in status bar                                           |
 | `input_prediction`      | `true`  | Ghost text suggestions                                               |
 | `task_slug`             | `true`  | Task label in status bar                                             |
 | `restrict_to_workspace` | `true`  | Downgrade Allow → Ask outside workspace                              |
@@ -259,7 +261,9 @@ defaults:
 settings:
   vim_mode: false
   auto_compact: false
-  show_speed: true
+  show_tps: true
+  show_tokens: true
+  show_cost: true
   input_prediction: true
   task_slug: true
   restrict_to_workspace: true

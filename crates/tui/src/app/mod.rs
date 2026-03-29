@@ -100,7 +100,9 @@ pub struct App {
     pub shared_session: Arc<Mutex<Option<Session>>>,
     pub context_window: Option<u32>,
     pub auto_compact: bool,
-    pub show_speed: bool,
+    pub show_tps: bool,
+    pub show_tokens: bool,
+    pub show_cost: bool,
     pub show_prediction: bool,
     pub show_slug: bool,
     pub restrict_to_workspace: bool,
@@ -386,7 +388,9 @@ impl App {
         engine: EngineHandle,
         vim_from_config: bool,
         auto_compact: bool,
-        show_speed: bool,
+        show_tps: bool,
+        show_tokens: bool,
+        show_cost: bool,
         input_prediction: bool,
         task_slug: bool,
         restrict_to_workspace: bool,
@@ -432,7 +436,9 @@ impl App {
         let mut screen = Screen::new();
         screen.set_model_label(model.clone());
         screen.set_reasoning_effort(reasoning_effort);
-        screen.set_show_speed(show_speed);
+        screen.set_show_tps(show_tps);
+        screen.set_show_tokens(show_tokens);
+        screen.set_show_cost(show_cost);
         screen.set_show_slug(task_slug);
 
         let cwd = std::env::current_dir()
@@ -471,7 +477,9 @@ impl App {
             shared_session,
             context_window: None,
             auto_compact,
-            show_speed,
+            show_tps,
+            show_tokens,
+            show_cost,
             show_prediction: input_prediction,
             show_slug: task_slug,
             restrict_to_workspace,
@@ -558,7 +566,9 @@ impl App {
                 self.input.open_settings(
                     self.input.vim_enabled(),
                     self.auto_compact,
-                    self.show_speed,
+                    self.show_tps,
+                    self.show_tokens,
+                    self.show_cost,
                     self.show_prediction,
                     self.show_slug,
                     self.restrict_to_workspace,

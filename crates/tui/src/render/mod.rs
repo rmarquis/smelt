@@ -514,7 +514,9 @@ pub struct Screen {
     sync_started: bool,
     running_procs: usize,
     running_agents: usize,
-    show_speed: bool,
+    show_tps: bool,
+    show_tokens: bool,
+    show_cost: bool,
     show_slug: bool,
     /// Whether to render the active tool above the dialog in content-only
     /// mode.  Set when tool + dialog fit on screen; cleared on dialog close.
@@ -574,7 +576,9 @@ impl Screen {
             sync_started: false,
             running_procs: 0,
             running_agents: 0,
-            show_speed: true,
+            show_tps: true,
+            show_tokens: true,
+            show_cost: true,
             show_slug: true,
             show_tool_in_dialog: false,
             btw: None,
@@ -668,8 +672,18 @@ impl Screen {
         self.notification.is_some()
     }
 
-    pub fn set_show_speed(&mut self, show: bool) {
-        self.show_speed = show;
+    pub fn set_show_tps(&mut self, show: bool) {
+        self.show_tps = show;
+        self.prompt.dirty = true;
+    }
+
+    pub fn set_show_tokens(&mut self, show: bool) {
+        self.show_tokens = show;
+        self.prompt.dirty = true;
+    }
+
+    pub fn set_show_cost(&mut self, show: bool) {
+        self.show_cost = show;
         self.prompt.dirty = true;
     }
 
@@ -2038,7 +2052,7 @@ impl Screen {
         // Build all bar spans with priorities. draw_bar drops highest
         // priority first until everything fits.
         // Priorities: 0 = always, 1 = context tokens, 2 = model, 3 = tok/s
-        let mut throbber_spans = self.working.throbber_spans(self.show_speed);
+        let mut throbber_spans = self.working.throbber_spans(self.show_tps);
 
         if self.show_slug {
             if let Some(ref label) = self.task_label {
@@ -2097,25 +2111,27 @@ impl Screen {
                 });
             }
         }
-        if let Some(tokens) = self.context_tokens {
-            if !right_spans.is_empty() {
+        if self.show_tokens {
+            if let Some(tokens) = self.context_tokens {
+                if !right_spans.is_empty() {
+                    right_spans.push(BarSpan {
+                        text: " ·".into(),
+                        color: bar_color,
+                        bg: None,
+                        attr: None,
+                        priority: 2,
+                    });
+                }
                 right_spans.push(BarSpan {
-                    text: " ·".into(),
-                    color: bar_color,
+                    text: format!(" {}", format_tokens(tokens)),
+                    color: theme::muted(),
                     bg: None,
                     attr: None,
-                    priority: 2,
+                    priority: 1,
                 });
             }
-            right_spans.push(BarSpan {
-                text: format!(" {}", format_tokens(tokens)),
-                color: theme::muted(),
-                bg: None,
-                attr: None,
-                priority: 1,
-            });
         }
-        if self.session_cost_usd > 0.0 {
+        if self.show_cost && self.session_cost_usd > 0.0 {
             if !right_spans.is_empty() {
                 right_spans.push(BarSpan {
                     text: " ·".into(),
@@ -3413,7 +3429,9 @@ fn draw_menu(
         MenuKind::Settings {
             vim_enabled,
             auto_compact,
-            show_speed,
+            show_tps,
+            show_tokens,
+            show_cost,
             show_prediction,
             show_slug,
             restrict_to_workspace,
@@ -3421,7 +3439,9 @@ fn draw_menu(
             let rows: &[(&str, bool)] = &[
                 ("vim mode", *vim_enabled),
                 ("auto compact", *auto_compact),
-                ("show speed", *show_speed),
+                ("show tok/s", *show_tps),
+                ("show tokens", *show_tokens),
+                ("show cost", *show_cost),
                 ("input prediction", *show_prediction),
                 ("task slug", *show_slug),
                 ("restrict to workspace", *restrict_to_workspace),
