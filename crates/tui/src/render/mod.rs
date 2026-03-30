@@ -1163,12 +1163,17 @@ impl Screen {
     pub fn flush_streaming_text(&mut self) {
         self.flush_streaming_thinking();
         if let Some(mut at) = self.active_text.take() {
-            // If inside an unclosed code block, commit current_line as a code line.
-            if let Some(ref lang) = at.in_code_block {
-                if !at.current_line.is_empty() {
+            // If inside an unclosed code block, check whether current_line
+            // is the closing fence before committing it as a code line.
+            if at.in_code_block.is_some() {
+                if at.current_line.trim_start().starts_with("```") {
+                    // Closing fence — just close the block, don't render it.
+                    at.current_line.clear();
+                } else if !at.current_line.is_empty() {
+                    let lang = at.in_code_block.as_ref().unwrap().clone();
                     self.history.push(Block::CodeLine {
                         content: std::mem::take(&mut at.current_line),
-                        lang: lang.clone(),
+                        lang,
                     });
                 }
                 at.in_code_block = None;

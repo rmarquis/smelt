@@ -141,3 +141,92 @@ fn narrow_terminal() {
     });
     h.assert_scrollback_integrity();
 }
+
+// ── Code block streaming ─────────────────────────────────────────────
+
+/// Simulate the real app flow: stream deltas, then EngineEvent::Text
+/// pushes the final full content. flush_streaming_text commits the
+/// streamed blocks, then the full text block is pushed on top.
+/// On redraw, only the final block exists — it must render the same.
+#[test]
+fn streamed_code_block() {
+    let mut h = TestHarness::new(80, 24, "streamed_code_block");
+    h.push_and_render(Block::User {
+        text: "Show me the code".into(),
+        image_labels: vec![],
+    });
+
+    let full = "Here's the code:\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
+    h.stream_and_flush(full);
+    h.assert_scrollback_integrity();
+}
+
+/// Code block where the closing fence has no trailing newline.
+#[test]
+fn streamed_code_block_no_trailing_newline() {
+    let mut h = TestHarness::new(80, 24, "streamed_code_block_no_trailing_newline");
+    h.push_and_render(Block::User {
+        text: "Code please".into(),
+        image_labels: vec![],
+    });
+    h.stream_and_flush("Here:\n```rust\nfn main() {}\n```");
+    h.assert_scrollback_integrity();
+}
+
+/// Text after the code block.
+#[test]
+fn streamed_code_block_then_text() {
+    let mut h = TestHarness::new(80, 24, "streamed_code_block_then_text");
+    h.push_and_render(Block::User {
+        text: "Show code".into(),
+        image_labels: vec![],
+    });
+    h.stream_and_flush("Here's the code:\n```rust\nfn main() {}\n```\nThat's it.");
+    h.assert_scrollback_integrity();
+}
+
+/// Realistic streaming: line by line with ticks between chunks.
+#[test]
+fn streamed_code_block_with_ticks() {
+    let mut h = TestHarness::new(80, 24, "streamed_code_block_with_ticks");
+    h.push_and_render(Block::User {
+        text: "Show me the code".into(),
+        image_labels: vec![],
+    });
+    h.stream_lines_with_ticks(
+        "Here's the code:\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n",
+    );
+    h.assert_scrollback_integrity();
+}
+
+/// Closing fence arrives without trailing newline — flush must handle it.
+#[test]
+fn streamed_code_block_closing_fence_in_flush() {
+    let mut h = TestHarness::new(80, 24, "streamed_code_block_closing_fence_in_flush");
+    h.push_and_render(Block::User {
+        text: "Code".into(),
+        image_labels: vec![],
+    });
+    // No trailing \n after closing fence.
+    h.stream_and_flush("Here:\n```rust\nfn main() {}\n```");
+
+    let text = h.full_text();
+    assert!(
+        !text.contains("```"),
+        "Raw backticks visible in output!\n\nCaptured:\n{text}"
+    );
+}
+
+/// Multiple code blocks in one message.
+#[test]
+fn streamed_multiple_code_blocks() {
+    let mut h = TestHarness::new(80, 24, "streamed_multiple_code_blocks");
+    h.push_and_render(Block::User {
+        text: "Show two files".into(),
+        image_labels: vec![],
+    });
+    h.stream_and_flush(
+        "First file:\n```rust\nfn a() {}\n```\nSecond file:\n```rust\nfn b() {}\n```",
+    );
+    h.assert_scrollback_integrity();
+}

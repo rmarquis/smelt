@@ -329,6 +329,31 @@ impl TestHarness {
         self.drain_sink();
     }
 
+    /// Stream text line by line with a draw_prompt tick after each line,
+    /// simulating realistic streaming with frame renders between chunks.
+    pub fn stream_lines_with_ticks(&mut self, text: &str) {
+        self.actions
+            .push(format!("stream_lines_with_ticks({:?})", truncate(text, 40)));
+        for line in text.split_inclusive('\n') {
+            self.screen.append_streaming_text(line);
+            // Tick: renders the streaming overlay.
+            let input = tui::input::InputState::default();
+            self.screen.draw_frame(
+                self.width as usize,
+                Some(tui::render::FramePrompt {
+                    state: &input,
+                    mode: protocol::Mode::Normal,
+                    queued: &[],
+                    prediction: None,
+                }),
+            );
+            self.drain_sink();
+        }
+        self.screen.flush_streaming_text();
+        self.screen.render_pending_blocks();
+        self.drain_sink();
+    }
+
     /// Extract all visible + scrollback text from the vt100 parser.
     pub fn full_text(&mut self) -> String {
         self.draw_prompt();
