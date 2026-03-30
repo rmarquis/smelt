@@ -435,11 +435,13 @@ async fn main() {
     }
 
     let shared_session: Arc<Mutex<Option<tui::session::Session>>> = Arc::new(Mutex::new(None));
+    let headless_cancel = Arc::new(tokio::sync::Notify::new());
 
     // Signal handler for graceful shutdown
     {
         let shared = shared_session.clone();
         let is_headless = args.headless;
+        let headless_cancel = headless_cancel.clone();
         tokio::spawn(async move {
             #[cfg(unix)]
             {
@@ -457,26 +459,30 @@ async fn main() {
             {
                 tokio::signal::ctrl_c().await.ok();
             }
-            if !is_headless {
-                let session_id = if let Ok(guard) = shared.lock() {
-                    if let Some(ref s) = *guard {
-                        tui::session::save(s, &tui::attachment::AttachmentStore::new());
-                        if !s.messages.is_empty() {
-                            Some(s.id.clone())
-                        } else {
-                            None
-                        }
+            if is_headless {
+                // Notify run_headless to break out of the event loop so it
+                // can print the token summary before exiting.
+                headless_cancel.notify_one();
+                return;
+            }
+            let session_id = if let Ok(guard) = shared.lock() {
+                if let Some(ref s) = *guard {
+                    tui::session::save(s, &tui::attachment::AttachmentStore::new());
+                    if !s.messages.is_empty() {
+                        Some(s.id.clone())
                     } else {
                         None
                     }
                 } else {
                     None
-                };
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = std::io::stdout().execute(crossterm::event::DisableBracketedPaste);
-                if let Some(id) = session_id {
-                    tui::session::print_resume_hint(&id);
                 }
+            } else {
+                None
+            };
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = std::io::stdout().execute(crossterm::event::DisableBracketedPaste);
+            if let Some(id) = session_id {
+                tui::session::print_resume_hint(&id);
             }
             // Kill child agents on shutdown.
             if multi_agent {
@@ -708,6 +714,7 @@ async fn main() {
             output_format,
             color_mode,
             args.verbose,
+            headless_cancel,
         )
         .await;
     } else {

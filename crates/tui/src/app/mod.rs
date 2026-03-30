@@ -988,6 +988,7 @@ impl App {
         format: OutputFormat,
         color_mode: ColorMode,
         verbose: bool,
+        cancel: std::sync::Arc<tokio::sync::Notify>,
     ) {
         use std::io::Write;
 
@@ -1042,8 +1043,20 @@ impl App {
         let mut total_cost = 0.0_f64;
         let mut pending_tools: HashMap<String, (String, String, String)> = HashMap::new();
 
-        // Drain events.
-        while let Some(ev) = self.engine.recv().await {
+        // Drain events. Break on cancellation (Ctrl+C) so the summary still prints.
+        let mut interrupted = false;
+        loop {
+            let ev = tokio::select! {
+                ev = self.engine.recv() => match ev {
+                    Some(ev) => ev,
+                    None => break,
+                },
+                _ = cancel.notified() => {
+                    self.engine.send(protocol::UiCommand::Cancel);
+                    interrupted = true;
+                    break;
+                }
+            };
             match format {
                 OutputFormat::Json => {
                     // Forward every event as JSONL.
@@ -1179,6 +1192,11 @@ impl App {
                 }
                 let _ = io::stdout().flush();
             }
+        }
+
+        if interrupted {
+            let _ = io::stderr().flush();
+            std::process::exit(130);
         }
     }
 
