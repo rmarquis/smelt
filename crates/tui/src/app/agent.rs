@@ -319,7 +319,10 @@ impl App {
             .pending_turn_meta
             .take()
             .or_else(|| self.screen.turn_meta());
-        if let Some(meta) = meta {
+        if let Some(mut meta) = meta {
+            for (agent_id, data) in self.pending_agent_blocks.drain(..) {
+                meta.agent_blocks.insert(agent_id, data);
+            }
             self.turn_metas.push((self.history.len(), meta));
         }
         self.snapshot_tokens();
@@ -449,7 +452,26 @@ impl App {
                             .iter()
                             .position(|a| a.agent_id == agent_id && a.blocking)
                         {
-                            let pid = self.agents[idx].pid;
+                            let agent = &self.agents[idx];
+                            self.pending_agent_blocks.push((
+                                agent.agent_id.clone(),
+                                protocol::AgentBlockData {
+                                    slug: agent.slug.clone(),
+                                    tool_calls: agent
+                                        .tool_calls
+                                        .iter()
+                                        .map(|tc| protocol::AgentToolData {
+                                            tool_name: tc.tool_name.clone(),
+                                            summary: tc.summary.clone(),
+                                            elapsed_ms: tc
+                                                .elapsed
+                                                .map(|d| d.as_millis() as u64),
+                                            is_error: matches!(tc.status, ToolStatus::Err),
+                                        })
+                                        .collect(),
+                                },
+                            ));
+                            let pid = agent.pid;
                             engine::registry::kill_agent(pid);
                             self.agents.remove(idx);
                             self.refresh_agent_counts();

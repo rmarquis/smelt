@@ -56,6 +56,7 @@ impl App {
         self.history.clear();
         self.token_snapshots.clear();
         self.turn_metas.clear();
+        self.pending_agent_blocks.clear();
         self.reset_session_permissions();
         self.queued_messages.clear();
         self.screen.clear();
@@ -199,6 +200,7 @@ impl App {
 
         let mut tool_outputs: HashMap<String, ToolOutput> = HashMap::new();
         let mut tool_elapsed: HashMap<String, u64> = HashMap::new();
+        let mut agent_blocks: HashMap<String, protocol::AgentBlockData> = HashMap::new();
         for msg in &self.history {
             if matches!(msg.role, Role::Tool) {
                 if let Some(ref id) = msg.tool_call_id {
@@ -220,7 +222,11 @@ impl App {
         }
         for (_, meta) in &self.turn_metas {
             tool_elapsed.extend(meta.tool_elapsed.iter().map(|(k, v)| (k.clone(), *v)));
+            agent_blocks.extend(meta.agent_blocks.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
+        // Track blocking agent IDs so we can suppress their AgentMessage blocks.
+        let mut blocking_agent_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for msg in &self.history {
             match msg.role {
@@ -296,11 +302,35 @@ impl App {
                                 let elapsed = tool_elapsed
                                     .get(&tc.id)
                                     .map(|ms| Duration::from_millis(*ms));
+                                // Restore slug and tool calls from persisted agent block data.
+                                let block_data = agent_blocks.get(&agent_id);
+                                let slug = block_data.and_then(|d| d.slug.clone());
+                                let tool_calls = block_data
+                                    .map(|d| {
+                                        d.tool_calls
+                                            .iter()
+                                            .map(|t| crate::app::AgentToolEntry {
+                                                call_id: String::new(),
+                                                tool_name: t.tool_name.clone(),
+                                                summary: t.summary.clone(),
+                                                elapsed: t.elapsed_ms.map(Duration::from_millis),
+                                                status: if t.is_error {
+                                                    ToolStatus::Err
+                                                } else {
+                                                    ToolStatus::Ok
+                                                },
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                if is_blocking {
+                                    blocking_agent_ids.insert(agent_id.clone());
+                                }
                                 self.screen.push(Block::Agent {
                                     agent_id,
-                                    slug: None,
+                                    slug,
                                     blocking: is_blocking,
-                                    tool_calls: Vec::new(),
+                                    tool_calls,
                                     status: block_status,
                                     elapsed,
                                 });
@@ -339,12 +369,17 @@ impl App {
                 Role::Tool => {}
                 Role::System => {}
                 Role::Agent => {
-                    if let Some(ref content) = msg.content {
-                        self.screen.push(Block::AgentMessage {
-                            from_id: msg.agent_from_id.clone().unwrap_or_default(),
-                            from_slug: msg.agent_from_slug.clone().unwrap_or_default(),
-                            content: content.text_content(),
-                        });
+                    let from_id = msg.agent_from_id.clone().unwrap_or_default();
+                    // Suppress AgentMessage for blocking agents — their result
+                    // is already shown in the spawn_agent block.
+                    if !blocking_agent_ids.contains(&from_id) {
+                        if let Some(ref content) = msg.content {
+                            self.screen.push(Block::AgentMessage {
+                                from_id,
+                                from_slug: msg.agent_from_slug.clone().unwrap_or_default(),
+                                content: content.text_content(),
+                            });
+                        }
                     }
                 }
             }

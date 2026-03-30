@@ -573,6 +573,7 @@ impl<'a> Turn<'a> {
             avg_tps,
             interrupted,
             tool_elapsed: self.tool_elapsed.clone(),
+            agent_blocks: std::collections::HashMap::new(),
         }
     }
 

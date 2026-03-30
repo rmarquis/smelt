@@ -145,6 +145,7 @@ pub struct App {
     turn_metas: Vec<(usize, protocol::TurnMeta)>,
     /// TurnMeta from the engine, consumed by `finish_turn`.
     pending_turn_meta: Option<protocol::TurnMeta>,
+    pending_agent_blocks: Vec<(String, protocol::AgentBlockData)>,
     /// Accumulated cost for the current session in USD.
     pub session_cost_usd: f64,
     /// Active model config (for pricing lookups).
@@ -508,6 +509,7 @@ impl App {
             token_snapshots: Vec::new(),
             turn_metas: Vec::new(),
             pending_turn_meta: None,
+            pending_agent_blocks: Vec::new(),
             session_cost_usd: 0.0,
             model_config: engine::ModelConfig::default(),
         }

@@ -70,6 +70,7 @@ impl WorkingState {
             avg_tps: self.avg_tokens_per_sec(),
             interrupted: matches!(throbber, Throbber::Interrupted),
             tool_elapsed: std::collections::HashMap::new(),
+            agent_blocks: std::collections::HashMap::new(),
         })
     }
 

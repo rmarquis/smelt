@@ -1468,6 +1468,7 @@ impl Screen {
         self.working.turn_meta()
     }
 
+
     pub fn restore_from_turn_meta(&mut self, meta: &protocol::TurnMeta) {
         self.working.restore_from_turn_meta(meta);
         self.prompt.dirty = true;

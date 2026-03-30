@@ -333,16 +333,21 @@ fn render_agent_block(
         let _ = out.queue(Print(&entry.tool_name));
         let _ = out.queue(SetAttribute(Attribute::NormalIntensity));
 
-        let max_summary = width.saturating_sub(6 + entry.tool_name.len());
+        // Reserve space for elapsed time so the summary doesn't push it off-screen.
+        let time_str = entry
+            .elapsed
+            .filter(|d| d.as_secs_f64() >= 0.1)
+            .map(|d| format!("  {}", format_duration(d.as_secs())));
+        let time_w = time_str.as_ref().map_or(0, |s| s.len());
+        // 6 = " │ " (3) + space before summary (1) + padding (2)
+        let max_summary = width.saturating_sub(6 + entry.tool_name.len() + time_w);
         let summary = truncate_str(&entry.summary, max_summary);
         let _ = out.queue(Print(format!(" {summary}")));
 
-        if let Some(d) = entry.elapsed {
-            if d.as_secs_f64() >= 0.1 {
-                let _ = out.queue(SetAttribute(Attribute::Dim));
-                let _ = out.queue(Print(format!("  {}", format_duration(d.as_secs()))));
-                let _ = out.queue(SetAttribute(Attribute::NormalIntensity));
-            }
+        if let Some(ref ts) = time_str {
+            let _ = out.queue(SetAttribute(Attribute::Dim));
+            let _ = out.queue(Print(ts));
+            let _ = out.queue(SetAttribute(Attribute::NormalIntensity));
         }
 
         crlf(out);
