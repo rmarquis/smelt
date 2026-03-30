@@ -723,6 +723,13 @@ pub(crate) fn render_markdown_inner(
     let mut rows = 0u16;
     while i < lines.len() {
         if lines[i].trim_start().starts_with("```") {
+            // Blank line before code block when preceded by text content,
+            // matching the gap that gap_between(Text, CodeLine) produces
+            // during streaming.
+            if rows > 0 {
+                crlf(out);
+                rows += 1;
+            }
             let lang = lines[i].trim_start().trim_start_matches('`').trim();
             i += 1;
             let code_start = i;

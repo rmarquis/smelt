@@ -217,6 +217,55 @@ fn streamed_code_block_closing_fence_in_flush() {
     );
 }
 
+/// Compare streamed output (Text + CodeLine blocks with gaps) against
+/// a single Block::Text with the full markdown (as stored on resume).
+/// The gap before the code block should be the same in both cases.
+#[test]
+fn code_block_gap_streaming_vs_resume() {
+    let content = "Here's the code:\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
+
+    // Streamed: produces Text + CodeLine blocks with gap_between.
+    let mut h_streamed = TestHarness::new(80, 24, "code_block_gap_streamed");
+    h_streamed.push_and_render(Block::User {
+        text: "Show me the code".into(),
+        image_labels: vec![],
+    });
+    h_streamed.stream_and_flush(content);
+    let streamed_text = h_streamed.full_text();
+
+    // Resume: one Block::Text with full markdown content.
+    let mut h_resume = TestHarness::new(80, 24, "code_block_gap_resume");
+    h_resume.push_and_render(Block::User {
+        text: "Show me the code".into(),
+        image_labels: vec![],
+    });
+    h_resume.push_and_render(Block::Text {
+        content: content.into(),
+    });
+    let resume_text = h_resume.full_text();
+
+    if streamed_text != resume_text {
+        let dump_dir = "target/test-frames/code_block_gap_streaming_vs_resume";
+        let _ = std::fs::create_dir_all(dump_dir);
+        let _ = std::fs::write(format!("{dump_dir}/streamed.txt"), &streamed_text);
+        let _ = std::fs::write(format!("{dump_dir}/resume.txt"), &resume_text);
+
+        use similar::TextDiff;
+        let diff = TextDiff::from_lines(&streamed_text, &resume_text);
+        let mut diff_str = String::new();
+        diff_str.push_str("--- streamed\n+++ resume\n");
+        for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+            diff_str.push_str(&format!("{hunk}"));
+        }
+        let _ = std::fs::write(format!("{dump_dir}/diff.txt"), &diff_str);
+
+        panic!(
+            "Code block renders differently between streaming and resume!\n\
+             Saved to: {dump_dir}/\n\n{diff_str}"
+        );
+    }
+}
+
 /// Multiple code blocks in one message.
 #[test]
 fn streamed_multiple_code_blocks() {
