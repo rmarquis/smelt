@@ -41,6 +41,9 @@ pub struct Session {
     pub context_tokens: Option<u32>,
     #[serde(default)]
     pub token_snapshots: Vec<(usize, u32)>,
+    /// Accumulated session cost in USD, keyed by history length.
+    #[serde(default)]
+    pub cost_snapshots: Vec<(usize, f64)>,
     /// Per-turn metadata keyed by history length at capture time, parallel
     /// to `token_snapshots`.
     #[serde(default)]
@@ -102,6 +105,7 @@ impl Session {
             messages: Vec::new(),
             context_tokens: None,
             token_snapshots: Vec::new(),
+            cost_snapshots: Vec::new(),
             turn_metas: Vec::new(),
         }
     }
@@ -141,6 +145,7 @@ impl Session {
             messages: self.messages.clone(),
             context_tokens: self.context_tokens,
             token_snapshots: self.token_snapshots.clone(),
+            cost_snapshots: self.cost_snapshots.clone(),
             turn_metas: self.turn_metas.clone(),
         }
     }

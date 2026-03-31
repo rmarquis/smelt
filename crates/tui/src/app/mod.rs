@@ -141,6 +141,8 @@ pub struct App {
     /// and before each compaction. On rewind, the most recent snapshot at or
     /// before the truncation point is restored.
     token_snapshots: Vec<(usize, u32)>,
+    /// Accumulated cost snapshots: `(history_len, cost_usd)`.
+    cost_snapshots: Vec<(usize, f64)>,
     /// Per-turn metadata (elapsed, tps, status) keyed by history length.
     turn_metas: Vec<(usize, protocol::TurnMeta)>,
     /// TurnMeta from the engine, consumed by `finish_turn`.
@@ -507,6 +509,7 @@ impl App {
             compact_epoch: 0,
             pending_compact_epoch: 0,
             token_snapshots: Vec::new(),
+            cost_snapshots: Vec::new(),
             turn_metas: Vec::new(),
             pending_turn_meta: None,
             pending_agent_blocks: Vec::new(),

@@ -29,6 +29,10 @@ impl ModelPricing {
             + self.cache_write * cache_write)
             / 1_000_000.0
     }
+
+    pub fn is_zero(&self) -> bool {
+        self.input == 0.0 && self.output == 0.0
+    }
 }
 
 const ZERO: ModelPricing = ModelPricing {
@@ -38,14 +42,42 @@ const ZERO: ModelPricing = ModelPricing {
     cache_write: 0.0,
 };
 
+/// Where the resolved pricing came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PricingSource {
+    /// User-supplied cost overrides in model config.
+    Config,
+    /// Matched from the models.dev remote catalog.
+    Catalog,
+    /// No pricing data available (local/unknown model).
+    None,
+}
+
+impl PricingSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Config => "config override",
+            Self::Catalog => "models.dev",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Resolved pricing plus its source.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedPricing {
+    pub pricing: ModelPricing,
+    pub source: PricingSource,
+}
+
 // ── Remote catalog (models.dev) ──────────────────────────────────────────
 
 const MODELS_API_URL: &str = "https://models.dev/api.json";
 const CACHE_KEY: &str = "models_dev_pricing";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60); // 1 hour
 
-/// Global catalog populated by `fetch_catalog()`.
-static CATALOG: OnceLock<HashMap<String, ModelPricing>> = OnceLock::new();
+/// Global catalog keyed by (provider, model_id).
+static CATALOG: OnceLock<HashMap<(String, String), ModelPricing>> = OnceLock::new();
 
 /// Fetch pricing from models.dev in the background. Call once at startup.
 /// Safe to call multiple times — only the first call populates the catalog.
@@ -59,7 +91,7 @@ pub fn spawn_catalog_fetch(client: reqwest::Client) {
     });
 }
 
-async fn load_or_fetch(client: &reqwest::Client) -> HashMap<String, ModelPricing> {
+async fn load_or_fetch(client: &reqwest::Client) -> HashMap<(String, String), ModelPricing> {
     // Try disk cache first.
     if let Some(json) = crate::tools::web_cache::get(CACHE_KEY) {
         if let Some(map) = parse_catalog(&json) {
@@ -81,12 +113,12 @@ async fn load_or_fetch(client: &reqwest::Client) -> HashMap<String, ModelPricing
     map
 }
 
-/// Parse the models.dev JSON into a flat model_id → pricing map.
-fn parse_catalog(json: &str) -> Option<HashMap<String, ModelPricing>> {
+/// Parse the models.dev JSON into a (provider, model_id) → pricing map.
+fn parse_catalog(json: &str) -> Option<HashMap<(String, String), ModelPricing>> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = root.as_object()?;
     let mut map = HashMap::new();
-    for (_provider, provider_val) in obj {
+    for (provider, provider_val) in obj {
         let models = provider_val.get("models").and_then(|m| m.as_object());
         let models = match models {
             Some(m) => m,
@@ -103,7 +135,7 @@ fn parse_catalog(json: &str) -> Option<HashMap<String, ModelPricing>> {
                 continue;
             }
             map.insert(
-                model_id.clone(),
+                (provider.clone(), model_id.clone()),
                 ModelPricing {
                     input,
                     output,
@@ -116,20 +148,56 @@ fn parse_catalog(json: &str) -> Option<HashMap<String, ModelPricing>> {
     Some(map)
 }
 
-/// Look up pricing for a model from the remote catalog.
-/// Returns `None` for unknown/local models (cost = 0).
-pub fn lookup(model: &str) -> Option<ModelPricing> {
-    CATALOG.get()?.get(model).copied()
+/// Look up pricing for a (provider, model) pair from the remote catalog.
+/// Returns `None` when the provider/model combination isn't found.
+fn lookup(provider_type: &str, model: &str) -> Option<ModelPricing> {
+    let catalog = CATALOG.get()?;
+    let key = catalog_key(provider_type)?;
+    catalog.get(&(key.to_string(), model.to_string())).copied()
 }
 
-/// Build a `ModelPricing` from config overrides, falling back to the
-/// built-in table, then to zero for unknown models.
-pub fn resolve(model: &str, config: &crate::config::ModelConfig) -> ModelPricing {
-    let builtin = lookup(model).unwrap_or(ZERO);
-    ModelPricing {
-        input: config.input_cost.unwrap_or(builtin.input),
-        output: config.output_cost.unwrap_or(builtin.output),
-        cache_read: config.cache_read_cost.unwrap_or(builtin.cache_read),
-        cache_write: config.cache_write_cost.unwrap_or(builtin.cache_write),
+/// Map a provider_type string to the corresponding models.dev provider key.
+/// Known first-party providers map directly; "openai-compatible" gets no
+/// lookup. Other values are tried verbatim as catalog keys.
+fn catalog_key(provider_type: &str) -> Option<&str> {
+    match provider_type {
+        "openai" | "codex" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "openai-compatible" => None,
+        other => Some(other),
+    }
+}
+
+/// Resolve pricing for a model, returning both the rates and where they came from.
+pub fn resolve(
+    model: &str,
+    provider_type: &str,
+    config: &crate::config::ModelConfig,
+) -> ResolvedPricing {
+    let has_config_override = config.input_cost.is_some() || config.output_cost.is_some();
+
+    if has_config_override {
+        let catalog = lookup(provider_type, model).unwrap_or(ZERO);
+        return ResolvedPricing {
+            pricing: ModelPricing {
+                input: config.input_cost.unwrap_or(catalog.input),
+                output: config.output_cost.unwrap_or(catalog.output),
+                cache_read: config.cache_read_cost.unwrap_or(catalog.cache_read),
+                cache_write: config.cache_write_cost.unwrap_or(catalog.cache_write),
+            },
+            source: PricingSource::Config,
+        };
+    }
+
+    if let Some(catalog) = lookup(provider_type, model) {
+        return ResolvedPricing {
+            pricing: catalog,
+            source: PricingSource::Catalog,
+        };
+    }
+
+    ResolvedPricing {
+        pricing: ZERO,
+        source: PricingSource::None,
     }
 }

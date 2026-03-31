@@ -392,9 +392,11 @@ pub fn render_session_cost(
     cost_usd: f64,
     model: &str,
     turns: usize,
-    pricing: &engine::pricing::ModelPricing,
+    resolved: &engine::pricing::ResolvedPricing,
 ) -> Vec<StatsLine> {
     let mut lines = Vec::new();
+    let pricing = &resolved.pricing;
+
     lines.push(StatsLine::Heading("session".into()));
     lines.push(StatsLine::Kv {
         label: "cost".into(),
@@ -423,24 +425,30 @@ pub fn render_session_cost(
 
     lines.push(StatsLine::Heading("pricing (per 1M tokens)".into()));
     lines.push(StatsLine::Kv {
-        label: "input".into(),
-        value: fmt_rate(pricing.input),
+        label: "source".into(),
+        value: resolved.source.label().to_string(),
     });
-    lines.push(StatsLine::Kv {
-        label: "output".into(),
-        value: fmt_rate(pricing.output),
-    });
-    if pricing.cache_read > 0.0 {
+    if !pricing.is_zero() {
         lines.push(StatsLine::Kv {
-            label: "cache read".into(),
-            value: fmt_rate(pricing.cache_read),
+            label: "input".into(),
+            value: fmt_rate(pricing.input),
         });
-    }
-    if pricing.cache_write > 0.0 {
         lines.push(StatsLine::Kv {
-            label: "cache write".into(),
-            value: fmt_rate(pricing.cache_write),
+            label: "output".into(),
+            value: fmt_rate(pricing.output),
         });
+        if pricing.cache_read > 0.0 {
+            lines.push(StatsLine::Kv {
+                label: "cache read".into(),
+                value: fmt_rate(pricing.cache_read),
+            });
+        }
+        if pricing.cache_write > 0.0 {
+            lines.push(StatsLine::Kv {
+                label: "cache write".into(),
+                value: fmt_rate(pricing.cache_write),
+            });
+        }
     }
     lines
 }

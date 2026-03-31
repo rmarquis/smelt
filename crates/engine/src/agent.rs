@@ -781,8 +781,12 @@ impl<'a> Turn<'a> {
                 if let Some(tps) = tokens_per_sec {
                     self.tps_samples.push(tps);
                 }
-                let pricing = crate::pricing::resolve(&self.model, &self.config.api.model_config);
-                let cost = pricing.cost(&resp.usage);
+                let resolved = crate::pricing::resolve(
+                    &self.model,
+                    &self.config.api.provider_type,
+                    &self.config.api.model_config,
+                );
+                let cost = resolved.pricing.cost(&resp.usage);
                 self.emit(EngineEvent::TokenUsage {
                     usage: resp.usage,
                     tokens_per_sec,

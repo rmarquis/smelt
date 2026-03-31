@@ -27,11 +27,13 @@ impl App {
         }
     }
 
-    /// Record current token count so it can be restored on rewind.
+    /// Record current token count and cost so they can be restored on rewind.
     pub(super) fn snapshot_tokens(&mut self) {
         if let Some(tokens) = self.screen.context_tokens() {
             self.token_snapshots.push((self.history.len(), tokens));
         }
+        self.cost_snapshots
+            .push((self.history.len(), self.session_cost_usd));
     }
 
     pub(super) fn fork_session(&mut self) {
@@ -55,6 +57,7 @@ impl App {
         self.engine.send(UiCommand::Cancel);
         self.history.clear();
         self.token_snapshots.clear();
+        self.cost_snapshots.clear();
         self.turn_metas.clear();
         self.pending_agent_blocks.clear();
         self.reset_session_permissions();
@@ -112,6 +115,13 @@ impl App {
         self.token_snapshots = self.session.token_snapshots.clone();
         self.token_snapshots
             .retain(|(len, _)| *len <= self.history.len());
+        self.cost_snapshots = self.session.cost_snapshots.clone();
+        self.cost_snapshots
+            .retain(|(len, _)| *len <= self.history.len());
+        if let Some(&(_, cost)) = self.cost_snapshots.last() {
+            self.session_cost_usd = cost;
+            self.screen.set_session_cost(cost);
+        }
         self.turn_metas = self.session.turn_metas.clone();
         self.reset_session_permissions();
         self.queued_messages.clear();
@@ -400,6 +410,7 @@ impl App {
             return;
         }
         self.session.token_snapshots = self.token_snapshots.clone();
+        self.session.cost_snapshots = self.cost_snapshots.clone();
         self.session.turn_metas = self.turn_metas.clone();
         self.sync_session_snapshot();
         session::save(&self.session, &self.input.store);
@@ -557,7 +568,15 @@ impl App {
 
         self.history.truncate(hist_idx);
         truncate_keyed(&mut self.token_snapshots, hist_idx);
+        truncate_keyed(&mut self.cost_snapshots, hist_idx);
         truncate_keyed(&mut self.turn_metas, hist_idx);
+        if let Some(&(_, cost)) = self.cost_snapshots.last() {
+            self.session_cost_usd = cost;
+            self.screen.set_session_cost(cost);
+        } else {
+            self.session_cost_usd = 0.0;
+            self.screen.set_session_cost(0.0);
+        }
         if let Some(&(_, tokens)) = self.token_snapshots.last() {
             self.screen.set_context_tokens(tokens);
         } else {

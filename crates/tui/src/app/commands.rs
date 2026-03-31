@@ -159,12 +159,13 @@ impl App {
             }
             "/cost" => {
                 let turns = self.screen.user_turns().len();
-                let pricing = engine::pricing::resolve(&self.model, &self.model_config);
+                let resolved =
+                    engine::pricing::resolve(&self.model, &self.provider_type, &self.model_config);
                 let lines = crate::metrics::render_session_cost(
                     self.session_cost_usd,
                     &self.model,
                     turns,
-                    &pricing,
+                    &resolved,
                 );
                 self.input.open_cost(lines);
                 self.screen.mark_dirty();
