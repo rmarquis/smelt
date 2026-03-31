@@ -462,18 +462,7 @@ fn format_conversation_markdown(history: &[Message], session: &crate::session::S
             Role::System => {
                 let _ = writeln!(out, "## System\n");
                 if let Some(c) = &msg.content {
-                    let text = c.as_text();
-                    // System prompts can be very long — truncate for readability.
-                    if text.len() > 500 {
-                        let _ = writeln!(
-                            out,
-                            "{}\n\n*({} chars truncated)*\n",
-                            &text[..500],
-                            text.len() - 500
-                        );
-                    } else {
-                        let _ = writeln!(out, "{text}\n");
-                    }
+                    let _ = writeln!(out, "{}\n", c.as_text());
                 }
             }
             Role::User => {
@@ -600,9 +589,15 @@ fn format_tool_call(
         let trimmed = result_text.trim();
         if trimmed.is_empty() {
             let _ = writeln!(out, "*(empty)*\n");
-        } else if trimmed.len() > 2000 {
-            let _ = writeln!(out, "```\n{}\n```\n", &trimmed[..2000]);
-            let _ = writeln!(out, "*({} chars truncated)*\n", trimmed.len() - 2000);
+        } else if trimmed.lines().count() > engine::tools::MAX_TOOL_OUTPUT_LINES {
+            let truncated: String = trimmed
+                .lines()
+                .take(engine::tools::MAX_TOOL_OUTPUT_LINES)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let remaining = trimmed.lines().count() - engine::tools::MAX_TOOL_OUTPUT_LINES;
+            let _ = writeln!(out, "```\n{truncated}\n```\n");
+            let _ = writeln!(out, "*({remaining} lines truncated)*\n");
         } else {
             let _ = writeln!(out, "```\n{trimmed}\n```\n");
         }
