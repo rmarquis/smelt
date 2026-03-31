@@ -28,6 +28,7 @@ use crossterm::{
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 use blocks::{gap_between, render_block, render_tool, Element};
 
@@ -2959,96 +2960,157 @@ fn wrap_and_locate_cursor(
     let mut chars_seen = 0usize;
     let mut cursor_set = false;
     let max_col = usable.max(1);
+    let prompt_col = 1usize;
 
     for text_line in buf.split('\n') {
         let chars: Vec<char> = text_line.chars().collect();
         if chars.is_empty() {
-            if !cursor_set && chars_seen == cursor_char {
-                cursor_line = visual_lines.len();
-                cursor_col = 0;
-                cursor_set = true;
-            }
-            visual_lines.push((String::new(), Vec::new()));
-        } else {
-            // Build word-boundary chunks.
-            let mut chunks: Vec<&[char]> = Vec::new();
-            let mut line_start = 0;
-            let mut col = 0;
-
-            // Find word boundaries (split on spaces, keeping space with preceding word).
-            let mut i = 0;
-            while i < chars.len() {
-                // Find end of current word (including trailing spaces).
-                let word_start = i;
-                // Non-space characters.
-                while i < chars.len() && chars[i] != ' ' {
-                    i += 1;
-                }
-                // Trailing spaces.
-                while i < chars.len() && chars[i] == ' ' {
-                    i += 1;
-                }
-                let word_len = i - word_start;
-
-                if word_len > max_col {
-                    // Word is longer than the line — must hard-wrap it character by character.
-                    let mut wi = word_start;
-                    while wi < i {
-                        let take = (max_col - col).min(i - wi);
-                        if take == 0 {
-                            chunks.push(&chars[line_start..wi]);
-                            line_start = wi;
-                            col = 0;
-                            continue;
-                        }
-                        col += take;
-                        wi += take;
-                        if col >= max_col && wi < chars.len() {
-                            chunks.push(&chars[line_start..wi]);
-                            line_start = wi;
-                            col = 0;
-                        }
-                    }
-                } else if col + word_len > max_col && col > 0 {
-                    // Wrap before this word.
-                    chunks.push(&chars[line_start..word_start]);
-                    line_start = word_start;
-                    col = word_len;
-                } else {
-                    col += word_len;
-                }
-            }
-            // Remaining text on the last visual line.
-            if line_start <= chars.len() {
-                chunks.push(&chars[line_start..]);
-            }
-
-            for (ci, chunk) in chunks.iter().enumerate() {
-                let chunk_start = chars_seen;
-                let is_last_chunk = ci == chunks.len() - 1;
-                if !cursor_set
-                    && cursor_char >= chunk_start
-                    && (cursor_char < chunk_start + chunk.len()
-                        || (is_last_chunk && cursor_char == chunk_start + chunk.len()))
-                {
-                    cursor_line = visual_lines.len();
-                    cursor_col = cursor_char - chunk_start;
-                    cursor_set = true;
-                }
-                let kinds = char_kinds
-                    .get(chunk_start..chunk_start + chunk.len())
-                    .unwrap_or_default()
-                    .to_vec();
-                chars_seen += chunk.len();
-                visual_lines.push((chunk.iter().collect(), kinds));
-            }
+            push_visual_line(
+                &mut visual_lines,
+                &mut cursor_line,
+                &mut cursor_col,
+                &mut cursor_set,
+                chars_seen,
+                &[],
+                &[],
+                cursor_char,
+                true,
+                prompt_col,
+            );
+            chars_seen += 1;
+            continue;
         }
-        chars_seen += 1; // for the '\n'
+
+        let mut line_chars: Vec<char> = Vec::new();
+        let mut line_kinds: Vec<SpanKind> = Vec::new();
+        let mut line_width = 0usize;
+        let mut line_start = chars_seen;
+        let mut last_break: Option<usize> = None;
+        let mut i = 0usize;
+
+        while i < chars.len() {
+            let ch = chars[i];
+            let kind = char_kinds
+                .get(chars_seen + i)
+                .copied()
+                .unwrap_or(SpanKind::Plain);
+            let ch_width = display_char_width(ch, prompt_col + line_width);
+
+            if !line_chars.is_empty() && line_width + ch_width > max_col {
+                if let Some(break_idx) = last_break {
+                    let carry_chars = line_chars.split_off(break_idx);
+                    let carry_kinds = line_kinds.split_off(break_idx);
+                    push_visual_line(
+                        &mut visual_lines,
+                        &mut cursor_line,
+                        &mut cursor_col,
+                        &mut cursor_set,
+                        line_start,
+                        &line_chars,
+                        &line_kinds,
+                        cursor_char,
+                        false,
+                        prompt_col,
+                    );
+                    line_start += break_idx;
+                    line_chars = carry_chars;
+                    line_kinds = carry_kinds;
+                    line_width = display_width(&line_chars, prompt_col);
+                    last_break = line_chars
+                        .iter()
+                        .rposition(|&c| c == ' ')
+                        .map(|idx| idx + 1);
+                } else {
+                    push_visual_line(
+                        &mut visual_lines,
+                        &mut cursor_line,
+                        &mut cursor_col,
+                        &mut cursor_set,
+                        line_start,
+                        &line_chars,
+                        &line_kinds,
+                        cursor_char,
+                        false,
+                        prompt_col,
+                    );
+                    line_start += line_chars.len();
+                    line_chars.clear();
+                    line_kinds.clear();
+                    line_width = 0;
+                    last_break = None;
+                }
+                continue;
+            }
+
+            line_chars.push(ch);
+            line_kinds.push(kind);
+            line_width += ch_width;
+            if ch == ' ' {
+                last_break = Some(line_chars.len());
+            }
+            i += 1;
+        }
+
+        push_visual_line(
+            &mut visual_lines,
+            &mut cursor_line,
+            &mut cursor_col,
+            &mut cursor_set,
+            line_start,
+            &line_chars,
+            &line_kinds,
+            cursor_char,
+            true,
+            prompt_col,
+        );
+        chars_seen += chars.len() + 1;
     }
     if visual_lines.is_empty() {
         visual_lines.push((String::new(), Vec::new()));
     }
     (visual_lines, cursor_line, cursor_col)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_visual_line(
+    visual_lines: &mut Vec<(String, Vec<SpanKind>)>,
+    cursor_line: &mut usize,
+    cursor_col: &mut usize,
+    cursor_set: &mut bool,
+    start_char: usize,
+    line_chars: &[char],
+    line_kinds: &[SpanKind],
+    cursor_char: usize,
+    is_last_chunk: bool,
+    prompt_col: usize,
+) {
+    let end_char = start_char + line_chars.len();
+    if !*cursor_set
+        && cursor_char >= start_char
+        && (cursor_char < end_char || (is_last_chunk && cursor_char == end_char))
+    {
+        *cursor_line = visual_lines.len();
+        *cursor_col = display_width(&line_chars[..cursor_char - start_char], prompt_col);
+        *cursor_set = true;
+    }
+    visual_lines.push((line_chars.iter().collect(), line_kinds.to_vec()));
+}
+
+fn display_width(chars: &[char], start_col: usize) -> usize {
+    let mut col = start_col;
+    for &ch in chars {
+        col += display_char_width(ch, col);
+    }
+    col.saturating_sub(start_col)
+}
+
+fn display_char_width(ch: char, col: usize) -> usize {
+    if ch == '\t' {
+        let tab_stop = 8usize;
+        tab_stop - (col % tab_stop)
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
 }
 
 /// Compute the display-char offset of each visual line.
@@ -3915,15 +3977,38 @@ mod selection_tests {
     }
 
     #[test]
-    fn offsets_selection_across_logical() {
-        let offsets = compute_visual_line_offsets("aaa\nbbb", &vlines(&["aaa", "bbb"]));
-        // Select display chars 1..6 = "aa\nbb".
-        let sel = (1usize, 6usize);
-        let l0_s = sel.0.saturating_sub(offsets[0]);
-        let l0_e = sel.1.min(offsets[0] + 3) - offsets[0];
-        assert_eq!((l0_s, l0_e), (1, 3));
-        let l1_s = sel.0.saturating_sub(offsets[1]);
-        let l1_e = sel.1.min(offsets[1] + 3) - offsets[1];
-        assert_eq!((l1_s, l1_e), (0, 2));
+    fn prompt_cursor_uses_tab_display_width() {
+        let kinds = vec![SpanKind::Plain; "a\tb".chars().count()];
+        let (_, cursor_line, cursor_col) = wrap_and_locate_cursor("a\tb", &kinds, 3, 80);
+        assert_eq!(cursor_line, 0);
+        assert_eq!(cursor_col, 8);
+    }
+
+    #[test]
+    fn prompt_cursor_tracks_multiple_tabs_from_prompt_column() {
+        let kinds = vec![SpanKind::Plain; "\t\tb".chars().count()];
+        let (_, cursor_line, cursor_col) = wrap_and_locate_cursor("\t\tb", &kinds, 3, 80);
+        assert_eq!(cursor_line, 0);
+        assert_eq!(cursor_col, 16);
+    }
+
+    #[test]
+    fn prompt_cursor_uses_wide_char_display_width() {
+        let kinds = vec![SpanKind::Plain; "a界b".chars().count()];
+        let (_, cursor_line, cursor_col) = wrap_and_locate_cursor("a界b", &kinds, 3, 80);
+        assert_eq!(cursor_line, 0);
+        assert_eq!(cursor_col, 4);
+    }
+
+    #[test]
+    fn prompt_tabs_respect_prompt_column_without_forced_wrap() {
+        let kinds = vec![SpanKind::Plain; "a\tb".chars().count()];
+        let (lines, cursor_line, cursor_col) = wrap_and_locate_cursor("a\tb", &kinds, 3, 8);
+        assert_eq!(
+            lines.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+            vec!["a\tb"]
+        );
+        assert_eq!(cursor_line, 0);
+        assert_eq!(cursor_col, 8);
     }
 }
