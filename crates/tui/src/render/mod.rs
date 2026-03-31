@@ -1643,7 +1643,9 @@ impl Screen {
     /// Erase the prompt area without issuing its own sync frame.
     /// Used when a sync is already open (e.g. from
     /// `render_pending_blocks_for_dialog`) and the caller needs the
-    /// terminal lines cleared immediately within that frame.
+    /// terminal lines cleared immediately within that frame. Avoid flushing
+    /// here so the terminal can present the erase together with the
+    /// subsequent dialog draw as a single synchronized update.
     pub fn erase_prompt_nosync(&mut self) {
         if self.prompt.drawn {
             if let Some(anchor) = self.prompt.anchor_row {
@@ -1656,7 +1658,6 @@ impl Screen {
                     let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
                 }
                 let _ = out.queue(cursor::MoveTo(0, anchor));
-                let _ = out.flush();
             }
             self.prompt.drawn = false;
             self.prompt.dirty = true;
