@@ -244,6 +244,9 @@ impl App {
     // ── Idle event handler ───────────────────────────────────────────────
 
     fn handle_event_idle(&mut self, ev: Event, t: &mut Timers) -> EventOutcome {
+        if matches!(ev, Event::Paste(_)) {
+            self.input_prediction = None;
+        }
         if let Event::Resize(w, h) = ev {
             self.handle_resize(w, h);
             return EventOutcome::Noop;
@@ -381,6 +384,9 @@ impl App {
     // ── Running event handler ────────────────────────────────────────────
 
     fn handle_event_running(&mut self, ev: Event, t: &mut Timers) -> EventOutcome {
+        if matches!(ev, Event::Paste(_)) {
+            self.input_prediction = None;
+        }
         if let Event::Resize(w, h) = ev {
             self.handle_resize(w, h);
             return EventOutcome::Noop;
