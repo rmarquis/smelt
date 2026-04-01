@@ -992,10 +992,13 @@ impl Screen {
             return;
         }
         let anchor = self.prompt.anchor_row.unwrap_or(0);
-        let end_row = anchor + self.prompt.prev_rows;
+        // prev_rows is the count of rows drawn, so the last drawn row is
+        // anchor + prev_rows - 1.  Move there, then \r\n lands on the first
+        // line after the prompt with no extra gap.
+        let last_row = anchor + self.prompt.prev_rows.saturating_sub(1);
         let height = self.size().1;
         let mut out = self.scroll_output();
-        let _ = out.queue(cursor::MoveTo(0, end_row.min(height.saturating_sub(1))));
+        let _ = out.queue(cursor::MoveTo(0, last_row.min(height.saturating_sub(1))));
         let _ = out.queue(Print("\r\n\r\n"));
         if clear_below {
             let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
