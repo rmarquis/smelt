@@ -87,6 +87,7 @@ pub struct SettingsConfig {
     pub show_cost: Option<bool>,
     pub input_prediction: Option<bool>,
     pub task_slug: Option<bool>,
+    pub show_thinking: Option<bool>,
     pub restrict_to_workspace: Option<bool>,
     pub multi_agent: Option<bool>,
     /// Override the context window size (tokens). When unset, the engine
@@ -110,6 +111,7 @@ impl SettingsConfig {
             "show_cost" => self.show_cost = b()?,
             "input_prediction" => self.input_prediction = b()?,
             "task_slug" => self.task_slug = b()?,
+            "show_thinking" => self.show_thinking = b()?,
             "restrict_to_workspace" => self.restrict_to_workspace = b()?,
             "multi_agent" => self.multi_agent = b()?,
             _ => return Err(format!("unknown setting '{key}'")),

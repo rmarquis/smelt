@@ -137,6 +137,7 @@ impl App {
                     self.show_cost,
                     self.show_prediction,
                     self.show_slug,
+                    self.show_thinking,
                     self.restrict_to_workspace,
                 );
                 self.screen.mark_dirty();

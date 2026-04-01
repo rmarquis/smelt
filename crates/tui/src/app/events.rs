@@ -139,6 +139,7 @@ impl App {
                         show_cost,
                         show_prediction,
                         show_slug,
+                        show_thinking,
                         restrict_to_workspace,
                     } => {
                         self.input.set_vim_enabled(vim);
@@ -153,6 +154,11 @@ impl App {
                         self.show_prediction = show_prediction;
                         self.show_slug = show_slug;
                         self.screen.set_show_slug(show_slug);
+                        if self.show_thinking != show_thinking {
+                            self.show_thinking = show_thinking;
+                            self.screen.set_show_thinking(show_thinking);
+                            self.screen.redraw(true);
+                        }
                         self.restrict_to_workspace = restrict_to_workspace;
                     }
                     MenuResult::ModelSelect(key) => {
@@ -586,6 +592,7 @@ impl App {
                         show_tokens,
                         show_cost,
                         show_slug,
+                        show_thinking,
                         ..
                     } = ms.kind
                     {
@@ -597,6 +604,11 @@ impl App {
                         self.screen.set_show_cost(show_cost);
                         self.show_slug = show_slug;
                         self.screen.set_show_slug(show_slug);
+                        if self.show_thinking != show_thinking {
+                            self.show_thinking = show_thinking;
+                            self.screen.set_show_thinking(show_thinking);
+                            self.screen.redraw(true);
+                        }
                     }
                 }
                 self.screen.mark_dirty();

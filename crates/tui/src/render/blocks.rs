@@ -85,7 +85,12 @@ pub(super) fn gap_between(above: &Element, below: &Element) -> u16 {
     }
 }
 
-pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> u16 {
+pub(super) fn render_block(
+    out: &mut RenderOut,
+    block: &Block,
+    width: usize,
+    show_thinking: bool,
+) -> u16 {
     let _perf = crate::perf::begin("render_block");
     match block {
         Block::User { text, image_labels } => {
@@ -157,6 +162,15 @@ pub(super) fn render_block(out: &mut RenderOut, block: &Block, width: usize) -> 
             rows
         }
         Block::Thinking { content } => {
+            if !show_thinking {
+                let line_count = content.lines().count();
+                let _ = out.queue(SetAttribute(Attribute::Dim));
+                let _ = out.queue(SetAttribute(Attribute::Italic));
+                let _ = out.queue(Print(format!(" \u{2502} thinking ({line_count} lines)")));
+                let _ = out.queue(SetAttribute(Attribute::Reset));
+                crlf(out);
+                return 1;
+            }
             let max_cols = width.saturating_sub(4).max(1); // "│ " prefix + 1 margin
             let mut rows = 0u16;
             for line in content.lines() {
@@ -1390,7 +1404,7 @@ mod tests {
 
     fn block_rows(block: &Block) -> u16 {
         let mut out = RenderOut::buffer();
-        render_block(&mut out, block, W)
+        render_block(&mut out, block, W, true)
     }
 
     /// Compute total gap rows between the last history block and an active tool.
@@ -1413,7 +1427,7 @@ mod tests {
             } else {
                 0
             };
-            let rows = render_block(&mut out, &blocks[i], W);
+            let rows = render_block(&mut out, &blocks[i], W, true);
             total += gap + rows;
         }
         let tg = tool_gap_for(blocks);
@@ -1435,7 +1449,7 @@ mod tests {
             } else {
                 0
             };
-            let rows = render_block(&mut out, &blocks[i], W);
+            let rows = render_block(&mut out, &blocks[i], W, true);
             block_rows_total += gap + rows;
         }
         // anchor_row = start_row + block_rows_total
@@ -1471,7 +1485,7 @@ mod tests {
             } else {
                 0
             };
-            let rows = render_block(&mut out, &blocks[i], W);
+            let rows = render_block(&mut out, &blocks[i], W, true);
             cumulative += gap + rows;
         }
         let tg = tool_gap_for(blocks);
@@ -1648,7 +1662,7 @@ mod tests {
                 } else {
                     0
                 };
-                let rows = render_block(&mut out, &blocks[i], W);
+                let rows = render_block(&mut out, &blocks[i], W, true);
                 frame_block_rows += gap + rows;
             }
             // In non-dialog draw_frame: anchor_row = top_row + block_rows

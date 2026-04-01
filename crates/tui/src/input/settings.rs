@@ -96,6 +96,7 @@ pub enum MenuKind {
         show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
+        show_thinking: bool,
         restrict_to_workspace: bool,
     },
     Stats {
@@ -122,6 +123,7 @@ pub enum MenuResult {
         show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
+        show_thinking: bool,
         restrict_to_workspace: bool,
     },
     ModelSelect(String),

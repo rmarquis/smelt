@@ -101,6 +101,7 @@ pub struct App {
     pub show_cost: bool,
     pub show_prediction: bool,
     pub show_slug: bool,
+    pub show_thinking: bool,
     pub restrict_to_workspace: bool,
     pub multi_agent: bool,
     /// Human-readable name for this agent.
@@ -398,6 +399,7 @@ impl App {
         show_cost: bool,
         input_prediction: bool,
         task_slug: bool,
+        show_thinking: bool,
         restrict_to_workspace: bool,
         multi_agent: bool,
         reasoning_effort: protocol::ReasoningEffort,
@@ -448,6 +450,7 @@ impl App {
         screen.set_show_tokens(show_tokens);
         screen.set_show_cost(show_cost);
         screen.set_show_slug(task_slug);
+        screen.set_show_thinking(show_thinking);
 
         let cwd = std::env::current_dir()
             .ok()
@@ -486,6 +489,7 @@ impl App {
             show_cost,
             show_prediction: input_prediction,
             show_slug: task_slug,
+            show_thinking,
             restrict_to_workspace,
             multi_agent,
             agent_id: String::new(),
@@ -580,6 +584,7 @@ impl App {
                     self.show_cost,
                     self.show_prediction,
                     self.show_slug,
+                    self.show_thinking,
                     self.restrict_to_workspace,
                 );
                 self.screen.mark_dirty();

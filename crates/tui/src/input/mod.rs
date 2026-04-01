@@ -360,13 +360,14 @@ impl InputState {
         show_cost: bool,
         show_prediction: bool,
         show_slug: bool,
+        show_thinking: bool,
         restrict_to_workspace: bool,
     ) {
         self.completer = None;
         self.menu = Some(MenuState {
             nav: Menu {
                 selected: 0,
-                len: 8,
+                len: 9,
                 select_on_enter: false,
             },
             kind: MenuKind::Settings {
@@ -377,6 +378,7 @@ impl InputState {
                 show_cost,
                 show_prediction,
                 show_slug,
+                show_thinking,
                 restrict_to_workspace,
             },
         });
@@ -458,6 +460,7 @@ impl InputState {
                 show_cost,
                 show_prediction,
                 show_slug,
+                show_thinking,
                 restrict_to_workspace,
             } => MenuResult::Settings {
                 vim: vim_enabled,
@@ -467,6 +470,7 @@ impl InputState {
                 show_cost,
                 show_prediction,
                 show_slug,
+                show_thinking,
                 restrict_to_workspace,
             },
             MenuKind::Stats { .. } => MenuResult::Stats,
@@ -1150,6 +1154,7 @@ impl InputState {
                     ref mut show_cost,
                     ref mut show_prediction,
                     ref mut show_slug,
+                    ref mut show_thinking,
                     ref mut restrict_to_workspace,
                 } = ms.kind
                 {
@@ -1161,7 +1166,8 @@ impl InputState {
                         4 => *show_cost ^= true,
                         5 => *show_prediction ^= true,
                         6 => *show_slug ^= true,
-                        7 => *restrict_to_workspace ^= true,
+                        7 => *show_thinking ^= true,
+                        8 => *restrict_to_workspace ^= true,
                         _ => {}
                     }
                 }

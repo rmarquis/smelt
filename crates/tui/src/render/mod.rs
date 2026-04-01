@@ -474,7 +474,7 @@ impl BlockHistory {
     }
 
     /// Render unflushed blocks. Returns total rows printed.
-    fn render(&mut self, out: &mut RenderOut, width: usize) -> u16 {
+    fn render(&mut self, out: &mut RenderOut, width: usize, show_thinking: bool) -> u16 {
         if !self.has_unflushed() {
             return 0;
         }
@@ -491,7 +491,7 @@ impl BlockHistory {
             for _ in 0..gap {
                 crlf(out);
             }
-            let rows = render_block(out, &self.blocks[i], width);
+            let rows = render_block(out, &self.blocks[i], width, show_thinking);
             self.row_counts[i] = rows;
             total += gap + rows;
             if i == last_idx {
@@ -566,6 +566,7 @@ pub struct Screen {
     show_tokens: bool,
     show_cost: bool,
     show_slug: bool,
+    show_thinking: bool,
     /// Whether to render the active tool above the dialog in content-only
     /// mode.  Set when tool + dialog fit on screen; cleared on dialog close.
     show_tool_in_dialog: bool,
@@ -636,6 +637,7 @@ impl Screen {
             show_tokens: true,
             show_cost: true,
             show_slug: true,
+            show_thinking: true,
             show_tool_in_dialog: false,
             btw: None,
             notification: None,
@@ -771,6 +773,10 @@ impl Screen {
     pub fn set_show_tps(&mut self, show: bool) {
         self.show_tps = show;
         self.prompt.dirty = true;
+    }
+
+    pub fn set_show_thinking(&mut self, show: bool) {
+        self.show_thinking = show;
     }
 
     pub fn set_show_tokens(&mut self, show: bool) {
@@ -1677,7 +1683,9 @@ impl Screen {
                 .unwrap_or_else(|| self.cursor_y())
         };
         let (w, h) = self.size();
-        let block_rows = self.history.render(&mut out, w as usize);
+        let block_rows = self
+            .history
+            .render(&mut out, w as usize, self.show_thinking);
         // Cap anchor at the last terminal row — scroll-mode rendering may
         // have pushed past the bottom, making start_row + block_rows overshoot.
         self.prompt.anchor_row = Some((start_row + block_rows).min(h.saturating_sub(1)));
@@ -1752,7 +1760,9 @@ impl Screen {
         let start_idx = self.history.redraw_start(MAX_REDRAW_LINES);
         self.history.flushed = start_idx;
         self.history.last_block_rows = 0;
-        let block_rows = self.history.render(&mut out, w as usize);
+        let block_rows = self
+            .history
+            .render(&mut out, w as usize, self.show_thinking);
         if !purge {
             // Clear remaining rows individually — Clear(FromCursorDown) at
             // low row numbers causes Ghostty to push the viewport into
@@ -1899,7 +1909,7 @@ impl Screen {
         }
 
         // ── Render blocks ───────────────────────────────────────────────
-        let block_rows = self.history.render(&mut out, width);
+        let block_rows = self.history.render(&mut out, width, self.show_thinking);
 
         // ── Clear stale volatile area ────────────────────────────────────
         // When new blocks are committed (block_rows > 0), the overlay
@@ -1995,7 +2005,7 @@ impl Screen {
             for _ in 0..gap {
                 crlf(&mut out);
             }
-            let rows = blocks::render_block(&mut out, block, width);
+            let rows = blocks::render_block(&mut out, block, width, self.show_thinking);
             streaming_rows += gap + rows;
         }
 
@@ -2061,6 +2071,7 @@ impl Screen {
                         elapsed: Some(elapsed),
                     },
                     width,
+                    self.show_thinking,
                 );
                 active_rows += agent_gap + rows;
             }
@@ -3727,6 +3738,7 @@ fn draw_menu(out: &mut RenderOut, ms: &crate::input::MenuState, max_rows: usize)
             show_cost,
             show_prediction,
             show_slug,
+            show_thinking,
             restrict_to_workspace,
         } => {
             let rows: &[(&str, bool)] = &[
@@ -3737,6 +3749,7 @@ fn draw_menu(out: &mut RenderOut, ms: &crate::input::MenuState, max_rows: usize)
                 ("show cost", *show_cost),
                 ("input prediction", *show_prediction),
                 ("task slug", *show_slug),
+                ("show thinking", *show_thinking),
                 ("restrict to workspace", *restrict_to_workspace),
             ];
             let col = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0) + 4;

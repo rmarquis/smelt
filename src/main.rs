@@ -363,6 +363,7 @@ async fn main() {
     let show_cost = cfg.settings.show_cost.unwrap_or(true);
     let input_prediction = cfg.settings.input_prediction.unwrap_or(true);
     let task_slug = cfg.settings.task_slug.unwrap_or(true);
+    let show_thinking = cfg.settings.show_thinking.unwrap_or(true);
     let restrict_to_workspace = cfg.settings.restrict_to_workspace.unwrap_or(true);
 
     // Apply CLI sampling overrides to model_config
@@ -625,6 +626,7 @@ async fn main() {
         show_cost,
         input_prediction,
         task_slug,
+        show_thinking,
         restrict_to_workspace,
         multi_agent,
         reasoning_effort,

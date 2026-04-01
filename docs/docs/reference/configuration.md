@@ -95,6 +95,7 @@ All toggleable at runtime via `/settings`.
 | `show_cost`             | `true`  | Session cost in status bar                                           |
 | `input_prediction`      | `true`  | Ghost text suggestions                                               |
 | `task_slug`             | `true`  | Task label in status bar                                             |
+| `show_thinking`         | `true`  | Show full thinking/reasoning blocks (false collapses to a hint line) |
 | `restrict_to_workspace` | `true`  | Downgrade Allow → Ask outside workspace                              |
 | `multi_agent`           | `false` | Enable multi-agent mode                                              |
 | `context_window`        | auto    | Override context window size (tokens); auto-detected from API        |
@@ -290,6 +291,7 @@ settings:
   show_cost: true
   input_prediction: true
   task_slug: true
+  show_thinking: true
   restrict_to_workspace: true
   multi_agent: false
 
