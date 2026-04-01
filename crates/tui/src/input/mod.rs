@@ -2,7 +2,7 @@ mod history;
 mod settings;
 
 pub use history::History;
-pub use settings::{Menu, MenuAction, MenuKind, MenuResult, MenuState};
+pub use settings::{Menu, MenuAction, MenuKind, MenuResult, MenuState, SettingsState};
 
 use crate::attachment::{Attachment, AttachmentId, AttachmentStore};
 use crate::completer::{Completer, CompleterKind};
@@ -350,38 +350,14 @@ impl InputState {
         self.attachment_ids = ids;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn open_settings(
-        &mut self,
-        vim_enabled: bool,
-        auto_compact: bool,
-        show_tps: bool,
-        show_tokens: bool,
-        show_cost: bool,
-        show_prediction: bool,
-        show_slug: bool,
-        show_thinking: bool,
-        restrict_to_workspace: bool,
-    ) {
-        self.completer = None;
-        self.menu = Some(MenuState {
-            nav: Menu {
-                selected: 0,
-                len: 9,
-                select_on_enter: false,
-            },
-            kind: MenuKind::Settings {
-                vim_enabled,
-                auto_compact,
-                show_tps,
-                show_tokens,
-                show_cost,
-                show_prediction,
-                show_slug,
-                show_thinking,
-                restrict_to_workspace,
-            },
-        });
+    pub fn open_settings(&mut self, state: &SettingsState) {
+        self.menu = None;
+        if self.history_saved_buf.is_none() {
+            self.history_saved_buf = Some((self.buf.clone(), self.cpos));
+        }
+        let mut comp = Completer::settings(state);
+        comp.update_query(self.buf.clone());
+        self.completer = Some(comp);
     }
 
     pub fn open_stats(&mut self, stats: crate::metrics::StatsOutput) {
@@ -443,6 +419,7 @@ impl InputState {
                     CompleterKind::Model
                         | CompleterKind::Theme
                         | CompleterKind::Color
+                        | CompleterKind::Settings
                         | CompleterKind::History
                 )
             })
@@ -452,27 +429,6 @@ impl InputState {
     pub fn dismiss_menu(&mut self) -> Option<MenuResult> {
         let ms = self.menu.take()?;
         Some(match ms.kind {
-            MenuKind::Settings {
-                vim_enabled,
-                auto_compact,
-                show_tps,
-                show_tokens,
-                show_cost,
-                show_prediction,
-                show_slug,
-                show_thinking,
-                restrict_to_workspace,
-            } => MenuResult::Settings {
-                vim: vim_enabled,
-                auto_compact,
-                show_tps,
-                show_tokens,
-                show_cost,
-                show_prediction,
-                show_slug,
-                show_thinking,
-                restrict_to_workspace,
-            },
             MenuKind::Stats { .. } => MenuResult::Stats,
             MenuKind::Cost { .. } => MenuResult::Cost,
         })
@@ -482,7 +438,6 @@ impl InputState {
     pub fn menu_rows(&self) -> usize {
         match &self.menu {
             Some(ms) => match &ms.kind {
-                MenuKind::Settings { .. } => ms.nav.len,
                 MenuKind::Stats { left, right } => crate::metrics::stats_row_count(left, right),
                 MenuKind::Cost { lines } => lines.len(),
             },
@@ -1145,34 +1100,7 @@ impl InputState {
     fn handle_menu_event(&mut self, ev: &Event) -> Action {
         let ms = self.menu.as_mut().unwrap();
         match ms.nav.handle_event(ev) {
-            MenuAction::Toggle(idx) => {
-                if let MenuKind::Settings {
-                    ref mut vim_enabled,
-                    ref mut auto_compact,
-                    ref mut show_tps,
-                    ref mut show_tokens,
-                    ref mut show_cost,
-                    ref mut show_prediction,
-                    ref mut show_slug,
-                    ref mut show_thinking,
-                    ref mut restrict_to_workspace,
-                } = ms.kind
-                {
-                    match idx {
-                        0 => *vim_enabled ^= true,
-                        1 => *auto_compact ^= true,
-                        2 => *show_tps ^= true,
-                        3 => *show_tokens ^= true,
-                        4 => *show_cost ^= true,
-                        5 => *show_prediction ^= true,
-                        6 => *show_slug ^= true,
-                        7 => *show_thinking ^= true,
-                        8 => *restrict_to_workspace ^= true,
-                        _ => {}
-                    }
-                }
-                Action::Redraw
-            }
+            MenuAction::Toggle(_) => Action::Redraw,
             MenuAction::Tab => Action::Redraw,
             MenuAction::Select(_) => Action::Redraw,
             MenuAction::Dismiss => Action::MenuResult(self.dismiss_menu().unwrap()),
@@ -1210,6 +1138,37 @@ impl InputState {
         }
     }
 
+    fn toggle_selected_setting(&self, comp: &Completer) -> Action {
+        let Some(key) = comp.accept_extra() else {
+            return Action::Redraw;
+        };
+        let s = |k: &str| Self::self_setting_bool(comp, k);
+        let mut state = SettingsState {
+            vim: s("vim"),
+            auto_compact: s("auto_compact"),
+            show_tps: s("show_tps"),
+            show_tokens: s("show_tokens"),
+            show_cost: s("show_cost"),
+            show_prediction: s("show_prediction"),
+            show_slug: s("show_slug"),
+            show_thinking: s("show_thinking"),
+            restrict_to_workspace: s("restrict_to_workspace"),
+        };
+        match key {
+            "vim" => state.vim ^= true,
+            "auto_compact" => state.auto_compact ^= true,
+            "show_tps" => state.show_tps ^= true,
+            "show_tokens" => state.show_tokens ^= true,
+            "show_cost" => state.show_cost ^= true,
+            "show_prediction" => state.show_prediction ^= true,
+            "show_slug" => state.show_slug ^= true,
+            "show_thinking" => state.show_thinking ^= true,
+            "restrict_to_workspace" => state.restrict_to_workspace ^= true,
+            _ => return Action::Redraw,
+        }
+        Action::MenuResult(MenuResult::Settings(state))
+    }
+
     /// Try to handle the event as a completer navigation. Returns Some if consumed.
     fn handle_completer_event(&mut self, ev: &Event) -> Option<Action> {
         let kind = self.completer.as_ref().map(|c| c.kind)?;
@@ -1219,6 +1178,7 @@ impl InputState {
                 | CompleterKind::Model
                 | CompleterKind::Theme
                 | CompleterKind::Color
+                | CompleterKind::Settings
         );
 
         match ev {
@@ -1227,6 +1187,10 @@ impl InputState {
                 modifiers,
                 ..
             }) if !modifiers.contains(KeyModifiers::SHIFT) => {
+                if kind == CompleterKind::Settings {
+                    let comp = self.completer.as_ref().unwrap();
+                    return Some(self.toggle_selected_setting(comp));
+                }
                 let comp = self.completer.take().unwrap();
                 match comp.kind {
                     CompleterKind::History => {
@@ -1255,7 +1219,20 @@ impl InputState {
                 }
             }
             Event::Key(KeyEvent {
+                code: KeyCode::Char(' '),
+                modifiers: KeyModifiers::NONE,
+                ..
+            }) if kind == CompleterKind::Settings => {
+                let comp = self.completer.as_ref().unwrap();
+                Some(self.toggle_selected_setting(comp))
+            }
+            Event::Key(KeyEvent {
                 code: KeyCode::Esc, ..
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
             }) => {
                 let comp = self.completer.take().unwrap();
                 // Restore original theme/color on dismiss.
@@ -1336,6 +1313,12 @@ impl InputState {
                         }
                         self.history_saved_buf = None;
                     }
+                    CompleterKind::Settings => {
+                        // Put it back — settings toggle doesn't close the picker.
+                        self.completer = Some(comp);
+                        let c = self.completer.as_ref().unwrap();
+                        return Some(self.toggle_selected_setting(c));
+                    }
                     CompleterKind::Model | CompleterKind::Theme | CompleterKind::Color => {
                         return Some(self.accept_picker(comp));
                     }
@@ -1351,6 +1334,13 @@ impl InputState {
             }
             _ => None,
         }
+    }
+
+    fn self_setting_bool(comp: &Completer, key: &str) -> bool {
+        comp.all_items()
+            .iter()
+            .find(|item| item.extra.as_deref() == Some(key))
+            .is_some_and(|item| item.description.as_deref() == Some("on"))
     }
 
     fn accept_completion(&mut self, comp: &Completer) {
@@ -1426,6 +1416,7 @@ impl InputState {
                     | CompleterKind::Model
                     | CompleterKind::Theme
                     | CompleterKind::Color
+                    | CompleterKind::Settings
             )
         }) {
             let query = self.buf.clone();

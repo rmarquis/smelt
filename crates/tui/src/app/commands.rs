@@ -129,17 +129,7 @@ impl App {
                 CommandAction::Continue
             }
             "/settings" => {
-                self.input.open_settings(
-                    self.input.vim_enabled(),
-                    self.auto_compact,
-                    self.show_tps,
-                    self.show_tokens,
-                    self.show_cost,
-                    self.show_prediction,
-                    self.show_slug,
-                    self.show_thinking,
-                    self.restrict_to_workspace,
-                );
+                self.input.open_settings(&self.settings_state());
                 self.screen.mark_dirty();
                 CommandAction::Continue
             }

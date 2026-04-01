@@ -577,8 +577,10 @@ pub fn nav_lookup(code: KeyCode, modifiers: KeyModifiers) -> Option<NavAction> {
         (KeyCode::PageDown, _) => Some(NavAction::PageDown),
         // Item navigation
         (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => Some(NavAction::Up),
+        (KeyCode::Char('k'), m) if m.contains(CTRL) => Some(NavAction::Up),
         (KeyCode::Char('p'), m) if m.contains(CTRL) => Some(NavAction::Up),
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => Some(NavAction::Down),
+        (KeyCode::Char('j'), m) if m.contains(CTRL) => Some(NavAction::Down),
         (KeyCode::Char('n'), m) if m.contains(CTRL) => Some(NavAction::Down),
         // Edit mode
         (KeyCode::Tab, _) => Some(NavAction::Edit),
@@ -595,7 +597,14 @@ pub mod hints {
         if vim {
             "j/k: navigate"
         } else {
-            "\u{2191}/\u{2193}: navigate"
+            "↑/↓: navigate"
+        }
+    }
+    pub fn picker_nav(vim: bool) -> &'static str {
+        if vim {
+            "ctrl+j/k: navigate"
+        } else {
+            "↑/↓: navigate"
         }
     }
     pub fn scroll(vim: bool) -> &'static str {

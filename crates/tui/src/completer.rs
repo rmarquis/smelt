@@ -12,6 +12,7 @@ pub fn set_multi_agent(enabled: bool) {
 pub struct CompletionItem {
     pub label: String,
     pub description: Option<String>,
+    pub search_terms: Option<String>,
     /// ANSI terminal color for theme/color picker swatches.
     pub ansi_color: Option<u8>,
     /// Secondary value (e.g. model key when label is the display name).
@@ -27,6 +28,7 @@ pub enum CompleterKind {
     Model,
     Theme,
     Color,
+    Settings,
 }
 
 pub struct Completer {
@@ -41,6 +43,8 @@ pub struct Completer {
     pub selected: usize,
     /// Full item list (cached on activation).
     all_items: Vec<CompletionItem>,
+    /// Stable identity of the selected item across filter updates.
+    selected_key: Option<String>,
     /// Original value to restore on dismiss (Theme = accent, Color = slug color).
     pub original_value: Option<u8>,
 }
@@ -62,6 +66,7 @@ impl Completer {
             results,
             selected: 0,
             all_items,
+            selected_key: None,
             original_value: None,
         }
     }
@@ -157,6 +162,7 @@ impl Completer {
             results,
             selected: 0,
             all_items,
+            selected_key: None,
             original_value: None,
         }
     }
@@ -177,6 +183,7 @@ impl Completer {
             results,
             selected: 0,
             all_items,
+            selected_key: None,
             original_value: None,
         }
     }
@@ -209,6 +216,7 @@ impl Completer {
             results,
             selected: 0,
             all_items,
+            selected_key: None,
             original_value: None,
         }
     }
@@ -220,6 +228,7 @@ impl Completer {
             .map(|(key, name, provider)| CompletionItem {
                 label: name.clone(),
                 description: Some(provider.clone()),
+                search_terms: Some(provider.clone()),
                 extra: Some(key.clone()),
                 ..Default::default()
             })
@@ -232,6 +241,7 @@ impl Completer {
             results,
             selected: 0,
             all_items,
+            selected_key: None,
             original_value: None,
         }
     }
@@ -252,6 +262,9 @@ impl Completer {
             .position(|i| i.ansi_color == Some(original))
             .unwrap_or(0);
         let results = all_items.clone();
+        let selected_key = results
+            .get(selected)
+            .map(|item| Self::item_key(item).to_string());
         Self {
             anchor: 0,
             kind: CompleterKind::Theme,
@@ -259,6 +272,7 @@ impl Completer {
             results,
             selected,
             all_items,
+            selected_key,
             original_value: Some(original),
         }
     }
@@ -268,6 +282,97 @@ impl Completer {
         let mut comp = Self::themes(original);
         comp.kind = CompleterKind::Color;
         comp
+    }
+
+    pub fn settings_items(state: &crate::input::SettingsState) -> Vec<CompletionItem> {
+        let on_off = |v: bool| if v { "on" } else { "off" };
+        vec![
+            CompletionItem {
+                label: "vim mode".into(),
+                description: Some(on_off(state.vim).into()),
+                search_terms: Some("vim editor".into()),
+                extra: Some("vim".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "auto compact".into(),
+                description: Some(on_off(state.auto_compact).into()),
+                extra: Some("auto_compact".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "show tok/s".into(),
+                description: Some(on_off(state.show_tps).into()),
+                search_terms: Some("tokens tok tps speed throughput".into()),
+                extra: Some("show_tps".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "show tokens".into(),
+                description: Some(on_off(state.show_tokens).into()),
+                extra: Some("show_tokens".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "show cost".into(),
+                description: Some(on_off(state.show_cost).into()),
+                extra: Some("show_cost".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "input prediction".into(),
+                description: Some(on_off(state.show_prediction).into()),
+                search_terms: Some("predict prediction autocomplete ghost".into()),
+                extra: Some("show_prediction".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "task slug".into(),
+                description: Some(on_off(state.show_slug).into()),
+                search_terms: Some("task slug label title".into()),
+                extra: Some("show_slug".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "show thinking".into(),
+                description: Some(on_off(state.show_thinking).into()),
+                extra: Some("show_thinking".into()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "restrict to workspace".into(),
+                description: Some(on_off(state.restrict_to_workspace).into()),
+                search_terms: Some("workspace cwd project directory".into()),
+                extra: Some("restrict_to_workspace".into()),
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// Picker for toggling settings from the prompt buffer.
+    pub fn settings(state: &crate::input::SettingsState) -> Self {
+        let all_items = Self::settings_items(state);
+        let results = all_items.clone();
+        Self {
+            anchor: 0,
+            kind: CompleterKind::Settings,
+            query: String::new(),
+            results,
+            selected: 0,
+            all_items,
+            selected_key: None,
+            original_value: None,
+        }
+    }
+
+    /// Replace the item list and re-filter, preserving the current selection.
+    pub fn refresh_items(&mut self, items: Vec<CompletionItem>) {
+        self.all_items = items;
+        self.filter_inner(true);
+    }
+
+    pub fn all_items(&self) -> &[CompletionItem] {
+        &self.all_items
     }
 
     /// Returns the selected item, if any.
@@ -285,7 +390,10 @@ impl Completer {
     pub fn is_picker(&self) -> bool {
         matches!(
             self.kind,
-            CompleterKind::Model | CompleterKind::Theme | CompleterKind::Color
+            CompleterKind::Model
+                | CompleterKind::Theme
+                | CompleterKind::Color
+                | CompleterKind::Settings
         )
     }
 
@@ -294,7 +402,35 @@ impl Completer {
         match self.kind {
             CompleterKind::Theme | CompleterKind::Color => 14,
             CompleterKind::Model => 7,
+            CompleterKind::Settings => 9,
             _ => 5,
+        }
+    }
+
+    fn item_key(item: &CompletionItem) -> &str {
+        item.extra.as_deref().unwrap_or(item.label.as_str())
+    }
+
+    fn remember_selected_key(&mut self) {
+        self.selected_key = self
+            .results
+            .get(self.selected)
+            .map(|item| Self::item_key(item).to_string());
+    }
+
+    fn restore_selected_key(&mut self) {
+        if let Some(ref key) = self.selected_key {
+            if let Some(idx) = self
+                .results
+                .iter()
+                .position(|item| Self::item_key(item) == key)
+            {
+                self.selected = idx;
+                return;
+            }
+        }
+        if self.selected >= self.results.len() {
+            self.selected = 0;
         }
     }
 
@@ -304,10 +440,19 @@ impl Completer {
     }
 
     fn filter(&mut self) {
+        self.filter_inner(false);
+    }
+
+    fn filter_inner(&mut self, preserve_selection: bool) {
         let _perf = crate::perf::begin("completer_filter");
+        if preserve_selection {
+            self.remember_selected_key();
+        }
         if self.query.is_empty() {
             self.results = self.all_items.clone();
         } else {
+            let query = self.query.to_lowercase();
+            let query_words = split_words(&query);
             let mut scored: Vec<_> = self
                 .all_items
                 .iter()
@@ -315,8 +460,38 @@ impl Completer {
                 .filter_map(|(i, item)| {
                     let score = if self.kind == CompleterKind::History {
                         history_score(&item.label, &self.query, i)
+                    } else if self.kind == CompleterKind::Settings {
+                        let label = item.label.to_lowercase();
+                        let terms = item.search_terms.as_deref().unwrap_or("").to_lowercase();
+                        let label_words = split_words(&label);
+                        let terms_words = split_words(&terms);
+                        let label_prefix = label_words.iter().any(|w| w.starts_with(&query));
+                        let terms_exact = terms_words.iter().any(|w| *w == query);
+                        if label_prefix || terms_exact {
+                            Some(if label_prefix { 0 } else { 10 })
+                        } else if !query_words.is_empty()
+                            && query_words.iter().all(|qw| {
+                                label_words.iter().any(|lw| lw.starts_with(qw))
+                                    || terms_words.contains(qw)
+                            })
+                        {
+                            Some(5)
+                        } else {
+                            None
+                        }
                     } else {
-                        crate::fuzzy::fuzzy_score(&item.label, &self.query)
+                        let haystack = match item.search_terms.as_deref() {
+                            Some(terms) => format!("{} {terms}", item.label.to_lowercase()),
+                            None => item.label.to_lowercase(),
+                        };
+                        if haystack.contains(&query)
+                            || (!query_words.is_empty()
+                                && query_words.iter().all(|word| haystack.contains(word)))
+                        {
+                            Some(0)
+                        } else {
+                            crate::fuzzy::fuzzy_score(&item.label, &self.query)
+                        }
                     }?;
                     Some((score, i, item.clone()))
                 })
@@ -324,7 +499,9 @@ impl Completer {
             scored.sort_by_key(|(s, i, _)| (*s, *i));
             self.results = scored.into_iter().map(|(_, _, item)| item).collect();
         }
-        if self.selected >= self.results.len() {
+        if preserve_selection {
+            self.restore_selected_key();
+        } else if self.selected >= self.results.len() {
             self.selected = 0;
         }
     }
@@ -336,12 +513,14 @@ impl Completer {
             } else {
                 self.selected - 1
             };
+            self.remember_selected_key();
         }
     }
 
     pub fn move_down(&mut self) {
         if !self.results.is_empty() {
             self.selected = (self.selected + 1) % self.results.len();
+            self.remember_selected_key();
         }
     }
 
@@ -634,5 +813,87 @@ mod tests {
             word_pos < fuzzy_pos,
             "word hit should beat fuzzy-only subsequence"
         );
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::input::SettingsState;
+
+    fn test_state(vim: bool) -> SettingsState {
+        SettingsState {
+            vim,
+            auto_compact: false,
+            show_tps: true,
+            show_tokens: true,
+            show_cost: true,
+            show_prediction: true,
+            show_slug: true,
+            show_thinking: true,
+            restrict_to_workspace: false,
+        }
+    }
+
+    #[test]
+    fn filter_auto_shows_auto_compact() {
+        let mut comp = Completer::settings(&test_state(false));
+        comp.update_query("auto".into());
+        assert_eq!(comp.results.len(), 1);
+        assert_eq!(comp.results[0].extra.as_deref(), Some("auto_compact"));
+        assert_eq!(comp.results[0].description.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn filter_vim_shows_vim_mode() {
+        let mut comp = Completer::settings(&test_state(true));
+        comp.update_query("vim".into());
+        assert_eq!(
+            comp.results.len(),
+            1,
+            "results: {:?}",
+            comp.results.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+        assert_eq!(comp.results[0].extra.as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn filter_speed_shows_tps() {
+        let mut comp = Completer::settings(&test_state(false));
+        comp.update_query("speed".into());
+        assert_eq!(comp.results.len(), 1);
+        assert_eq!(comp.results[0].extra.as_deref(), Some("show_tps"));
+    }
+
+    #[test]
+    fn toggle_preserves_selected_after_refresh() {
+        let mut comp = Completer::settings(&test_state(false));
+        // Navigate down to "auto compact" (index 1)
+        comp.move_down();
+        assert_eq!(comp.accept_extra(), Some("auto_compact"));
+
+        // Refresh with auto_compact toggled
+        let mut toggled = test_state(false);
+        toggled.auto_compact = true;
+        comp.refresh_items(Completer::settings_items(&toggled));
+        assert_eq!(
+            comp.accept_extra(),
+            Some("auto_compact"),
+            "selection should stay on auto_compact"
+        );
+        assert_eq!(
+            comp.selected_item().unwrap().description.as_deref(),
+            Some("on")
+        );
+    }
+
+    #[test]
+    fn accept_extra_on_filtered_single_result() {
+        let mut comp = Completer::settings(&test_state(false));
+        comp.update_query("auto".into());
+        assert_eq!(comp.results.len(), 1);
+        assert_eq!(comp.selected, 0);
+        let key = comp.accept_extra();
+        assert_eq!(key, Some("auto_compact"));
     }
 }

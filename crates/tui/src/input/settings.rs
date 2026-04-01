@@ -1,6 +1,19 @@
 use crate::keymap::{nav_lookup, NavAction};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+#[derive(Clone, Debug)]
+pub struct SettingsState {
+    pub vim: bool,
+    pub auto_compact: bool,
+    pub show_tps: bool,
+    pub show_tokens: bool,
+    pub show_cost: bool,
+    pub show_prediction: bool,
+    pub show_slug: bool,
+    pub show_thinking: bool,
+    pub restrict_to_workspace: bool,
+}
+
 /// Generic navigation result from a menu.
 pub enum MenuAction {
     /// Item was toggled in-place (settings style), menu stays open.
@@ -88,17 +101,6 @@ impl Menu {
 
 /// Domain-specific data carried alongside the generic Menu navigation.
 pub enum MenuKind {
-    Settings {
-        vim_enabled: bool,
-        auto_compact: bool,
-        show_tps: bool,
-        show_tokens: bool,
-        show_cost: bool,
-        show_prediction: bool,
-        show_slug: bool,
-        show_thinking: bool,
-        restrict_to_workspace: bool,
-    },
     Stats {
         left: Vec<crate::metrics::StatsLine>,
         right: Vec<crate::metrics::StatsLine>,
@@ -115,17 +117,7 @@ pub struct MenuState {
 
 /// Domain-specific result returned to the app after a menu closes.
 pub enum MenuResult {
-    Settings {
-        vim: bool,
-        auto_compact: bool,
-        show_tps: bool,
-        show_tokens: bool,
-        show_cost: bool,
-        show_prediction: bool,
-        show_slug: bool,
-        show_thinking: bool,
-        restrict_to_workspace: bool,
-    },
+    Settings(SettingsState),
     ModelSelect(String),
     ThemeSelect(u8),
     ColorSelect(u8),

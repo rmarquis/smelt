@@ -2687,7 +2687,12 @@ impl Screen {
         let comp_rows = if let Some(ref ms) = state.menu {
             draw_menu(out, ms, comp_rows)
         } else {
-            draw_completions(out, state.completer.as_ref(), comp_rows)
+            draw_completions(
+                out,
+                state.completer.as_ref(),
+                comp_rows,
+                state.vim_enabled(),
+            )
         };
 
         let total_rows = notification_rows as usize
@@ -3621,6 +3626,7 @@ fn draw_completions(
     out: &mut RenderOut,
     completer: Option<&crate::completer::Completer>,
     max_rows: usize,
+    vim_enabled: bool,
 ) -> usize {
     use crate::completer::CompleterKind;
 
@@ -3630,28 +3636,40 @@ fn draw_completions(
     if max_rows == 0 {
         return 0;
     }
+
+    let show_hints = comp.kind == CompleterKind::Settings;
+    let hint_rows = usize::from(show_hints) * 2;
+    let list_rows = max_rows.saturating_sub(hint_rows);
+
     if comp.results.is_empty() {
         if comp.is_picker() {
             let _ = out.queue(SetAttribute(Attribute::Dim));
             let _ = out.queue(Print("  no results"));
             let _ = out.queue(SetAttribute(Attribute::Reset));
             let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+            if show_hints && max_rows >= 3 {
+                draw_settings_hints(out, vim_enabled);
+                return 3;
+            }
             return 1;
         }
         return 0;
     }
+    if list_rows == 0 {
+        return 0;
+    }
     let total = comp.results.len();
-    let max_rows = max_rows.min(total);
+    let visible_rows = list_rows.min(total);
     let mut start = 0;
-    if total > max_rows {
-        let half = max_rows / 2;
+    if total > visible_rows {
+        let half = visible_rows / 2;
         start = comp.selected.saturating_sub(half);
-        if start + max_rows > total {
-            start = total - max_rows;
+        if start + visible_rows > total {
+            start = total - visible_rows;
         }
     }
-    let end = start + max_rows;
-    let last = max_rows - 1;
+    let end = start + visible_rows;
+    let last = visible_rows - 1;
 
     let is_color_picker = matches!(comp.kind, CompleterKind::Theme | CompleterKind::Color);
 
@@ -3668,6 +3686,7 @@ fn draw_completions(
         .unwrap_or(0);
     let avail = term_width().saturating_sub(4);
 
+    let mut drawn = 0;
     for (i, item) in comp.results[start..end].iter().enumerate() {
         let idx = start + i;
         let selected = idx == comp.selected;
@@ -3716,83 +3735,42 @@ fn draw_completions(
             }
         }
 
+        drawn += 1;
         let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
-        if i < last {
+        if i < last || show_hints {
             let _ = out.queue(Print("\r\n"));
         }
     }
-    max_rows
+
+    if show_hints && drawn < max_rows {
+        draw_settings_hints(out, vim_enabled);
+        drawn += 2;
+    }
+
+    drawn
+}
+
+fn draw_settings_hints(out: &mut RenderOut, vim_enabled: bool) {
+    let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+    let _ = out.queue(Print("\r\n"));
+    let _ = out.queue(SetAttribute(Attribute::Dim));
+    let _ = out.queue(Print(crate::keymap::hints::join(&[
+        crate::keymap::hints::picker_nav(vim_enabled),
+        "enter/space: toggle",
+        crate::keymap::hints::CANCEL,
+    ])));
+    let _ = out.queue(SetAttribute(Attribute::Reset));
+    let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
 }
 
 fn draw_menu(out: &mut RenderOut, ms: &crate::input::MenuState, max_rows: usize) -> usize {
     if max_rows == 0 {
         return 0;
     }
-    let selected = ms.nav.selected;
     match &ms.kind {
-        MenuKind::Settings {
-            vim_enabled,
-            auto_compact,
-            show_tps,
-            show_tokens,
-            show_cost,
-            show_prediction,
-            show_slug,
-            show_thinking,
-            restrict_to_workspace,
-        } => {
-            let rows: &[(&str, bool)] = &[
-                ("vim mode", *vim_enabled),
-                ("auto compact", *auto_compact),
-                ("show tok/s", *show_tps),
-                ("show tokens", *show_tokens),
-                ("show cost", *show_cost),
-                ("input prediction", *show_prediction),
-                ("task slug", *show_slug),
-                ("show thinking", *show_thinking),
-                ("restrict to workspace", *restrict_to_workspace),
-            ];
-            let col = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0) + 4;
-            let mut drawn = 0;
-            for (idx, (label, value)) in rows.iter().enumerate() {
-                if drawn >= max_rows {
-                    break;
-                }
-                if drawn > 0 {
-                    let _ = out.queue(Print("\r\n"));
-                }
-                draw_menu_row(
-                    out,
-                    label,
-                    if *value { "on" } else { "off" },
-                    col,
-                    idx == selected,
-                );
-                drawn += 1;
-            }
-            drawn
-        }
         MenuKind::Stats { left, right } => draw_stats(out, left, right, max_rows),
         MenuKind::Cost { lines } => draw_stats_sequential(out, lines, 0, max_rows),
     }
-}
-
-fn draw_menu_row(out: &mut RenderOut, label: &str, detail: &str, col: usize, selected: bool) {
-    let _ = out.queue(Print("  "));
-    if selected {
-        let _ = out.queue(SetForegroundColor(theme::accent()));
-        let _ = out.queue(Print(label));
-        let _ = out.queue(ResetColor);
-    } else {
-        let _ = out.queue(SetAttribute(Attribute::Dim));
-        let _ = out.queue(Print(label));
-        let _ = out.queue(SetAttribute(Attribute::Reset));
-    }
-    let padding = " ".repeat(col.saturating_sub(label.len()));
-    let _ = out.queue(SetAttribute(Attribute::Dim));
-    let _ = out.queue(Print(format!("{}{}", padding, detail)));
-    let _ = out.queue(SetAttribute(Attribute::Reset));
-    let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
 }
 
 /// Heat intensity colors: dim → accent, 4 levels.

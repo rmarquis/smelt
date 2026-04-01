@@ -4,6 +4,27 @@ use crate::keymap::{self, KeyAction};
 use crossterm::{event::Event, terminal};
 
 impl App {
+    fn apply_settings_result(&mut self, s: &crate::input::SettingsState) {
+        self.input.set_vim_enabled(s.vim);
+        state::set_vim_enabled(s.vim);
+        self.auto_compact = s.auto_compact;
+        self.show_tps = s.show_tps;
+        self.screen.set_show_tps(s.show_tps);
+        self.show_tokens = s.show_tokens;
+        self.screen.set_show_tokens(s.show_tokens);
+        self.show_cost = s.show_cost;
+        self.screen.set_show_cost(s.show_cost);
+        self.show_prediction = s.show_prediction;
+        self.show_slug = s.show_slug;
+        self.screen.set_show_slug(s.show_slug);
+        if self.show_thinking != s.show_thinking {
+            self.show_thinking = s.show_thinking;
+            self.screen.set_show_thinking(s.show_thinking);
+            self.screen.redraw(true);
+        }
+        self.restrict_to_workspace = s.restrict_to_workspace;
+    }
+
     // ── Terminal event dispatch ───────────────────────────────────────────
 
     /// Handle a single terminal event, potentially starting/stopping agents.
@@ -131,38 +152,17 @@ impl App {
             }
             EventOutcome::MenuResult(result) => {
                 match result {
-                    MenuResult::Settings {
-                        vim,
-                        auto_compact,
-                        show_tps,
-                        show_tokens,
-                        show_cost,
-                        show_prediction,
-                        show_slug,
-                        show_thinking,
-                        restrict_to_workspace,
-                    } => {
-                        self.input.set_vim_enabled(vim);
-                        state::set_vim_enabled(vim);
-                        self.auto_compact = auto_compact;
-                        self.show_tps = show_tps;
-                        self.screen.set_show_tps(show_tps);
-                        self.show_tokens = show_tokens;
-                        self.screen.set_show_tokens(show_tokens);
-                        self.show_cost = show_cost;
-                        self.screen.set_show_cost(show_cost);
-                        self.show_prediction = show_prediction;
-                        self.show_slug = show_slug;
-                        self.screen.set_show_slug(show_slug);
-                        if self.show_thinking != show_thinking {
-                            self.show_thinking = show_thinking;
-                            self.screen.set_show_thinking(show_thinking);
-                            self.screen.redraw(true);
+                    MenuResult::Settings(ref s) => {
+                        self.apply_settings_result(s);
+                        let items = crate::completer::Completer::settings_items(s);
+                        if let Some(comp) = self.input.completer.as_mut() {
+                            if comp.kind == crate::completer::CompleterKind::Settings {
+                                comp.refresh_items(items);
+                            }
                         }
-                        self.restrict_to_workspace = restrict_to_workspace;
                     }
-                    MenuResult::ModelSelect(key) => {
-                        self.apply_model(&key);
+                    MenuResult::ModelSelect(ref key) => {
+                        self.apply_model(key);
                         self.screen.erase_prompt();
                     }
                     MenuResult::ThemeSelect(value) => {
@@ -175,7 +175,10 @@ impl App {
                     }
                     MenuResult::Stats | MenuResult::Cost | MenuResult::Dismissed => {}
                 }
-                self.input.restore_stash();
+                let is_settings = matches!(&result, MenuResult::Settings(_));
+                if !is_settings {
+                    self.input.restore_stash();
+                }
                 self.screen.mark_dirty();
                 false
             }
@@ -342,42 +345,44 @@ impl App {
                 self.input_prediction = None;
             }
 
-            if let Some(action) = keymap::lookup(code, modifiers, &ctx) {
-                // Handle actions that need app-level context.
-                match action {
-                    KeyAction::Quit => {
-                        return EventOutcome::Quit;
-                    }
-                    KeyAction::ClearBuffer => {
-                        // Dismiss menu/completer first, then clear buffer.
-                        if let Some(result) = self.input.dismiss_menu() {
-                            self.screen.mark_dirty();
-                            return EventOutcome::MenuResult(result);
+            if !self.input.has_modal() {
+                if let Some(action) = keymap::lookup(code, modifiers, &ctx) {
+                    // Handle actions that need app-level context.
+                    match action {
+                        KeyAction::Quit => {
+                            return EventOutcome::Quit;
                         }
-                        if self.input.completer.is_some() {
-                            self.input.completer = None;
+                        KeyAction::ClearBuffer => {
+                            // Dismiss menu/completer first, then clear buffer.
+                            if let Some(result) = self.input.dismiss_menu() {
+                                self.screen.mark_dirty();
+                                return EventOutcome::MenuResult(result);
+                            }
+                            if self.input.completer.is_some() {
+                                self.input.completer = None;
+                                self.screen.mark_dirty();
+                                return EventOutcome::Redraw;
+                            }
+                            t.last_ctrlc = Some(Instant::now());
+                            self.input.clear();
                             self.screen.mark_dirty();
                             return EventOutcome::Redraw;
                         }
-                        t.last_ctrlc = Some(Instant::now());
-                        self.input.clear();
-                        self.screen.mark_dirty();
-                        return EventOutcome::Redraw;
-                    }
-                    KeyAction::OpenHelp => {
-                        return EventOutcome::OpenDialog(Box::new(render::HelpDialog::new(
-                            self.input.vim_enabled(),
-                        )));
-                    }
-                    KeyAction::OpenHistorySearch => {
-                        if self.input.history_search_query().is_none() {
-                            self.input.open_history_search(&self.input_history);
-                            self.screen.mark_dirty();
+                        KeyAction::OpenHelp => {
+                            return EventOutcome::OpenDialog(Box::new(render::HelpDialog::new(
+                                self.input.vim_enabled(),
+                            )));
                         }
-                        return EventOutcome::Redraw;
-                    }
-                    _ => {
-                        // Delegate to InputState for editing/navigation actions.
+                        KeyAction::OpenHistorySearch => {
+                            if self.input.history_search_query().is_none() {
+                                self.input.open_history_search(&self.input_history);
+                                self.screen.mark_dirty();
+                            }
+                            return EventOutcome::Redraw;
+                        }
+                        _ => {
+                            // Delegate to InputState for editing/navigation actions.
+                        }
                     }
                 }
             }
@@ -548,7 +553,8 @@ impl App {
             Action::PurgeRedraw => {
                 self.screen.redraw(true);
             }
-            Action::MenuResult(_) | Action::Noop | Action::Resize { .. } => {}
+            Action::MenuResult(result) => return EventOutcome::MenuResult(result),
+            Action::Noop | Action::Resize { .. } => {}
         }
         EventOutcome::Noop
     }
@@ -585,32 +591,6 @@ impl App {
                 EventOutcome::Noop
             }
             Action::Redraw => {
-                // Live-preview settings toggles.
-                if let Some(ref ms) = self.input.menu {
-                    if let MenuKind::Settings {
-                        show_tps,
-                        show_tokens,
-                        show_cost,
-                        show_slug,
-                        show_thinking,
-                        ..
-                    } = ms.kind
-                    {
-                        self.show_tps = show_tps;
-                        self.screen.set_show_tps(show_tps);
-                        self.show_tokens = show_tokens;
-                        self.screen.set_show_tokens(show_tokens);
-                        self.show_cost = show_cost;
-                        self.screen.set_show_cost(show_cost);
-                        self.show_slug = show_slug;
-                        self.screen.set_show_slug(show_slug);
-                        if self.show_thinking != show_thinking {
-                            self.show_thinking = show_thinking;
-                            self.screen.set_show_thinking(show_thinking);
-                            self.screen.redraw(true);
-                        }
-                    }
-                }
                 self.screen.mark_dirty();
                 EventOutcome::Redraw
             }

@@ -4,9 +4,7 @@ pub(crate) use commands::copy_to_clipboard;
 mod events;
 mod history;
 
-use crate::input::{
-    resolve_agent_esc, Action, EscAction, History, InputState, MenuKind, MenuResult,
-};
+use crate::input::{resolve_agent_esc, Action, EscAction, History, InputState, MenuResult};
 use crate::render::{
     tool_arg_summary, ApprovalScope, Block, ConfirmChoice, ConfirmDialog, ConfirmRequest,
     Dialog as _, FramePrompt, QuestionDialog, ResumeEntry, Screen, ToolOutput, ToolStatus,
@@ -526,6 +524,20 @@ impl App {
         }
     }
 
+    pub fn settings_state(&self) -> crate::input::SettingsState {
+        crate::input::SettingsState {
+            vim: self.input.vim_enabled(),
+            auto_compact: self.auto_compact,
+            show_tps: self.show_tps,
+            show_tokens: self.show_tokens,
+            show_cost: self.show_cost,
+            show_prediction: self.show_prediction,
+            show_slug: self.show_slug,
+            show_thinking: self.show_thinking,
+            restrict_to_workspace: self.restrict_to_workspace,
+        }
+    }
+
     // ── Unified event loop ───────────────────────────────────────────────
 
     /// Set the receiver for child agent permission requests (from socket bridge).
@@ -576,17 +588,7 @@ impl App {
                     active_dialog = Some(dlg);
                 }
             } else if trimmed == "/settings" {
-                self.input.open_settings(
-                    self.input.vim_enabled(),
-                    self.auto_compact,
-                    self.show_tps,
-                    self.show_tokens,
-                    self.show_cost,
-                    self.show_prediction,
-                    self.show_slug,
-                    self.show_thinking,
-                    self.restrict_to_workspace,
-                );
+                self.input.open_settings(&self.settings_state());
                 self.screen.mark_dirty();
             } else if let Some(reason) = classify_startup_command(trimmed) {
                 self.screen
