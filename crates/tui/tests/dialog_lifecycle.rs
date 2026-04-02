@@ -454,11 +454,12 @@ fn no_double_gap_when_overlay_hidden() {
     h.screen.finish_tool(
         "c1",
         tui::render::ToolStatus::Ok,
-        Some(tui::render::ToolOutput {
+        Some(Box::new(tui::render::ToolOutput {
             content: "output".into(),
             is_error: false,
             metadata: None,
-        }),
+            render_cache: None,
+        })),
         Some(std::time::Duration::from_millis(100)),
     );
     h.screen.flush_blocks();

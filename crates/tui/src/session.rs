@@ -224,36 +224,23 @@ pub fn save(session: &Session, store: &crate::attachment::AttachmentStore) {
 }
 
 /// Save the render cache alongside the session.
-pub fn save_render_cache(
-    session: &Session,
-    show_thinking: bool,
-    cache: &crate::render::RenderCache,
-) {
+pub fn save_render_cache(session: &Session, cache: &crate::render::RenderCache) {
     let session_dir = dir_for(session);
     let _ = fs::create_dir_all(&session_dir);
-    let path = render_cache_path(&session_dir, show_thinking);
+    let path = render_cache_path(&session_dir);
     let _ = fs::write(path, cache.serialize());
 }
 
 /// Load the render cache for a session.
-pub fn load_render_cache(
-    session: &Session,
-    show_thinking: bool,
-) -> Option<crate::render::RenderCache> {
+pub fn load_render_cache(session: &Session) -> Option<crate::render::RenderCache> {
     let session_dir = dir_for(session);
-    let path = render_cache_path(&session_dir, show_thinking);
+    let path = render_cache_path(&session_dir);
     let data = fs::read(path).ok()?;
-    let cache = crate::render::RenderCache::deserialize(&data)?;
-    (cache.show_thinking == show_thinking).then_some(cache)
+    crate::render::RenderCache::deserialize(&data)
 }
 
-fn render_cache_path(session_dir: &std::path::Path, show_thinking: bool) -> PathBuf {
-    let name = if show_thinking {
-        "render_cache.thinking.bin"
-    } else {
-        "render_cache.hidden.bin"
-    };
-    session_dir.join(name)
+fn render_cache_path(session_dir: &std::path::Path) -> PathBuf {
+    session_dir.join("render_cache.ir.bin")
 }
 
 /// Load a session by exact ID or unique prefix (git-style).

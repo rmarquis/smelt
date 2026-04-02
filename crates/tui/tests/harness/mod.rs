@@ -289,11 +289,12 @@ impl TestHarness {
         self.screen.finish_tool(
             call_id,
             ToolStatus::Ok,
-            Some(ToolOutput {
+            Some(Box::new(ToolOutput {
                 content: output.into(),
                 is_error: false,
                 metadata: None,
-            }),
+                render_cache: None,
+            })),
             Some(Duration::from_millis(100)),
         );
         self.screen.flush_blocks();

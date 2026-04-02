@@ -207,10 +207,6 @@ impl App {
     /// Rebuild the screen from session history and import persisted render cache.
     pub fn restore_screen(&mut self) {
         self.rebuild_screen_from_history();
-        if let Some(cache) = session::load_render_cache(&self.session, self.settings.show_thinking)
-        {
-            self.screen.import_render_cache(cache);
-        }
     }
 
     fn rebuild_screen_from_history(&mut self) {
@@ -225,6 +221,7 @@ impl App {
         let mut tool_outputs: HashMap<String, ToolOutput> = HashMap::new();
         let mut tool_elapsed: HashMap<String, u64> = HashMap::new();
         let mut agent_blocks: HashMap<String, protocol::AgentBlockData> = HashMap::new();
+        let render_cache = session::load_render_cache(&self.session);
         for msg in &self.history {
             if matches!(msg.role, Role::Tool) {
                 if let Some(ref id) = msg.tool_call_id {
@@ -239,11 +236,18 @@ impl App {
                             content: text,
                             is_error: msg.is_error,
                             metadata: None,
+                            render_cache: None,
                         },
                     );
                 }
             }
         }
+        if let Some(cache) = render_cache.as_ref() {
+            for (call_id, output) in &mut tool_outputs {
+                output.render_cache = cache.get_tool_output(call_id).cloned();
+            }
+        }
+
         for (_, meta) in &self.turn_metas {
             tool_elapsed.extend(meta.tool_elapsed.iter().map(|(k, v)| (k.clone(), *v)));
             agent_blocks.extend(
@@ -303,7 +307,12 @@ impl App {
                         for tc in calls {
                             let args: HashMap<String, serde_json::Value> =
                                 serde_json::from_str(&tc.function.arguments).unwrap_or_default();
-                            let output = tool_outputs.get(&tc.id).cloned();
+                            let output = tool_outputs.get(&tc.id).cloned().map(|mut out| {
+                                out.render_cache = render_cache
+                                    .as_ref()
+                                    .and_then(|cache| cache.get_tool_output(&tc.id).cloned());
+                                out
+                            });
 
                             if tc.function.name == "spawn_agent" {
                                 let meta = output.as_ref().and_then(|o| o.metadata.as_ref());
@@ -383,12 +392,13 @@ impl App {
                                 .get(&tc.id)
                                 .map(|ms| Duration::from_millis(*ms));
                             self.screen.push(Block::ToolCall {
+                                call_id: tc.id.clone(),
                                 name: tc.function.name.clone(),
                                 summary,
                                 args,
                                 status,
                                 elapsed,
-                                output,
+                                output: output.map(Box::new),
                                 user_message: None,
                             });
                         }
@@ -428,7 +438,6 @@ impl App {
         self.session.turn_metas = self.turn_metas.clone();
         self.sync_session_snapshot();
         session::save(&self.session, &self.input.store);
-        self.persist_render_cache();
     }
 
     pub(super) fn maybe_generate_title(&mut self, current_message: Option<&str>) {

@@ -13,7 +13,6 @@ impl App {
         if needs_rebuild {
             self.restore_screen();
             self.screen.redraw(true);
-            self.persist_render_cache();
         }
     }
 

@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 // ── Tracked agent state ──────────────────────────────────────────────────────
 
 /// A single tool call recorded from a subagent's event stream.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentToolEntry {
     pub call_id: String,
     pub tool_name: String,
@@ -370,6 +370,7 @@ enum LoopAction {
 pub struct PendingTool {
     pub call_id: String,
     pub name: String,
+    pub args: HashMap<String, serde_json::Value>,
 }
 
 // ── App impl ─────────────────────────────────────────────────────────────────
@@ -503,12 +504,6 @@ impl App {
         s
     }
 
-    pub(super) fn persist_render_cache(&self) {
-        if let Some(cache) = self.screen.export_render_cache() {
-            session::save_render_cache(&self.session, self.settings.show_thinking, &cache);
-        }
-    }
-
     // ── Unified event loop ───────────────────────────────────────────────
 
     /// Set the receiver for child agent permission requests (from socket bridge).
@@ -537,8 +532,6 @@ impl App {
                 self.screen.set_task_label(slug.clone());
             }
             self.screen.flush_blocks();
-            // Save the render cache now that blocks are in their final form.
-            self.persist_render_cache();
         }
         self.screen
             .draw_prompt(&self.input, self.mode, render::term_width());

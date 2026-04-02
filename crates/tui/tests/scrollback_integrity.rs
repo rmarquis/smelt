@@ -105,6 +105,7 @@ fn tool_call_block() {
         image_labels: vec![],
     });
     h.push_and_render(Block::ToolCall {
+        call_id: "call-1".into(),
         name: "read".into(),
         summary: "Reading file.rs".into(),
         args: {
@@ -116,11 +117,12 @@ fn tool_call_block() {
             m
         },
         status: tui::render::ToolStatus::Ok,
-        output: Some(tui::render::ToolOutput {
+        output: Some(Box::new(tui::render::ToolOutput {
             content: "fn main() {}".into(),
             is_error: false,
             metadata: None,
-        }),
+            render_cache: None,
+        })),
         user_message: None,
         elapsed: Some(std::time::Duration::from_millis(150)),
     });
@@ -138,15 +140,17 @@ fn tool_call_empty_result_has_no_extra_line() {
         image_labels: vec![],
     });
     h.push_and_render(Block::ToolCall {
+        call_id: "call-2".into(),
         name: "message_agent".into(),
         summary: "cedar".into(),
         args: std::collections::HashMap::new(),
         status: tui::render::ToolStatus::Ok,
-        output: Some(tui::render::ToolOutput {
+        output: Some(Box::new(tui::render::ToolOutput {
             content: String::new(),
             is_error: false,
             metadata: None,
-        }),
+            render_cache: None,
+        })),
         user_message: None,
         elapsed: Some(std::time::Duration::from_millis(150)),
     });

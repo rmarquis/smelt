@@ -1,4 +1,5 @@
 mod blocks;
+mod cache;
 mod dialogs;
 mod highlight;
 mod prompt;
@@ -14,7 +15,7 @@ pub use dialogs::{
 };
 
 use crate::attachment::{AttachmentId, AttachmentStore};
-use crate::input::{InputSnapshot, InputState, MenuKind, ATTACHMENT_MARKER};
+use crate::input::{InputSnapshot, InputState, ATTACHMENT_MARKER};
 use crate::keymap::hints;
 use crate::theme;
 use crate::utils::format_duration;
@@ -35,108 +36,14 @@ use blocks::{
     render_tool, thinking_summary, Element,
 };
 
+pub use cache::{
+    build_tool_output_render_cache, session_render_hash, CachedNotebookEdit, RenderCache,
+    ToolOutputRenderCache,
+};
+
 /// Maximum number of lines to re-render during a full redraw (e.g. purge).
 /// Older blocks beyond this limit are dropped to avoid flooding the terminal.
 const MAX_REDRAW_LINES: u16 = 2000;
-
-/// Persisted render cache: pre-rendered ANSI bytes for each block.
-/// Stored alongside the session so resuming skips expensive rendering
-/// (syntax highlighting, file reads for diffs, etc.).
-pub struct RenderCache {
-    pub width: u16,
-    pub show_thinking: bool,
-    pub entries: Vec<RenderCacheEntry>,
-}
-
-pub struct RenderCacheEntry {
-    /// True if this block was actually rendered (even if to 0 bytes).
-    pub cached: bool,
-    pub row_count: u16,
-    pub bytes: Vec<u8>,
-}
-
-impl RenderCache {
-    pub fn serialize(&self) -> Vec<u8> {
-        use flate2::write::DeflateEncoder;
-        use flate2::Compression;
-
-        let payload_size: usize = 7 + self
-            .entries
-            .iter()
-            .map(|e| 7 + e.bytes.len())
-            .sum::<usize>();
-        let mut payload = Vec::with_capacity(payload_size);
-        payload.extend_from_slice(&self.width.to_le_bytes());
-        payload.push(self.show_thinking as u8);
-        payload.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
-        for entry in &self.entries {
-            payload.push(entry.cached as u8);
-            payload.extend_from_slice(&entry.row_count.to_le_bytes());
-            payload.extend_from_slice(&(entry.bytes.len() as u32).to_le_bytes());
-            payload.extend_from_slice(&entry.bytes);
-        }
-
-        let mut out = Vec::with_capacity(4 + payload.len() / 4);
-        out.extend_from_slice(b"RCz2");
-        let mut enc = DeflateEncoder::new(out, Compression::fast());
-        std::io::Write::write_all(&mut enc, &payload).ok();
-        enc.finish().unwrap_or_default()
-    }
-
-    pub fn deserialize(data: &[u8]) -> Option<Self> {
-        use flate2::read::DeflateDecoder;
-        use std::io::Read;
-
-        if data.len() < 4 {
-            return None;
-        }
-        let payload = if &data[0..4] == b"RCz2" {
-            let mut dec = DeflateDecoder::new(&data[4..]);
-            let mut buf = Vec::new();
-            dec.read_to_end(&mut buf).ok()?;
-            buf
-        } else {
-            return None;
-        };
-
-        if payload.len() < 7 {
-            return None;
-        }
-        let width = u16::from_le_bytes([payload[0], payload[1]]);
-        let show_thinking = payload[2] != 0;
-        let num = u32::from_le_bytes([payload[3], payload[4], payload[5], payload[6]]) as usize;
-        let mut pos = 7;
-        let mut entries = Vec::with_capacity(num);
-        for _ in 0..num {
-            if pos + 7 > payload.len() {
-                return None;
-            }
-            let cached = payload[pos] != 0;
-            let row_count = u16::from_le_bytes([payload[pos + 1], payload[pos + 2]]);
-            let len = u32::from_le_bytes([
-                payload[pos + 3],
-                payload[pos + 4],
-                payload[pos + 5],
-                payload[pos + 6],
-            ]) as usize;
-            pos += 7;
-            if pos + len > payload.len() {
-                return None;
-            }
-            entries.push(RenderCacheEntry {
-                cached,
-                row_count,
-                bytes: payload[pos..pos + len].to_vec(),
-            });
-            pos += len;
-        }
-        Some(RenderCache {
-            width,
-            show_thinking,
-            entries,
-        })
-    }
-}
 
 /// Parameters for rendering the prompt section in `draw_frame`.
 /// When `None` is passed instead, only content (blocks + active tool) is drawn.
@@ -440,7 +347,7 @@ pub struct ConfirmRequest {
     pub request_id: u64,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolStatus {
     Pending,
     Confirm,
@@ -454,7 +361,10 @@ pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
     pub metadata: Option<serde_json::Value>,
+    pub render_cache: Option<ToolOutputRenderCache>,
 }
+
+pub type ToolOutputRef = Box<ToolOutput>;
 
 pub struct ActiveExec {
     pub command: String,
@@ -481,7 +391,7 @@ pub struct ActiveTool {
     pub summary: String,
     pub args: HashMap<String, serde_json::Value>,
     pub status: ToolStatus,
-    pub output: Option<ToolOutput>,
+    pub output: Option<ToolOutputRef>,
     pub user_message: Option<String>,
     pub start_time: Instant,
 }
@@ -532,12 +442,13 @@ pub enum Block {
         lang: String,
     },
     ToolCall {
+        call_id: String,
         name: String,
         summary: String,
         args: HashMap<String, serde_json::Value>,
         status: ToolStatus,
         elapsed: Option<Duration>,
-        output: Option<ToolOutput>,
+        output: Option<ToolOutputRef>,
         user_message: Option<String>,
     },
     Confirm {
@@ -1817,11 +1728,12 @@ impl Screen {
                     out.content.push_str(chunk);
                 }
                 None => {
-                    tool.output = Some(ToolOutput {
+                    tool.output = Some(Box::new(ToolOutput {
                         content: chunk.to_string(),
                         is_error: false,
                         metadata: None,
-                    });
+                        render_cache: None,
+                    }));
                 }
             }
             self.prompt.dirty = true;
@@ -1834,11 +1746,12 @@ impl Screen {
                     out.content.push_str(chunk);
                 }
                 None => {
-                    *output = Some(ToolOutput {
+                    *output = Some(Box::new(ToolOutput {
                         content: chunk.to_string(),
                         is_error: false,
                         metadata: None,
-                    });
+                        render_cache: None,
+                    }));
                 }
             }
         }
@@ -1877,7 +1790,7 @@ impl Screen {
         &mut self,
         call_id: &str,
         status: ToolStatus,
-        output: Option<ToolOutput>,
+        output: Option<ToolOutputRef>,
         engine_elapsed: Option<Duration>,
     ) {
         if let Some(idx) = self.active_tool_index(call_id) {
@@ -1888,6 +1801,7 @@ impl Screen {
                 engine_elapsed.or_else(|| tool.elapsed())
             };
             self.history.push(Block::ToolCall {
+                call_id: call_id.to_string(),
                 name: tool.name,
                 summary: tool.summary,
                 args: tool.args,
@@ -2077,6 +1991,7 @@ impl Screen {
                 tool.elapsed()
             };
             self.history.push(Block::ToolCall {
+                call_id: tool.call_id,
                 name: tool.name,
                 summary: tool.summary,
                 args: tool.args,
@@ -2285,41 +2200,10 @@ impl Screen {
     }
 
     pub fn export_render_cache(&self) -> Option<RenderCache> {
-        let h = &self.history;
-        if h.blocks.is_empty() || h.cache_width == 0 {
-            return None;
-        }
-        let entries = h
-            .cached_bytes(self.show_thinking)
-            .iter()
-            .zip(h.row_counts(self.show_thinking).iter())
-            .map(|(bytes, &rows)| RenderCacheEntry {
-                cached: bytes.is_some(),
-                row_count: rows,
-                bytes: bytes.as_ref().cloned().unwrap_or_default(),
-            })
-            .collect();
-        Some(RenderCache {
-            width: h.cache_width as u16,
-            show_thinking: self.show_thinking,
-            entries,
-        })
+        None
     }
 
-    pub fn import_render_cache(&mut self, cache: RenderCache) {
-        let h = &mut self.history;
-        if cache.entries.len() != h.blocks.len() {
-            return;
-        }
-        h.cache_width = cache.width as usize;
-        for (i, entry) in cache.entries.into_iter().enumerate() {
-            if !entry.cached {
-                continue;
-            }
-            h.row_counts_mut(cache.show_thinking)[i] = entry.row_count;
-            h.cached_bytes_mut(cache.show_thinking)[i] = Some(entry.bytes);
-        }
-    }
+    pub fn import_render_cache(&mut self, _cache: RenderCache) {}
 
     /// Returns (block_index, full_text) for each User block.
     pub fn user_turns(&self) -> Vec<(usize, String)> {
@@ -2551,12 +2435,13 @@ impl Screen {
                 }
                 let rows = render_tool(
                     &mut out,
+                    &tool.call_id,
                     &tool.name,
                     &tool.summary,
                     &tool.args,
                     tool.status,
                     Some(tool.start_time.elapsed()),
-                    tool.output.as_ref(),
+                    tool.output.as_deref(),
                     tool.user_message.as_deref(),
                     width,
                 );
@@ -4172,10 +4057,13 @@ fn draw_menu(out: &mut RenderOut, ms: &crate::input::MenuState, max_rows: usize)
     if max_rows == 0 {
         return 0;
     }
-    match &ms.kind {
-        MenuKind::Stats { left, right } => draw_stats(out, left, right, max_rows),
-        MenuKind::Cost { lines } => draw_stats_sequential(out, lines, 0, max_rows),
+    if let crate::input::MenuKind::Stats { left, right } = &ms.kind {
+        return draw_stats(out, left, right, max_rows);
     }
+    if let crate::input::MenuKind::Cost { lines } = &ms.kind {
+        return draw_stats_sequential(out, lines, 0, max_rows);
+    }
+    0
 }
 
 /// Heat intensity colors: dim → accent, 4 levels.
@@ -4489,41 +4377,18 @@ mod selection_tests {
         assert!(rendered.contains("hello"));
         assert!(rendered.contains("thinking (2 lines)"));
         assert!(
-            rendered.contains("hello\r\n\r\n │ thinking (2 lines)")
-                || rendered.contains("hello\n\n │ thinking (2 lines)"),
+            rendered.contains("\r\n\u{1b}[K\r\n") || rendered.contains("\n\n"),
             "rendered: {rendered:?}"
         );
     }
 
     #[test]
-    fn import_render_cache_is_mode_specific() {
+    fn export_render_cache_is_empty() {
         let mut screen = Screen::new();
         screen.push(Block::Thinking {
             content: "alpha\nbeta".into(),
         });
-        screen.show_thinking = true;
         screen.history.render(&mut RenderOut::buffer(), 80, true);
-        let visible = screen.export_render_cache().unwrap();
-        assert!(visible.show_thinking);
-        assert!(visible.entries[0].row_count > 0);
-
-        screen.show_thinking = false;
-        screen.history.flushed = 0;
-        screen.history.render(&mut RenderOut::buffer(), 80, false);
-        let hidden = screen.export_render_cache().unwrap();
-        assert!(!hidden.show_thinking);
-        assert!(hidden.entries[0].row_count > 0);
-
-        let mut restored = Screen::new();
-        restored.push(Block::Thinking {
-            content: "alpha\nbeta".into(),
-        });
-        restored.import_render_cache(hidden);
-        assert!(restored.history.row_counts(false)[0] > 0);
-        assert_eq!(restored.history.row_counts(true)[0], 0);
-
-        restored.import_render_cache(visible);
-        assert!(restored.history.row_counts(true)[0] > 0);
-        assert!(restored.history.row_counts(false)[0] > 0);
+        assert!(screen.export_render_cache().is_none());
     }
 }

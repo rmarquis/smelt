@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::highlight::{
-    print_inline_diff, print_syntax_file, render_code_block, render_markdown_table,
-    strip_markdown_markers, BashHighlighter,
+    print_cached_inline_diff, print_inline_diff, print_syntax_file, render_code_block,
+    render_markdown_table, strip_markdown_markers, BashHighlighter,
 };
 use super::{
     crlf, truncate_str, wrap_line, ActiveExec, ApprovalScope, Block, ConfirmChoice, RenderOut,
@@ -274,6 +274,7 @@ pub(super) fn render_block(
             render_code_block(out, &[content.as_str()], lang, width, false, None)
         }
         Block::ToolCall {
+            call_id,
             name,
             summary,
             status,
@@ -283,12 +284,13 @@ pub(super) fn render_block(
             user_message,
         } => render_tool(
             out,
+            call_id,
             name,
             summary,
             args,
             *status,
             *elapsed,
-            output.as_ref(),
+            output.as_deref(),
             user_message.as_deref(),
             width,
         ),
@@ -483,6 +485,7 @@ fn render_agent_block(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_tool(
     out: &mut RenderOut,
+    _call_id: &str,
     name: &str,
     summary: &str,
     args: &HashMap<String, serde_json::Value>,
@@ -820,7 +823,7 @@ fn print_tool_output(
             print_dim_count(out, content.lines().count(), s, p)
         }
         "web_fetch" if !is_error => print_dim_count(out, content.lines().count(), "line", "lines"),
-        "edit_file" if !is_error => render_edit_output(out, args),
+        "edit_file" if !is_error => render_edit_output(out, output, args),
         "write_file" if !is_error => render_write_output(out, args),
         "notebook_edit" if !is_error => render_notebook_output(out, output, width),
         "ask_user_question" if !is_error => render_question_output(out, content, width),
@@ -854,7 +857,11 @@ fn print_dim_count(out: &mut RenderOut, count: usize, singular: &str, plural: &s
     1
 }
 
-fn render_edit_output(out: &mut RenderOut, args: &HashMap<String, serde_json::Value>) -> u16 {
+fn render_edit_output(
+    out: &mut RenderOut,
+    output: &ToolOutput,
+    args: &HashMap<String, serde_json::Value>,
+) -> u16 {
     let old = args
         .get("old_string")
         .and_then(|v| v.as_str())
@@ -866,6 +873,10 @@ fn render_edit_output(out: &mut RenderOut, args: &HashMap<String, serde_json::Va
     let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
     if new.is_empty() {
         print_dim_count(out, old.lines().count(), "line deleted", "lines deleted")
+    } else if let Some(crate::render::ToolOutputRenderCache::InlineDiff(cache)) =
+        output.render_cache.as_ref()
+    {
+        print_cached_inline_diff(out, cache, 0, 0)
     } else {
         print_inline_diff(out, old, new, path, new, 0, 0)
     }
@@ -1484,6 +1495,7 @@ mod tests {
 
     fn tool_call() -> Block {
         Block::ToolCall {
+            call_id: "call-1".into(),
             name: "bash".into(),
             summary: "ls".into(),
             args: HashMap::new(),

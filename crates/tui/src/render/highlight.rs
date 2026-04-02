@@ -5,6 +5,7 @@ use crossterm::{
     },
     QueueableCommand,
 };
+use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -26,12 +27,6 @@ fn syntax_theme() -> &'static syntect::highlighting::Theme {
     } else {
         &THEME_SET[two_face::theme::EmbeddedThemeName::MonokaiExtended]
     }
-}
-
-struct DiffLayout {
-    indent: &'static str,
-    gutter_width: usize,
-    max_content: usize,
 }
 
 pub(crate) fn render_code_block(
@@ -194,6 +189,194 @@ struct DiffViewData {
     changes: Vec<DiffChange>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedInlineDiff {
+    pub max_display_lineno: usize,
+    pub lines: Vec<CachedDiffLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedSpan {
+    pub text: String,
+    pub fg: (u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CachedDiffLine {
+    Context {
+        lineno: usize,
+        text: String,
+        spans: Vec<CachedSpan>,
+    },
+    Delete {
+        lineno: usize,
+        text: String,
+        spans: Vec<CachedSpan>,
+    },
+    Insert {
+        lineno: usize,
+        text: String,
+        spans: Vec<CachedSpan>,
+    },
+    Ellipsis,
+}
+
+fn cached_spans_for_line(h: &mut HighlightLines, line: &str) -> Vec<CachedSpan> {
+    let line_with_nl = format!("{}\n", line);
+    h.highlight_line(&line_with_nl, &SYNTAX_SET)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(style, text)| {
+            let text = text.trim_end_matches('\n').trim_end_matches('\r');
+            if text.is_empty() {
+                None
+            } else {
+                Some(CachedSpan {
+                    text: text.to_string(),
+                    fg: (style.foreground.r, style.foreground.g, style.foreground.b),
+                })
+            }
+        })
+        .collect()
+}
+
+pub(super) fn build_inline_diff_cache(
+    old: &str,
+    new: &str,
+    path: &str,
+    anchor: &str,
+) -> CachedInlineDiff {
+    let dv = compute_diff_view(old, new, path, anchor);
+    let expanded_lines: Vec<String> = dv
+        .file_content
+        .lines()
+        .map(|l| l.replace('\t', "    "))
+        .collect();
+    let file_lines: Vec<&str> = expanded_lines.iter().map(|s| s.as_str()).collect();
+    let lookup = if !anchor.is_empty() { anchor } else { old };
+    let lookup_indent = lookup
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let file_indent = file_lines
+        .get(dv.start_line)
+        .unwrap_or(&"")
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let extra_indent = " ".repeat(file_indent.saturating_sub(lookup_indent));
+
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("txt");
+    let syntax = SYNTAX_SET
+        .find_syntax_by_extension(ext)
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    let theme = syntax_theme();
+    let mut h = HighlightLines::new(syntax, theme);
+
+    let ctx = 3usize;
+    let visible = compute_change_visibility(&dv.changes, ctx);
+    let mut lines = Vec::new();
+
+    let ctx_before_end = dv.start_line.min(dv.first_mod);
+    let ctx_before_start = dv.view_start.min(ctx_before_end);
+    for (idx, line) in file_lines[ctx_before_start..ctx_before_end]
+        .iter()
+        .enumerate()
+    {
+        lines.push(CachedDiffLine::Context {
+            lineno: ctx_before_start + idx + 1,
+            text: (*line).to_string(),
+            spans: cached_spans_for_line(&mut h, line),
+        });
+    }
+
+    let mut old_lineno = dv.start_line;
+    let mut new_lineno = dv.start_line;
+    let mut pending_ellipsis = false;
+    let mut emitted_any = !lines.is_empty();
+    for (ci, change) in dv.changes.iter().enumerate() {
+        let raw = format!(
+            "{}{}",
+            extra_indent,
+            change.value.trim_end_matches('\n').replace('\t', "    ")
+        );
+        let spans = cached_spans_for_line(&mut h, &raw);
+        match change.tag {
+            ChangeTag::Equal => {
+                if visible[ci] {
+                    if pending_ellipsis {
+                        pending_ellipsis = false;
+                        lines.push(CachedDiffLine::Ellipsis);
+                    }
+                    if new_lineno >= dv.view_start && new_lineno < dv.view_end {
+                        lines.push(CachedDiffLine::Context {
+                            lineno: new_lineno + 1,
+                            text: raw,
+                            spans,
+                        });
+                        emitted_any = true;
+                    }
+                } else if emitted_any {
+                    pending_ellipsis = true;
+                }
+                old_lineno += 1;
+                new_lineno += 1;
+            }
+            ChangeTag::Delete => {
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    lines.push(CachedDiffLine::Ellipsis);
+                }
+                lines.push(CachedDiffLine::Delete {
+                    lineno: old_lineno + 1,
+                    text: raw,
+                    spans,
+                });
+                old_lineno += 1;
+            }
+            ChangeTag::Insert => {
+                if pending_ellipsis {
+                    pending_ellipsis = false;
+                    lines.push(CachedDiffLine::Ellipsis);
+                }
+                lines.push(CachedDiffLine::Insert {
+                    lineno: new_lineno + 1,
+                    text: raw,
+                    spans,
+                });
+                new_lineno += 1;
+            }
+        }
+    }
+
+    let anchor_lines = anchor.lines().count();
+    let after_start = dv.start_line + anchor_lines;
+    let after_end = dv.view_end.min(file_lines.len());
+    for (idx, line) in file_lines
+        .iter()
+        .take(after_end)
+        .skip(after_start)
+        .enumerate()
+    {
+        lines.push(CachedDiffLine::Context {
+            lineno: after_start + idx + 1,
+            text: (*line).to_string(),
+            spans: cached_spans_for_line(&mut h, line),
+        });
+    }
+
+    CachedInlineDiff {
+        max_display_lineno: dv.max_display_lineno,
+        lines,
+    }
+}
+
 fn compute_diff_view(old: &str, new: &str, path: &str, anchor: &str) -> DiffViewData {
     let file_content = std::fs::read_to_string(path).unwrap_or_default();
     let file_lines_count = file_content.lines().count();
@@ -306,50 +489,79 @@ pub(super) fn print_inline_diff(
     skip: u16,
     max_rows: u16,
 ) -> u16 {
+    let cache = build_inline_diff_cache(old, new, path, anchor);
+    print_cached_inline_diff(out, &cache, skip, max_rows)
+}
+
+fn print_cached_spans(out: &mut RenderOut, spans: &[CachedSpan], bg: Option<Color>) -> usize {
+    let mut col = 0;
+    for span in spans {
+        if span.text.is_empty() {
+            continue;
+        }
+        if let Some(bg_color) = bg {
+            let _ = out.queue(SetBackgroundColor(bg_color));
+        }
+        let _ = out.queue(SetForegroundColor(Color::Rgb {
+            r: span.fg.0,
+            g: span.fg.1,
+            b: span.fg.2,
+        }));
+        let _ = out.queue(Print(&span.text));
+        col += span.text.chars().count();
+    }
+    let _ = out.queue(ResetColor);
+    col
+}
+
+fn split_cached_spans_into_rows(spans: &[CachedSpan], max_width: usize) -> Vec<Vec<CachedSpan>> {
+    let mut rows: Vec<Vec<CachedSpan>> = Vec::new();
+    let mut current_row: Vec<CachedSpan> = Vec::new();
+    let mut col = 0;
+
+    for span in spans {
+        if span.text.is_empty() {
+            continue;
+        }
+        let mut chars = span.text.chars().peekable();
+        while chars.peek().is_some() {
+            let remaining = max_width.saturating_sub(col);
+            if remaining == 0 {
+                rows.push(std::mem::take(&mut current_row));
+                col = 0;
+                continue;
+            }
+            let chunk: String = chars.by_ref().take(remaining).collect();
+            col += chunk.chars().count();
+            current_row.push(CachedSpan {
+                text: chunk,
+                fg: span.fg,
+            });
+        }
+    }
+    if !current_row.is_empty() {
+        rows.push(current_row);
+    }
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows
+}
+
+pub(super) fn print_cached_inline_diff(
+    out: &mut RenderOut,
+    cache: &CachedInlineDiff,
+    skip: u16,
+    max_rows: u16,
+) -> u16 {
     let _perf = crate::perf::begin("print_inline_diff");
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("txt");
-    let syntax = SYNTAX_SET
-        .find_syntax_by_extension(ext)
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let theme = syntax_theme();
 
     let indent = "   ";
-    let dv = compute_diff_view(old, new, path, anchor);
-    let expanded_lines: Vec<String> = dv
-        .file_content
-        .lines()
-        .map(|l| l.replace('\t', "    "))
-        .collect();
-    let file_lines: Vec<&str> = expanded_lines.iter().map(|s| s.as_str()).collect();
-    let changes = &dv.changes;
-
-    // Compute the leading whitespace the old/new strings are missing compared
-    // to the actual file indentation so we can re-add it to diff lines.
-    let lookup = if !anchor.is_empty() { anchor } else { old };
-    let lookup_indent = lookup
-        .lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    let file_indent = file_lines
-        .get(dv.start_line)
-        .unwrap_or(&"")
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    let extra_indent = " ".repeat(file_indent.saturating_sub(lookup_indent));
-
-    let max_lineno = dv.max_display_lineno;
-    let gutter_width = format!("{}", max_lineno).len();
+    let gutter_width = format!("{}", cache.max_display_lineno).len();
     let prefix_len = indent.len() + 1 + gutter_width + 3;
     let right_margin = indent.len();
     let max_content = term_width().saturating_sub(prefix_len + right_margin);
-
+    let emit_limit = if max_rows == 0 { u16::MAX } else { max_rows };
     let bg_del = Color::Rgb {
         r: 60,
         g: 20,
@@ -360,234 +572,88 @@ pub(super) fn print_inline_diff(
         g: 50,
         b: 20,
     };
+    let blank_gutter = " ".repeat(1 + gutter_width + 3);
 
-    let layout = DiffLayout {
-        indent,
-        gutter_width,
-        max_content,
-    };
-    let emit_limit = if max_rows == 0 { u16::MAX } else { max_rows };
-
-    let mut h_old = HighlightLines::new(syntax, theme);
-    let mut h_new = HighlightLines::new(syntax, theme);
-    for i in 0..dv.view_start {
-        if i < file_lines.len() {
-            let line = format!("{}\n", file_lines[i]);
-            let _ = h_old.highlight_line(&line, &SYNTAX_SET);
-            let _ = h_new.highlight_line(&line, &SYNTAX_SET);
+    let mut emitted = 0u16;
+    for (row_idx, line) in cache.lines.iter().enumerate() {
+        if row_idx < skip as usize {
+            continue;
         }
-    }
-
-    let mut total: u16 = 0;
-    let mut emitted: u16 = 0;
-
-    let ctx_before_end = dv.start_line.min(dv.first_mod);
-    let ctx_before_start = dv.view_start.min(ctx_before_end);
-    let before_rows = print_diff_lines_skip(
-        out,
-        &mut h_new,
-        &file_lines[ctx_before_start..ctx_before_end],
-        ctx_before_start,
-        None,
-        None,
-        &layout,
-        skip,
-        emit_limit,
-        total,
-    );
-    let count_before = (ctx_before_end - ctx_before_start) as u16;
-    emitted += before_rows;
-    total += count_before;
-    for line in &file_lines[ctx_before_start..ctx_before_end] {
-        let _ = h_old.highlight_line(&format!("{}\n", line), &SYNTAX_SET);
-    }
-
-    if emitted >= emit_limit {
-        return emitted;
-    }
-
-    let ctx = 3usize;
-    let visible = compute_change_visibility(changes, ctx);
-    let mut old_lineno = dv.start_line;
-    let mut new_lineno = dv.start_line;
-    let mut pending_ellipsis = false;
-    let mut emitted_any = total > 0;
-    for (ci, change) in changes.iter().enumerate() {
         if emitted >= emit_limit {
             break;
         }
-        let raw = format!(
-            "{}{}",
-            extra_indent,
-            change.value.trim_end_matches('\n').replace('\t', "    ")
-        );
-        let text = raw.as_str();
-        match change.tag {
-            ChangeTag::Equal => {
-                if visible[ci] {
-                    if pending_ellipsis {
-                        pending_ellipsis = false;
-                        if total >= skip && emitted < emit_limit {
-                            let _ = out.queue(Print(indent));
-                            let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                            let _ =
-                                out.queue(Print(format!("{:>w$}", "...", w = 1 + gutter_width)));
-                            let _ = out.queue(ResetColor);
-                            crlf(out);
-                            emitted += 1;
-                        }
-                        total += 1;
-                    }
-                    if new_lineno >= dv.view_start && new_lineno < dv.view_end {
-                        if total >= skip && emitted < emit_limit {
-                            print_diff_lines(
-                                out,
-                                &mut h_new,
-                                &[text],
-                                new_lineno,
-                                None,
-                                None,
-                                &layout,
-                            );
-                            emitted += 1;
+        match line {
+            CachedDiffLine::Ellipsis => {
+                let _ = out.queue(Print(indent));
+                let _ = out.queue(SetForegroundColor(Color::DarkGrey));
+                let _ = out.queue(Print(format!("{:>w$}", "...", w = 1 + gutter_width)));
+                let _ = out.queue(ResetColor);
+                crlf(out);
+            }
+            CachedDiffLine::Context { lineno, spans, .. }
+            | CachedDiffLine::Delete { lineno, spans, .. }
+            | CachedDiffLine::Insert { lineno, spans, .. } => {
+                let visual_rows = split_cached_spans_into_rows(spans, max_content);
+                let (sign, bg) = match line {
+                    CachedDiffLine::Context { .. } => (None, None),
+                    CachedDiffLine::Delete { .. } => (Some(('-', Color::Red)), Some(bg_del)),
+                    CachedDiffLine::Insert { .. } => (Some(('+', Color::Green)), Some(bg_add)),
+                    CachedDiffLine::Ellipsis => unreachable!(),
+                };
+                for (vi, vrow) in visual_rows.iter().enumerate() {
+                    let _ = out.queue(Print(indent));
+                    if let Some((ch, color)) = sign {
+                        let _ = out.queue(SetBackgroundColor(bg.unwrap()));
+                        if vi == 0 {
+                            let _ = out.queue(SetForegroundColor(color));
+                            let _ = out.queue(Print(format!(" {:>w$} ", lineno, w = gutter_width)));
+                            let _ = out.queue(SetForegroundColor(color));
+                            let _ = out.queue(Print(format!("{} ", ch)));
                         } else {
-                            // Advance highlighter without emitting
-                            let _ = h_new.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
+                            let _ = out.queue(Print(&blank_gutter));
                         }
-                        total += 1;
-                        emitted_any = true;
-                    }
-                } else if emitted_any {
-                    pending_ellipsis = true;
-                }
-                let _ = h_old.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
-                if !visible[ci] {
-                    let _ = h_new.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
-                }
-                old_lineno += 1;
-                new_lineno += 1;
-            }
-            ChangeTag::Delete => {
-                if pending_ellipsis {
-                    pending_ellipsis = false;
-                    if total >= skip && emitted < emit_limit {
-                        let _ = out.queue(Print(indent));
-                        let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                        let _ = out.queue(Print(format!("{:>w$}", "...", w = 1 + gutter_width)));
+                        let content_cols = print_cached_spans(out, vrow, bg);
+                        let pad =
+                            term_width().saturating_sub(prefix_len + content_cols + right_margin);
+                        if pad > 0 {
+                            if let Some(bg_color) = bg {
+                                let _ = out.queue(SetBackgroundColor(bg_color));
+                            }
+                            let _ = out.queue(Print(" ".repeat(pad)));
+                        }
                         let _ = out.queue(ResetColor);
-                        crlf(out);
-                        emitted += 1;
+                    } else {
+                        if vi == 0 {
+                            let _ = out.queue(SetForegroundColor(Color::DarkGrey));
+                            let _ = out.queue(Print(format!(" {:>w$}", lineno, w = gutter_width)));
+                            let _ = out.queue(ResetColor);
+                            let _ = out.queue(Print("   "));
+                        } else {
+                            let _ = out.queue(Print(&blank_gutter));
+                        }
+                        print_cached_spans(out, vrow, None);
                     }
-                    total += 1;
+                    crlf(out);
                 }
-                if total >= skip && emitted < emit_limit {
-                    print_diff_lines(
-                        out,
-                        &mut h_old,
-                        &[text],
-                        old_lineno,
-                        Some(('-', Color::Red)),
-                        Some(bg_del),
-                        &layout,
-                    );
-                    emitted += 1;
-                } else {
-                    let _ = h_old.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
-                }
-                old_lineno += 1;
-                total += 1;
-            }
-            ChangeTag::Insert => {
-                if pending_ellipsis {
-                    pending_ellipsis = false;
-                    if total >= skip && emitted < emit_limit {
-                        let _ = out.queue(Print(indent));
-                        let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                        let _ = out.queue(Print(format!("{:>w$}", "...", w = 1 + gutter_width)));
-                        let _ = out.queue(ResetColor);
-                        crlf(out);
-                        emitted += 1;
-                    }
-                    total += 1;
-                }
-                if total >= skip && emitted < emit_limit {
-                    print_diff_lines(
-                        out,
-                        &mut h_new,
-                        &[text],
-                        new_lineno,
-                        Some(('+', Color::Green)),
-                        Some(bg_add),
-                        &layout,
-                    );
-                    emitted += 1;
-                } else {
-                    let _ = h_new.highlight_line(&format!("{}\n", text), &SYNTAX_SET);
-                }
-                new_lineno += 1;
-                total += 1;
             }
         }
-    }
-
-    if emitted >= emit_limit {
-        return emitted;
-    }
-
-    let anchor_lines = anchor.lines().count();
-    let after_start = dv.start_line + anchor_lines;
-    let after_end = dv.view_end.min(file_lines.len());
-    if after_start < after_end {
-        let ctx_slice = &file_lines[after_start..after_end];
-        emitted += print_diff_lines_skip(
-            out,
-            &mut h_new,
-            ctx_slice,
-            after_start,
-            None,
-            None,
-            &layout,
-            skip,
-            emit_limit - emitted,
-            total,
-        );
+        emitted += 1;
     }
     emitted
 }
 
 /// Count rows an inline diff would take without rendering.
 pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &str) -> u16 {
-    let dv = compute_diff_view(old, new, path, anchor);
+    let cache = build_inline_diff_cache(old, new, path, anchor);
+    count_cached_inline_diff_rows(&cache)
+}
 
+pub(super) fn count_cached_inline_diff_rows(cache: &CachedInlineDiff) -> u16 {
     let indent = "   ";
-    let max_lineno = dv.max_display_lineno;
-    let gutter_width = format!("{}", max_lineno).len();
+    let gutter_width = format!("{}", cache.max_display_lineno).len();
     let prefix_len = indent.len() + 1 + gutter_width + 3;
     let right_margin = indent.len();
     let max_content = term_width().saturating_sub(prefix_len + right_margin);
-
-    let expanded_lines: Vec<String> = dv
-        .file_content
-        .lines()
-        .map(|l| l.replace('\t', "    "))
-        .collect();
-    let file_lines: Vec<&str> = expanded_lines.iter().map(|s| s.as_str()).collect();
-
-    let lookup = if !anchor.is_empty() { anchor } else { old };
-    let lookup_indent = lookup
-        .lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    let file_indent_n = file_lines
-        .get(dv.start_line)
-        .unwrap_or(&"")
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    let extra_indent_n = file_indent_n.saturating_sub(lookup_indent);
 
     let visual_rows_for = |line: &str| -> usize {
         let chars = line.replace('\t', "    ").chars().count();
@@ -599,213 +665,16 @@ pub(super) fn count_inline_diff_rows(old: &str, new: &str, path: &str, anchor: &
         .max(1)
     };
 
-    let ctx_before_end = dv.start_line.min(dv.first_mod);
-    let ctx_before_start = dv.view_start.min(ctx_before_end);
-    let mut rows: usize = 0;
-    for i in ctx_before_start..ctx_before_end {
-        if i < file_lines.len() {
-            rows += visual_rows_for(file_lines[i]);
-        }
-    }
-
-    let ctx = 3usize;
-    let visible = compute_change_visibility(&dv.changes, ctx);
-    let mut new_lineno = dv.start_line;
-    let mut pending_ellipsis = false;
-    let mut emitted_any = rows > 0;
-    for (ci, change) in dv.changes.iter().enumerate() {
-        let padded = format!(
-            "{}{}",
-            " ".repeat(extra_indent_n),
-            change.value.trim_end_matches('\n')
-        );
-        let line = padded.as_str();
-        match change.tag {
-            ChangeTag::Equal => {
-                if visible[ci] {
-                    if pending_ellipsis {
-                        pending_ellipsis = false;
-                        rows += 1; // the "..." line
-                    }
-                    if new_lineno >= dv.view_start && new_lineno < dv.view_end {
-                        rows += visual_rows_for(line);
-                        emitted_any = true;
-                    }
-                } else if emitted_any {
-                    pending_ellipsis = true;
-                }
-                new_lineno += 1;
-            }
-            ChangeTag::Delete => {
-                if pending_ellipsis {
-                    pending_ellipsis = false;
-                    rows += 1;
-                }
-                rows += visual_rows_for(line);
-            }
-            ChangeTag::Insert => {
-                if pending_ellipsis {
-                    pending_ellipsis = false;
-                    rows += 1;
-                }
-                rows += visual_rows_for(line);
-                new_lineno += 1;
-            }
-        }
-    }
-
-    let anchor_lines = anchor.lines().count();
-    let after_start = dv.start_line + anchor_lines;
-    let after_end = dv.view_end.min(file_lines.len());
-    for line in file_lines.iter().take(after_end).skip(after_start) {
-        rows += visual_rows_for(line);
-    }
-    rows as u16
-}
-
-fn print_diff_lines(
-    out: &mut RenderOut,
-    h: &mut HighlightLines,
-    lines: &[&str],
-    start_line: usize,
-    sign: Option<(char, Color)>,
-    bg: Option<Color>,
-    layout: &DiffLayout,
-) -> u16 {
-    let DiffLayout {
-        indent,
-        gutter_width,
-        max_content,
-    } = *layout;
-    let prefix_cols = indent.len() + 1 + gutter_width + 3;
-    let right_margin = indent.len();
-    let blank_gutter = " ".repeat(1 + gutter_width + 3);
-    let mut total_rows = 0u16;
-    for (i, line) in lines.iter().enumerate() {
-        let lineno = start_line + i + 1;
-        let line_with_nl = format!("{}\n", line);
-        let regions = h
-            .highlight_line(&line_with_nl, &SYNTAX_SET)
-            .unwrap_or_default();
-        let visual_rows = split_regions_into_rows(&regions, max_content);
-        for (vi, vrow) in visual_rows.iter().enumerate() {
-            let _ = out.queue(Print(indent));
-            if let Some((ch, color)) = sign {
-                let _ = out.queue(SetBackgroundColor(bg.unwrap()));
-                if vi == 0 {
-                    let _ = out.queue(SetForegroundColor(color));
-                    let _ = out.queue(Print(format!(" {:>w$} ", lineno, w = gutter_width)));
-                    let _ = out.queue(SetForegroundColor(color));
-                    let _ = out.queue(Print(format!("{} ", ch)));
-                } else {
-                    let _ = out.queue(Print(&blank_gutter));
-                }
-                let content_cols = print_split_regions(out, vrow, bg);
-                let pad = term_width().saturating_sub(prefix_cols + content_cols + right_margin);
-                if pad > 0 {
-                    if let Some(bg_color) = bg {
-                        let _ = out.queue(SetBackgroundColor(bg_color));
-                    }
-                    let _ = out.queue(Print(" ".repeat(pad)));
-                }
-                let _ = out.queue(ResetColor);
-            } else {
-                if vi == 0 {
-                    let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                    let _ = out.queue(Print(format!(" {:>w$}", lineno, w = gutter_width)));
-                    let _ = out.queue(ResetColor);
-                    let _ = out.queue(Print("   "));
-                } else {
-                    let _ = out.queue(Print(&blank_gutter));
-                }
-                print_split_regions(out, vrow, None);
-            }
-            crlf(out);
-        }
-        total_rows += visual_rows.len() as u16;
-    }
-    total_rows
-}
-
-/// Like `print_diff_lines` but respects a global skip offset and emit limit.
-/// `global_total` is the row counter before this call; rows with index < `skip`
-/// are suppressed. Returns the number of rows actually emitted.
-#[allow(clippy::too_many_arguments)]
-fn print_diff_lines_skip(
-    out: &mut RenderOut,
-    h: &mut HighlightLines,
-    lines: &[&str],
-    start_line: usize,
-    sign: Option<(char, Color)>,
-    bg: Option<Color>,
-    layout: &DiffLayout,
-    skip: u16,
-    emit_limit: u16,
-    global_total: u16,
-) -> u16 {
-    let DiffLayout {
-        indent,
-        gutter_width,
-        max_content,
-    } = *layout;
-    let prefix_cols = indent.len() + 1 + gutter_width + 3;
-    let right_margin = indent.len();
-    let blank_gutter = " ".repeat(1 + gutter_width + 3);
-    let mut row_idx = global_total;
-    let mut emitted = 0u16;
-    for (i, line) in lines.iter().enumerate() {
-        if emitted >= emit_limit {
-            // Still advance highlighter for remaining lines
-            let _ = h.highlight_line(&format!("{}\n", line), &SYNTAX_SET);
-            continue;
-        }
-        let lineno = start_line + i + 1;
-        let line_with_nl = format!("{}\n", line);
-        let regions = h
-            .highlight_line(&line_with_nl, &SYNTAX_SET)
-            .unwrap_or_default();
-        let visual_rows = split_regions_into_rows(&regions, max_content);
-        for (vi, vrow) in visual_rows.iter().enumerate() {
-            if row_idx >= skip && emitted < emit_limit {
-                let _ = out.queue(Print(indent));
-                if let Some((ch, color)) = sign {
-                    let _ = out.queue(SetBackgroundColor(bg.unwrap()));
-                    if vi == 0 {
-                        let _ = out.queue(SetForegroundColor(color));
-                        let _ = out.queue(Print(format!(" {:>w$} ", lineno, w = gutter_width)));
-                        let _ = out.queue(SetForegroundColor(color));
-                        let _ = out.queue(Print(format!("{} ", ch)));
-                    } else {
-                        let _ = out.queue(Print(&blank_gutter));
-                    }
-                    let content_cols = print_split_regions(out, vrow, bg);
-                    let pad =
-                        term_width().saturating_sub(prefix_cols + content_cols + right_margin);
-                    if pad > 0 {
-                        if let Some(bg_color) = bg {
-                            let _ = out.queue(SetBackgroundColor(bg_color));
-                        }
-                        let _ = out.queue(Print(" ".repeat(pad)));
-                    }
-                    let _ = out.queue(ResetColor);
-                } else {
-                    if vi == 0 {
-                        let _ = out.queue(SetForegroundColor(Color::DarkGrey));
-                        let _ = out.queue(Print(format!(" {:>w$}", lineno, w = gutter_width)));
-                        let _ = out.queue(ResetColor);
-                        let _ = out.queue(Print("   "));
-                    } else {
-                        let _ = out.queue(Print(&blank_gutter));
-                    }
-                    print_split_regions(out, vrow, None);
-                }
-                crlf(out);
-                emitted += 1;
-            }
-            row_idx += 1;
-        }
-    }
-    emitted
+    cache
+        .lines
+        .iter()
+        .map(|line| match line {
+            CachedDiffLine::Ellipsis => 1,
+            CachedDiffLine::Context { text, .. }
+            | CachedDiffLine::Delete { text, .. }
+            | CachedDiffLine::Insert { text, .. } => visual_rows_for(text),
+        })
+        .sum::<usize>() as u16
 }
 
 /// Split syntax regions into visual rows that each fit within `max_width` columns.

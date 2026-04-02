@@ -426,12 +426,17 @@ impl App {
                 self.screen.flush_streaming_thinking();
                 self.screen.flush_streaming_text();
                 if tool_name != "spawn_agent" {
-                    self.screen
-                        .start_tool(call_id.clone(), tool_name.clone(), summary, args);
+                    self.screen.start_tool(
+                        call_id.clone(),
+                        tool_name.clone(),
+                        summary,
+                        args.clone(),
+                    );
                 }
                 pending.push(PendingTool {
                     call_id,
                     name: tool_name,
+                    args,
                 });
                 SessionControl::Continue
             }
@@ -485,11 +490,19 @@ impl App {
                         } else {
                             ToolStatus::Ok
                         };
-                        let output = Some(ToolOutput {
+                        let render_cache = render::build_tool_output_render_cache(
+                            &removed.name,
+                            &removed.args,
+                            &result.content,
+                            result.is_error,
+                            result.metadata.as_ref(),
+                        );
+                        let output = Some(Box::new(ToolOutput {
                             content: result.content,
                             is_error: result.is_error,
                             metadata: result.metadata,
-                        });
+                            render_cache,
+                        }));
                         let elapsed = elapsed_ms.map(Duration::from_millis);
                         self.screen.finish_tool(&call_id, status, output, elapsed);
                     }
@@ -985,7 +998,6 @@ impl App {
                             self.screen.set_context_tokens(tokens);
                         }
                         self.screen.flush_blocks();
-                        self.persist_render_cache();
                         clear = false;
                     }
                 }
