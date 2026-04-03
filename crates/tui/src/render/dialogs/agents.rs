@@ -313,7 +313,11 @@ impl super::Dialog for AgentsDialog {
 
                 // Header: agent name + slug
                 let _ = out.queue(Print(" "));
-                out.push_style(crate::render::StyleState { fg: Some(crate::theme::AGENT), bold: true, ..Default::default() });
+                out.push_style(crate::render::StyleState {
+                    fg: Some(crate::theme::AGENT),
+                    bold: true,
+                    ..Default::default()
+                });
                 let _ = out.queue(Print(&agent_id));
                 out.pop_style();
 
@@ -456,7 +460,11 @@ impl super::Dialog for AgentsDialog {
                         let _ = out.queue(Print("  "));
                         let padded_name = format!("{:<name_w$}", agent.agent_id);
                         if i == self.list.selected {
-                            out.push_style(crate::render::StyleState { fg: Some(crate::theme::AGENT), bold: true, ..Default::default() });
+                            out.push_style(crate::render::StyleState {
+                                fg: Some(crate::theme::AGENT),
+                                bold: true,
+                                ..Default::default()
+                            });
                             let _ = out.queue(Print(&padded_name));
                             out.pop_style();
                         } else {

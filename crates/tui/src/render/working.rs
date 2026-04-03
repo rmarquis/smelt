@@ -157,14 +157,16 @@ impl WorkingState {
                         text: format!(" {} compacting", SPINNER_FRAMES[idx]),
                         color: Color::Reset,
                         bg: None,
-                        bold: true, dim: false,
+                        bold: true,
+                        dim: false,
                         priority: 0,
                     },
                     BarSpan {
                         text: format!(" {}", format_duration(elapsed.as_secs())),
                         color: theme::muted(),
                         bg: None,
-                        bold: false, dim: true,
+                        bold: false,
+                        dim: true,
                         priority: 0,
                     },
                 ]
@@ -184,14 +186,16 @@ impl WorkingState {
                         text: format!(" {} working", SPINNER_FRAMES[idx]),
                         color: spinner_color,
                         bg: None,
-                        bold: true, dim: false,
+                        bold: true,
+                        dim: false,
                         priority: 0,
                     },
                     BarSpan {
                         text: format!(" {}", format_duration(elapsed.as_secs())),
                         color: theme::muted(),
                         bg: None,
-                        bold: false, dim: true,
+                        bold: false,
+                        dim: true,
                         priority: 0,
                     },
                 ];
@@ -201,14 +205,16 @@ impl WorkingState {
                             text: " · ".into(),
                             color: theme::muted(),
                             bg: None,
-                            bold: false, dim: true,
+                            bold: false,
+                            dim: true,
                             priority: 3, // drop first
                         });
                         spans.push(BarSpan {
                             text: format!("{:.1} tok/s", avg),
                             color: theme::muted(),
                             bg: None,
-                            bold: false, dim: true,
+                            bold: false,
+                            dim: true,
                             priority: 3, // drop first
                         });
                     }
@@ -222,7 +228,8 @@ impl WorkingState {
                         text: format!(" (retrying in {}s #{})", remaining.as_secs(), attempt),
                         color: theme::muted(),
                         bg: None,
-                        bold: false, dim: true,
+                        bold: false,
+                        dim: true,
                         priority: 0,
                     });
                 }
@@ -234,7 +241,8 @@ impl WorkingState {
                     text: format!(" done {}", format_duration(secs)),
                     color: theme::muted(),
                     bg: None,
-                    bold: false, dim: true,
+                    bold: false,
+                    dim: true,
                     priority: 0,
                 }];
                 if show_tps {
@@ -243,14 +251,16 @@ impl WorkingState {
                             text: " · ".into(),
                             color: theme::muted(),
                             bg: None,
-                            bold: false, dim: true,
+                            bold: false,
+                            dim: true,
                             priority: 3,
                         });
                         spans.push(BarSpan {
                             text: format!("{:.1} tok/s", avg),
                             color: theme::muted(),
                             bg: None,
-                            bold: false, dim: true,
+                            bold: false,
+                            dim: true,
                             priority: 3,
                         });
                     }
@@ -262,7 +272,8 @@ impl WorkingState {
                     text: " interrupted".into(),
                     color: theme::muted(),
                     bg: None,
-                    bold: false, dim: true,
+                    bold: false,
+                    dim: true,
                     priority: 0,
                 }]
             }

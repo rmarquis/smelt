@@ -402,7 +402,11 @@ impl super::Dialog for QuestionDialog {
                     "\u{25a1}"
                 };
                 if i == self.active_tab {
-                    out.push_style(crate::render::StyleState { fg: Some(theme::accent()), bold: true, ..Default::default() });
+                    out.push_style(crate::render::StyleState {
+                        fg: Some(theme::accent()),
+                        bold: true,
+                        ..Default::default()
+                    });
                     let _ = out.queue(Print(format!(" {} {} ", bullet, q.header)));
                     out.pop_style();
                 } else if self.answered[i] {

@@ -2843,7 +2843,8 @@ impl Screen {
                 text: format!(" {}", model),
                 color: theme::muted(),
                 bg: None,
-                bold: false, dim: false,
+                bold: false,
+                dim: false,
                 priority: 2,
             });
             if self.reasoning_effort != protocol::ReasoningEffort::Off {
@@ -2852,7 +2853,8 @@ impl Screen {
                     text: format!(" {}", effort.label()),
                     color: reasoning_color(effort),
                     bg: None,
-                    bold: false, dim: false,
+                    bold: false,
+                    dim: false,
                     priority: 2,
                 });
             }
@@ -2864,7 +2866,8 @@ impl Screen {
                         text: " ·".into(),
                         color: bar_color,
                         bg: None,
-                        bold: false, dim: false,
+                        bold: false,
+                        dim: false,
                         priority: 2,
                     });
                 }
@@ -2882,7 +2885,8 @@ impl Screen {
                     text: token_text,
                     color: theme::muted(),
                     bg: None,
-                    bold: false, dim: false,
+                    bold: false,
+                    dim: false,
                     priority: 1,
                 });
             }
@@ -2893,7 +2897,8 @@ impl Screen {
                     text: " ·".into(),
                     color: bar_color,
                     bg: None,
-                    bold: false, dim: false,
+                    bold: false,
+                    dim: false,
                     priority: 2,
                 });
             }
@@ -2901,7 +2906,8 @@ impl Screen {
                 text: format!(" {}", crate::metrics::format_cost(self.session_cost_usd)),
                 color: theme::muted(),
                 bg: None,
-                bold: false, dim: false,
+                bold: false,
+                dim: false,
                 priority: 1,
             });
         }
