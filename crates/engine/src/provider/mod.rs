@@ -154,7 +154,29 @@ fn format_epoch_local(epoch_secs: u64) -> String {
         let t = epoch_secs as libc::time_t;
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
         unsafe { libc::localtime_r(&t, &mut tm) };
-        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let month = MONTHS[tm.tm_mon as usize % 12];
+        let day = tm.tm_mday;
+        let year = tm.tm_year + 1900;
+        let suffix = match day % 10 {
+            1 if day != 11 => "st",
+            2 if day != 12 => "nd",
+            3 if day != 13 => "rd",
+            _ => "th",
+        };
+        let (hour12, ampm) = match tm.tm_hour {
+            0 => (12, "AM"),
+            1..=11 => (tm.tm_hour, "AM"),
+            12 => (12, "PM"),
+            _ => (tm.tm_hour - 12, "PM"),
+        };
+        format!(
+            "{month} {day}{suffix}, {year} {hour12}:{:02} {ampm}",
+            tm.tm_min
+        )
     }
     #[cfg(not(unix))]
     {
