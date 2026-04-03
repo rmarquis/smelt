@@ -11,7 +11,6 @@ use tui::render::{
     ToolStatus,
 };
 
-
 // ── TestBackend ──────────────────────────────────────────────────────
 
 pub struct TestBackend {

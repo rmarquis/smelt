@@ -3826,15 +3826,11 @@ fn render_status_spans(
             break; // only priority-0 spans left, nothing more to drop
         }
         // Find the last span at this priority (prefer dropping rightmost first).
-        let idx = spans
-            .iter()
-            .rposition(|s| s.priority == max_pri)
-            .unwrap();
+        let idx = spans.iter().rposition(|s| s.priority == max_pri).unwrap();
 
         if spans[idx].truncatable {
-            let available = width.saturating_sub(
-                total_width(spans) - spans[idx].text.chars().count(),
-            );
+            let available =
+                width.saturating_sub(total_width(spans) - spans[idx].text.chars().count());
             if available >= 2 {
                 // Truncate: keep at least 1 char + "…"
                 spans[idx].text = truncate_str(&spans[idx].text, available);

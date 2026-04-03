@@ -61,8 +61,7 @@ fn status_bar_shows_task_label() {
 #[test]
 fn status_bar_never_wraps_wide() {
     let mut h = TestHarness::new(120, 24, "status_bar_never_wraps_wide");
-    h.screen
-        .set_task_label("some-very-long-task-name".into());
+    h.screen.set_task_label("some-very-long-task-name".into());
     h.screen.set_throbber(Throbber::Working);
     h.screen.set_running_procs(3);
     h.screen.set_agent_count(2);
@@ -72,8 +71,7 @@ fn status_bar_never_wraps_wide() {
 #[test]
 fn status_bar_never_wraps_narrow() {
     let mut h = TestHarness::new(30, 24, "status_bar_never_wraps_narrow");
-    h.screen
-        .set_task_label("some-very-long-task-name".into());
+    h.screen.set_task_label("some-very-long-task-name".into());
     h.screen.set_throbber(Throbber::Working);
     h.screen.set_running_procs(3);
     h.screen.set_agent_count(2);
