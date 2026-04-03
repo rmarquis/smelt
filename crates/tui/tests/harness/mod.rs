@@ -11,6 +11,7 @@ use tui::render::{
     ToolStatus,
 };
 
+
 // ── TestBackend ──────────────────────────────────────────────────────
 
 pub struct TestBackend {
@@ -148,6 +149,7 @@ pub struct TestHarness {
     test_name: String,
     actions: Vec<String>,
     assert_count: usize,
+    mode: protocol::Mode,
 }
 
 impl TestHarness {
@@ -166,6 +168,7 @@ impl TestHarness {
             test_name: test_name.to_string(),
             actions: Vec::new(),
             assert_count: 0,
+            mode: protocol::Mode::Normal,
         }
     }
 
@@ -199,7 +202,7 @@ impl TestHarness {
                 self.width as usize,
                 Some(tui::render::FramePrompt {
                     state: &input,
-                    mode: protocol::Mode::Normal,
+                    mode: self.mode,
                     queued: &[],
                     prediction: None,
                 }),
@@ -321,7 +324,7 @@ impl TestHarness {
                 self.width as usize,
                 Some(tui::render::FramePrompt {
                     state: &input,
-                    mode: protocol::Mode::Normal,
+                    mode: self.mode,
                     queued: &[],
                     prediction: None,
                 }),
@@ -341,7 +344,7 @@ impl TestHarness {
                 self.width as usize,
                 Some(tui::render::FramePrompt {
                     state: &input,
-                    mode: protocol::Mode::Normal,
+                    mode: self.mode,
                     queued: &[],
                     prediction: None,
                 }),
@@ -373,7 +376,7 @@ impl TestHarness {
                     self.width as usize,
                     Some(tui::render::FramePrompt {
                         state: &input,
-                        mode: protocol::Mode::Normal,
+                        mode: self.mode,
                         queued: &[],
                         prediction: None,
                     }),
@@ -412,6 +415,21 @@ impl TestHarness {
              Captured:\n{text}",
             self.test_name,
         );
+    }
+
+    // ── Status bar helpers ──────────────────────────────────────────
+
+    /// Extract the last row (status bar) from the vt100 screen.
+    /// The status bar is the last non-empty row rendered after draw_prompt.
+    pub fn status_line_text(&mut self) -> String {
+        self.draw_prompt();
+        let text = extract_full_content(&mut self.parser);
+        text.lines().last().unwrap_or("").to_string()
+    }
+
+    /// Set the mode used for subsequent draw_prompt calls.
+    pub fn set_mode(&mut self, mode: protocol::Mode) {
+        self.mode = mode;
     }
 
     // ── Internal ────────────────────────────────────────────────────

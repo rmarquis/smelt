@@ -1337,47 +1337,67 @@ impl Screen {
     }
 
     /// Render the status line content at the current cursor position.
+    /// Responsively drops/truncates elements when the terminal is too narrow.
     fn render_status_line(&self, out: &mut RenderOut) {
+        let (w, _) = self.size();
+        let width = w as usize;
         let status_bg = Color::AnsiValue(233);
 
-        // ── Slug pill (far left) ──
+        // ── Build all status spans ──
+        let mut spans: Vec<StatusSpan> = Vec::with_capacity(16);
+
+        // Slug pill: spinner (always visible) + label (truncatable).
         let is_compacting = self.working.throbber == Some(Throbber::Compacting);
         let spinner = self.working.spinner_char();
-        let has_slug = self.show_slug && self.task_label.is_some();
-
-        let pill_label: Option<String> = if is_compacting {
-            let sp = spinner.unwrap_or(SPINNER_FRAMES[0]);
-            Some(format!(" {} compacting ", sp))
-        } else if has_slug {
-            let label = self.task_label.as_ref().unwrap();
-            Some(if let Some(sp) = spinner {
-                format!(" {} {} ", sp, label)
-            } else {
-                format!(" {} ", label)
-            })
+        let pill_bg = if is_compacting {
+            Color::White
         } else {
-            spinner.map(|sp| format!(" {} working ", sp))
+            theme::slug_color()
+        };
+        let pill_style = StyleState {
+            fg: Some(Color::Black),
+            bg: Some(pill_bg),
+            ..StyleState::default()
         };
 
-        if let Some(ref pill_text) = pill_label {
-            let pill_bg = if is_compacting {
-                Color::White
-            } else {
-                theme::slug_color()
-            };
-            out.push_style(StyleState {
-                fg: Some(Color::Black),
-                bg: Some(pill_bg),
-                ..StyleState::default()
+        if let Some(sp) = spinner {
+            spans.push(StatusSpan {
+                text: format!(" {sp} "),
+                style: pill_style.clone(),
+                priority: 0,
+                group: false,
+                truncatable: false,
             });
-            let _ = out.queue(Print(pill_text));
-            out.pop_style();
+            let label = if is_compacting {
+                "compacting ".into()
+            } else if self.show_slug {
+                self.task_label
+                    .as_ref()
+                    .map(|l| format!("{l} "))
+                    .unwrap_or_else(|| "working ".into())
+            } else {
+                "working ".into()
+            };
+            spans.push(StatusSpan {
+                text: label,
+                style: pill_style,
+                priority: 3,
+                group: false,
+                truncatable: true,
+            });
+        } else if self.show_slug {
+            if let Some(ref label) = self.task_label {
+                spans.push(StatusSpan {
+                    text: format!(" {label} "),
+                    style: pill_style,
+                    priority: 3,
+                    group: false,
+                    truncatable: true,
+                });
+            }
         }
 
-        // ── Dark bg for the middle section ──
-        out.set_bg(status_bg);
-
-        // ── Vim mode ──
+        // Vim mode.
         if self.last_vim_enabled {
             let vim_label = vim_mode_label(self.last_vim_mode).unwrap_or("NORMAL");
             let vim_fg = match self.last_vim_mode {
@@ -1387,121 +1407,131 @@ impl Screen {
                 }
                 _ => Color::AnsiValue(74),
             };
-            out.push_style(StyleState {
-                fg: Some(vim_fg),
-                bg: Some(Color::AnsiValue(236)),
-                ..StyleState::default()
+            spans.push(StatusSpan {
+                text: format!(" {vim_label} "),
+                style: StyleState {
+                    fg: Some(vim_fg),
+                    bg: Some(Color::AnsiValue(236)),
+                    ..StyleState::default()
+                },
+                priority: 5,
+                group: false,
+                truncatable: false,
             });
-            let _ = out.queue(Print(format!(" {vim_label} ")));
-            out.pop_style();
         }
 
-        // ── Mode indicator ──
+        // Mode indicator.
         let (mode_icon, mode_name, mode_fg) = match self.last_mode {
             protocol::Mode::Plan => ("◇ ", "plan", theme::PLAN),
             protocol::Mode::Apply => ("→ ", "apply", theme::APPLY),
             protocol::Mode::Yolo => ("⚡", "yolo", theme::YOLO),
             protocol::Mode::Normal => ("○ ", "normal", theme::muted()),
         };
-        out.push_style(StyleState {
-            fg: Some(mode_fg),
-            bg: Some(Color::AnsiValue(234)),
-            ..StyleState::default()
+        spans.push(StatusSpan {
+            text: format!(" {mode_icon}{mode_name} "),
+            style: StyleState {
+                fg: Some(mode_fg),
+                bg: Some(Color::AnsiValue(234)),
+                ..StyleState::default()
+            },
+            priority: 1,
+            group: false,
+            truncatable: false,
         });
-        let _ = out.queue(Print(format!(" {mode_icon}{mode_name} ")));
-        out.pop_style();
-        out.set_bg(status_bg);
-        let mut has_prev = true;
 
-        // ── Throbber status ──
+        // Throbber status (timer, tok/s, retry, done, interrupted).
+        // Skip the first span for active states — it duplicates the pill.
         let throbber_spans = self.working.throbber_spans(self.show_tps);
-        // The first span for active states (Working/Compacting/Retrying)
-        // contains the spinner + label which is already shown in the pill.
         let is_active = matches!(
             self.working.throbber,
             Some(Throbber::Working) | Some(Throbber::Compacting) | Some(Throbber::Retrying { .. })
         );
-        let status_spans: &[BarSpan] = if is_active && !throbber_spans.is_empty() {
+        let status_bar_spans: &[BarSpan] = if is_active && !throbber_spans.is_empty() {
             &throbber_spans[1..]
         } else {
             &throbber_spans
         };
-        if !status_spans.is_empty() {
-            for span in status_spans {
-                out.push_style(StyleState {
-                    fg: Some(span.color),
+        let first_throbber = spans.len();
+        for bar_span in status_bar_spans {
+            // Map BarSpan priorities: timer (0) → 4, tok/s (3) → 6.
+            let priority = match bar_span.priority {
+                0 => 4,
+                3 => 6,
+                p => p,
+            };
+            spans.push(StatusSpan {
+                text: bar_span.text.clone(),
+                style: StyleState {
+                    fg: Some(bar_span.color),
                     bg: Some(status_bg),
-                    bold: span.bold,
-                    dim: span.dim,
+                    bold: bar_span.bold,
+                    dim: bar_span.dim,
                     ..StyleState::default()
-                });
-                let _ = out.queue(Print(&span.text));
-                out.pop_style();
-            }
-            has_prev = true;
+                },
+                priority,
+                group: spans.len() == first_throbber,
+                truncatable: false,
+            });
         }
 
-        // ── Permission pending (only when no dialog is open) ──
+        // Permission pending.
         if self.pending_dialog && !self.dialog_open {
-            if has_prev {
-                out.set_fg(theme::muted());
-                let _ = out.queue(Print(" · "));
-            }
-            out.push_style(StyleState {
-                fg: Some(theme::accent()),
-                bg: Some(status_bg),
-                bold: true,
-                ..StyleState::default()
+            spans.push(StatusSpan {
+                text: "permission pending".into(),
+                style: StyleState {
+                    fg: Some(theme::accent()),
+                    bg: Some(status_bg),
+                    bold: true,
+                    ..StyleState::default()
+                },
+                priority: 2,
+                group: true,
+                truncatable: false,
             });
-            let _ = out.queue(Print("permission pending"));
-            out.pop_style();
-            has_prev = true;
         }
 
-        // ── Running procs ──
+        // Running procs.
         if self.running_procs > 0 {
-            if has_prev {
-                out.set_fg(theme::muted());
-                let _ = out.queue(Print(" · "));
-            }
-            out.push_style(StyleState {
-                fg: Some(theme::accent()),
-                bg: Some(status_bg),
-                ..StyleState::default()
-            });
             let label = if self.running_procs == 1 {
-                "1 proc".to_string()
+                "1 proc".into()
             } else {
                 format!("{} procs", self.running_procs)
             };
-            let _ = out.queue(Print(&label));
-            out.pop_style();
-            has_prev = true;
+            spans.push(StatusSpan {
+                text: label,
+                style: StyleState {
+                    fg: Some(theme::accent()),
+                    bg: Some(status_bg),
+                    ..StyleState::default()
+                },
+                priority: 2,
+                group: true,
+                truncatable: false,
+            });
         }
 
-        // ── Running agents ──
+        // Running agents.
         if self.running_agents > 0 {
-            if has_prev {
-                out.set_fg(theme::muted());
-                let _ = out.queue(Print(" · "));
-            }
-            out.push_style(StyleState {
-                fg: Some(theme::AGENT),
-                bg: Some(status_bg),
-                ..StyleState::default()
-            });
             let label = if self.running_agents == 1 {
-                "1 agent".to_string()
+                "1 agent".into()
             } else {
                 format!("{} agents", self.running_agents)
             };
-            let _ = out.queue(Print(&label));
-            out.pop_style();
+            spans.push(StatusSpan {
+                text: label,
+                style: StyleState {
+                    fg: Some(theme::AGENT),
+                    bg: Some(status_bg),
+                    ..StyleState::default()
+                },
+                priority: 2,
+                group: true,
+                truncatable: false,
+            });
         }
 
-        // Fill the rest of the line with the dark bg
-        let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
-        out.reset_style();
+        // ── Responsive layout ──
+        render_status_spans(out, &mut spans, width, status_bg);
     }
 
     /// Dismiss a dialog overlay.
@@ -3745,6 +3775,105 @@ pub(super) struct BarSpan {
     dim: bool,
     /// Priority for responsive dropping. 0 = always show, higher = drop first.
     priority: u8,
+}
+
+/// A span in the status line with responsive priority support.
+struct StatusSpan {
+    text: String,
+    style: StyleState,
+    /// Priority for responsive dropping. 0 = always show, higher = drop first.
+    priority: u8,
+    /// If true, a " · " separator is inserted before this span during rendering.
+    group: bool,
+    /// If true, the text can be truncated with "…" before being fully dropped.
+    truncatable: bool,
+}
+
+/// Separator inserted between groups in the status line.
+const STATUS_SEP: &str = " \u{00b7} "; // " · "
+const STATUS_SEP_LEN: usize = 3;
+
+/// Render status spans with responsive dropping and truncation.
+///
+/// Algorithm:
+/// 1. Calculate total width of all visible spans (including group separators).
+/// 2. While total > available width, find the highest-priority span and either
+///    truncate it (if truncatable) or remove it entirely.
+/// 3. Render the surviving spans left-to-right with group separators.
+fn render_status_spans(
+    out: &mut RenderOut,
+    spans: &mut Vec<StatusSpan>,
+    width: usize,
+    fill_bg: Color,
+) {
+    // Calculate total char width including separators.
+    let total_width = |spans: &[StatusSpan]| -> usize {
+        let mut w = 0;
+        for span in spans {
+            if span.group && w > 0 {
+                w += STATUS_SEP_LEN;
+            }
+            w += span.text.chars().count();
+        }
+        w
+    };
+
+    // Iteratively drop or truncate until it fits.
+    while total_width(spans) > width && !spans.is_empty() {
+        // Find the span with the highest priority (drop first).
+        let max_pri = spans.iter().map(|s| s.priority).max().unwrap_or(0);
+        if max_pri == 0 {
+            break; // only priority-0 spans left, nothing more to drop
+        }
+        // Find the last span at this priority (prefer dropping rightmost first).
+        let idx = spans
+            .iter()
+            .rposition(|s| s.priority == max_pri)
+            .unwrap();
+
+        if spans[idx].truncatable {
+            let available = width.saturating_sub(
+                total_width(spans) - spans[idx].text.chars().count(),
+            );
+            if available >= 2 {
+                // Truncate: keep at least 1 char + "…"
+                spans[idx].text = truncate_str(&spans[idx].text, available);
+                continue;
+            }
+        }
+        spans.remove(idx);
+    }
+
+    // Render.
+    let sep_style = StyleState {
+        fg: Some(crate::theme::muted()),
+        bg: Some(fill_bg),
+        ..StyleState::default()
+    };
+    let mut col = 0;
+    for span in spans.iter() {
+        if span.group && col > 0 {
+            out.push_style(sep_style.clone());
+            let _ = out.queue(Print(STATUS_SEP));
+            out.pop_style();
+            col += STATUS_SEP_LEN;
+        }
+        out.push_style(span.style.clone());
+        let _ = out.queue(Print(&span.text));
+        out.pop_style();
+        col += span.text.chars().count();
+    }
+
+    // Fill the rest of the line with the dark bg.
+    if col < width {
+        out.push_style(StyleState {
+            bg: Some(fill_bg),
+            ..StyleState::default()
+        });
+        let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
+        out.pop_style();
+    }
+    out.reset_style();
 }
 
 pub(super) fn draw_bar(
