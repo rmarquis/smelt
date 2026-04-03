@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::style::{Color, Print};
 use crossterm::{terminal, QueueableCommand};
 
-use super::{end_dialog_draw, truncate_str, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, truncate_str, DialogResult, ListState, RenderOut};
 
 /// A single permission rule — one tool + one pattern.
 #[derive(Clone)]
@@ -153,52 +153,46 @@ impl super::Dialog for PermissionsDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         let total = display_row_count(&self.session_entries, &self.workspace_rules, &self.items);
-        let Some((mut out, w, _)) =
-            self.list
-                .begin_draw(start_row, total.max(1), sync_started, backend)
+        let Some((w, _)) = self
+            .list
+            .begin_draw(out, start_row, total.max(1), width, height)
         else {
             return;
         };
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
 
         if self.items.is_empty() {
             out.push_dim();
             let _ = out.queue(Print(" No permissions"));
             out.pop_style();
-            crlf(&mut out);
+            crlf(out);
         } else {
             let mut printed_workspace = false;
             for (i, item) in self.items.iter().enumerate() {
                 if matches!(item, Item::Session(_)) && i == 0 {
-                    print_header(&mut out, " Session");
+                    print_header(out, " Session");
                 }
                 if matches!(item, Item::Workspace(_, _)) && !printed_workspace {
                     printed_workspace = true;
                     if i > 0 {
-                        crlf(&mut out);
+                        crlf(out);
                     }
-                    print_header(&mut out, " Workspace");
+                    print_header(out, " Workspace");
                 }
 
                 let label = match item {
                     Item::Session(idx) => format_permission_entry(&self.session_entries[*idx]),
                     Item::Workspace(ri, pi) => format_rule_entry(&self.workspace_rules[*ri], *pi),
                 };
-                render_entry_row(
-                    &mut out,
-                    &label,
-                    i == self.list.selected,
-                    w,
-                    theme::accent(),
-                );
+                render_entry_row(out, &label, i == self.list.selected, w, theme::accent());
             }
         }
 
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let hint = if self.pending_d {
             hints::join(&[hints::DD_PENDING, hints::CLOSE])
@@ -207,7 +201,7 @@ impl super::Dialog for PermissionsDialog {
         };
         let _ = out.queue(Print(&hint));
         out.pop_style();
-        end_dialog_draw(&mut out);
+        end_dialog_draw(out);
     }
 }
 

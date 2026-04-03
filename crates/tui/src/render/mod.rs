@@ -92,6 +92,47 @@ pub struct StyleState {
     pub underline: bool,
 }
 
+/// RAII guard for a synchronized terminal update frame.
+///
+/// Creating a `Frame` issues `BeginSynchronizedUpdate`.
+/// Dropping it issues `EndSynchronizedUpdate` and flushes the buffer,
+/// guaranteeing that the terminal paints everything as a single atomic
+/// update — even if the caller forgets to close the frame explicitly.
+///
+/// Cursor visibility is NOT managed by `Frame` — callers that need to
+/// hide/show the cursor should queue those commands explicitly.
+pub struct Frame {
+    pub out: RenderOut,
+}
+
+impl Frame {
+    pub fn begin(backend: &dyn TerminalBackend) -> Self {
+        let mut out = backend.make_output();
+        let _ = out.queue(terminal::BeginSynchronizedUpdate);
+        Self { out }
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let _ = self.out.queue(terminal::EndSynchronizedUpdate);
+        let _ = self.out.flush();
+    }
+}
+
+impl std::ops::Deref for Frame {
+    type Target = RenderOut;
+    fn deref(&self) -> &RenderOut {
+        &self.out
+    }
+}
+
+impl std::ops::DerefMut for Frame {
+    fn deref_mut(&mut self) -> &mut RenderOut {
+        &mut self.out
+    }
+}
+
 /// Output wrapper that selects the line-advance strategy (scroll vs overlay).
 pub struct RenderOut {
     pub out: Box<dyn Write>,
@@ -927,10 +968,6 @@ pub struct Screen {
     pending_dialog: bool,
     /// A dialog is currently open (confirm, rewind, etc.).
     dialog_open: bool,
-    /// Set when `draw_frame` issues `BeginSynchronizedUpdate` in content-only
-    /// mode.  The dialog that follows skips its own `BeginSync`, ensuring a
-    /// single atomic sync block covers both the tool overlay and the dialog.
-    sync_started: bool,
     running_procs: usize,
     running_agents: usize,
     show_tps: bool,
@@ -1006,7 +1043,6 @@ impl Screen {
             defer_redraw: false,
             pending_dialog: false,
             dialog_open: false,
-            sync_started: false,
             running_procs: 0,
             running_agents: 0,
             show_tps: true,
@@ -1025,23 +1061,14 @@ impl Screen {
         }
     }
 
-    fn size(&self) -> (u16, u16) {
+    pub fn size(&self) -> (u16, u16) {
         self.backend.size()
-    }
-
-    fn scroll_output(&self) -> RenderOut {
-        self.backend.make_output()
     }
 
     fn cursor_y(&self) -> u16 {
         self.prompt
             .anchor_row
             .unwrap_or_else(|| self.backend.cursor_y())
-    }
-
-    /// Build a `RenderOut` from this screen's backend.
-    pub fn backend_make_output(&self) -> RenderOut {
-        self.backend.make_output()
     }
 
     /// Expose the backend for dialogs that need output + size.
@@ -1281,12 +1308,6 @@ impl Screen {
         self.prompt.prev_dialog_row.unwrap_or(0)
     }
 
-    /// Returns true and resets the flag if `draw_frame` already issued
-    /// `BeginSynchronizedUpdate` for this frame (content-only mode).
-    pub fn take_sync_started(&mut self) -> bool {
-        std::mem::take(&mut self.sync_started)
-    }
-
     /// After a dialog draws (and potentially ScrollUp's), reconcile the
     /// screen's anchor with the dialog's actual position so subsequent
     /// `draw_frame` calls render the active tool at the correct row.
@@ -1304,16 +1325,15 @@ impl Screen {
         self.prompt.prev_dialog_row = Some(actual);
     }
 
-    /// Render the status line at the very last row of the terminal.
-    /// Called after a dialog is drawn so the status bar stays visible.
-    pub fn draw_dialog_status_line(&mut self) {
+    /// Render the status line at the very last row of the terminal into
+    /// the given output buffer.  Used as a callback inside dialog sync frames
+    /// so the status bar is painted atomically with dialog content.
+    pub fn queue_status_line(&self, out: &mut RenderOut) {
         let (_, h) = self.size();
-        let mut out = self.scroll_output();
         let _ = out.queue(cursor::SavePosition);
         let _ = out.queue(cursor::MoveTo(0, h - 1));
-        self.render_status_line(&mut out);
+        self.render_status_line(out);
         let _ = out.queue(cursor::RestorePosition);
-        let _ = out.flush();
     }
 
     /// Render the status line content at the current cursor position.
@@ -1495,12 +1515,11 @@ impl Screen {
         };
 
         let height = self.size().1;
-        let mut out = self.scroll_output();
+        let mut frame = Frame::begin(&*self.backend);
         for row in clear_from..height {
-            let _ = out.queue(cursor::MoveTo(0, row));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+            let _ = frame.queue(cursor::MoveTo(0, row));
+            let _ = frame.queue(terminal::Clear(terminal::ClearType::CurrentLine));
         }
-        let _ = out.flush();
         // When the dialog used ScrollUp, the prompt gap that was between
         // the last block and the prompt was pushed into scrollback.  The
         // next block render would emit gap_between() again, creating a
@@ -1535,12 +1554,9 @@ impl Screen {
             return;
         }
         let anchor = self.prompt.anchor_row.unwrap_or(0);
-        // prev_rows is the count of rows drawn, so the last drawn row is
-        // anchor + prev_rows - 1.  Move there, then \r\n lands on the first
-        // line after the prompt with no extra gap.
         let last_row = anchor + self.prompt.prev_rows.saturating_sub(1);
         let height = self.size().1;
-        let mut out = self.scroll_output();
+        let mut out = self.backend.make_output();
         let _ = out.queue(cursor::MoveTo(0, last_row.min(height.saturating_sub(1))));
         let _ = out.queue(Print("\r\n\r\n"));
         if clear_below {
@@ -2227,18 +2243,6 @@ impl Screen {
     }
 
     pub fn render_pending_blocks(&mut self) {
-        self.render_pending_blocks_inner(true);
-    }
-
-    /// Render pending blocks but leave the synchronized update open so
-    /// that subsequent rendering (tool overlay + dialog) is part of the
-    /// same atomic frame.  The caller is responsible for eventually
-    /// issuing `EndSynchronizedUpdate`.
-    pub fn render_pending_blocks_for_dialog(&mut self) {
-        self.render_pending_blocks_inner(false);
-    }
-
-    fn render_pending_blocks_inner(&mut self, close_sync: bool) {
         if self.defer_pending_render {
             self.defer_pending_render = false;
             return;
@@ -2246,13 +2250,12 @@ impl Screen {
         if !self.history.has_unflushed() {
             return;
         }
-        let mut out = self.scroll_output();
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
+        let mut frame = Frame::begin(&*self.backend);
+        let _ = frame.queue(cursor::Hide);
         let start_row = if self.prompt.drawn {
             let row = self.prompt.anchor_row.unwrap_or(0);
-            let _ = out.queue(cursor::MoveTo(0, row));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
+            let _ = frame.queue(cursor::MoveTo(0, row));
+            let _ = frame.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
             self.prompt.drawn = false;
             self.prompt.prev_rows = 0;
             row
@@ -2265,16 +2268,10 @@ impl Screen {
         let (w, h) = self.size();
         let block_rows = self
             .history
-            .render(&mut out, w as usize, self.show_thinking);
+            .render(&mut frame, w as usize, self.show_thinking);
         // Cap anchor at the last terminal row — scroll-mode rendering may
         // have pushed past the bottom, making start_row + block_rows overshoot.
         self.prompt.anchor_row = Some((start_row + block_rows).min(h.saturating_sub(1)));
-        if close_sync {
-            let _ = out.queue(terminal::EndSynchronizedUpdate);
-        } else {
-            self.sync_started = true;
-        }
-        let _ = out.flush();
     }
 
     /// Mark the prompt as needing a full redraw.  Does NOT perform any
@@ -2284,30 +2281,6 @@ impl Screen {
     /// separate frame.
     pub fn erase_prompt(&mut self) {
         if self.prompt.drawn {
-            self.prompt.drawn = false;
-            self.prompt.dirty = true;
-        }
-    }
-
-    /// Erase the prompt area without issuing its own sync frame.
-    /// Used when a sync is already open (e.g. from
-    /// `render_pending_blocks_for_dialog`) and the caller needs the
-    /// terminal lines cleared immediately within that frame. Avoid flushing
-    /// here so the terminal can present the erase together with the
-    /// subsequent dialog draw as a single synchronized update.
-    pub fn erase_prompt_nosync(&mut self) {
-        if self.prompt.drawn {
-            if let Some(anchor) = self.prompt.anchor_row {
-                let height = self.size().1;
-                let end = (anchor + self.prompt.prev_rows).min(height);
-                let mut out = self.scroll_output();
-                let _ = out.queue(cursor::Hide);
-                for r in anchor..end {
-                    let _ = out.queue(cursor::MoveTo(0, r));
-                    let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
-                }
-                let _ = out.queue(cursor::MoveTo(0, anchor));
-            }
             self.prompt.drawn = false;
             self.prompt.dirty = true;
         }
@@ -2323,17 +2296,16 @@ impl Screen {
         } else {
             purge
         };
-        let mut out = self.scroll_output();
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
+        let mut frame = Frame::begin(&*self.backend);
+        let _ = frame.queue(cursor::Hide);
         let start = if purge {
-            let _ = out.queue(cursor::MoveTo(0, 0));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::All));
-            let _ = out.queue(terminal::Clear(terminal::ClearType::Purge));
+            let _ = frame.queue(cursor::MoveTo(0, 0));
+            let _ = frame.queue(terminal::Clear(terminal::ClearType::All));
+            let _ = frame.queue(terminal::Clear(terminal::ClearType::Purge));
             0
         } else {
             let row = self.content_start_row.unwrap_or(0);
-            let _ = out.queue(cursor::MoveTo(0, row));
+            let _ = frame.queue(cursor::MoveTo(0, row));
             row
         };
         let (w, height) = self.size();
@@ -2344,19 +2316,14 @@ impl Screen {
         self.history.last_block_rows = 0;
         let block_rows = self
             .history
-            .render(&mut out, w as usize, self.show_thinking);
+            .render(&mut frame, w as usize, self.show_thinking);
         if !purge {
-            // Clear remaining rows individually — Clear(FromCursorDown) at
-            // low row numbers causes Ghostty to push the viewport into
-            // scrollback.
             let cur_row = start + block_rows;
             for row in cur_row..height {
-                let _ = out.queue(cursor::MoveTo(0, row));
-                let _ = out.queue(terminal::Clear(terminal::ClearType::CurrentLine));
+                let _ = frame.queue(cursor::MoveTo(0, row));
+                let _ = frame.queue(terminal::Clear(terminal::ClearType::CurrentLine));
             }
         }
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
         self.prompt.drawn = false;
         self.prompt.dirty = true;
         self.prompt.prev_rows = 0;
@@ -2384,14 +2351,10 @@ impl Screen {
         self.task_label = None;
         self.has_scrollback = false;
         self.content_start_row = None;
-        let mut out = self.scroll_output();
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        let _ = out.queue(cursor::Hide);
-        let _ = out.queue(cursor::MoveTo(0, 0));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::All));
-        let _ = out.queue(terminal::Clear(terminal::ClearType::Purge));
-        let _ = out.queue(terminal::EndSynchronizedUpdate);
-        let _ = out.flush();
+        let mut frame = Frame::begin(&*self.backend);
+        let _ = frame.queue(cursor::MoveTo(0, 0));
+        let _ = frame.queue(terminal::Clear(terminal::ClearType::All));
+        let _ = frame.queue(terminal::Clear(terminal::ClearType::Purge));
     }
 
     pub fn has_history(&self) -> bool {
@@ -2429,7 +2392,9 @@ impl Screen {
     }
 
     pub fn draw_prompt(&mut self, state: &InputState, mode: protocol::Mode, width: usize) {
+        let mut frame = Frame::begin(&*self.backend);
         self.draw_frame(
+            &mut frame,
             width,
             Some(FramePrompt {
                 state,
@@ -2440,13 +2405,8 @@ impl Screen {
         );
     }
 
-    /// Unified rendering entry point. Renders pending blocks + active tool,
-    /// then either the prompt (`Some`) or nothing (`None` = dialog covers it).
-    /// Returns `true` when content-only mode drew something (caller should
-    /// re-dirty any overlay dialog so it repaints on top).
-    pub fn draw_frame(&mut self, width: usize, prompt: Option<FramePrompt>) -> bool {
-        let _perf = crate::perf::begin("draw_frame");
-
+    /// Update spinner animation state. Call before rendering.
+    pub fn update_spinner(&mut self) {
         if let Some(elapsed) = self.working.elapsed() {
             let frame = (elapsed.as_millis() / 150) as usize % SPINNER_FRAMES.len();
             if frame != self.working.last_spinner_frame {
@@ -2454,6 +2414,35 @@ impl Screen {
                 self.prompt.dirty = true;
             }
         }
+    }
+
+    /// Returns true when there is content or prompt work to render.
+    pub fn needs_draw(&self, is_dialog: bool) -> bool {
+        let has_new_blocks = self.history.has_unflushed();
+        if is_dialog {
+            has_new_blocks || (self.show_tool_in_dialog && self.prompt.dirty)
+        } else {
+            has_new_blocks || self.prompt.dirty
+        }
+    }
+
+    /// Unified rendering entry point. Renders pending blocks + active tool,
+    /// then either the prompt (`Some`) or nothing (`None` = dialog covers it).
+    ///
+    /// The caller owns the `Frame` (sync lifecycle). This method only queues
+    /// draw commands into the provided output buffer.
+    ///
+    /// Returns `true` when content-only mode drew something (caller should
+    /// re-dirty any overlay dialog so it repaints on top).
+    pub fn draw_frame(
+        &mut self,
+        out: &mut RenderOut,
+        width: usize,
+        prompt: Option<FramePrompt>,
+    ) -> bool {
+        let _perf = crate::perf::begin("draw_frame");
+
+        self.update_spinner();
 
         let has_new_blocks = self.history.has_unflushed();
         let is_dialog = prompt.is_none();
@@ -2468,24 +2457,11 @@ impl Screen {
             return false;
         }
 
-        let mut out = self.scroll_output();
-
         // ── Position cursor ─────────────────────────────────────────────
+        let _ = out.queue(cursor::Hide);
         let explicit_anchor = self.prompt.anchor_row.take();
         let draw_start_row = explicit_anchor.unwrap_or_else(|| self.cursor_y());
 
-        // In content-only mode the sync frame may already be open (from
-        // render_pending_blocks_for_dialog).  Only issue BeginSync when
-        // one hasn't been started yet.  The dialog that follows will
-        // close the frame with EndSync, so blocks + tool + dialog are
-        // painted as a single atomic update.
-        if !self.sync_started {
-            let _ = out.queue(terminal::BeginSynchronizedUpdate);
-        }
-        if is_dialog {
-            self.sync_started = true;
-        }
-        let _ = out.queue(cursor::Hide);
         // Reposition when the prompt was previously drawn (incremental
         // update) OR when an explicit anchor was set (e.g. after
         // redraw/clear/rewind where the cursor may not match the anchor).
@@ -2497,7 +2473,7 @@ impl Screen {
         }
 
         // ── Render blocks ───────────────────────────────────────────────
-        let block_rows = self.history.render(&mut out, width, self.show_thinking);
+        let block_rows = self.history.render(out, width, self.show_thinking);
 
         // ── Clear stale volatile area ────────────────────────────────────
         // When new blocks are committed (block_rows > 0), the overlay
@@ -2547,9 +2523,9 @@ impl Screen {
                     let (label, line_count) = thinking_summary(&combined);
                     let gap = self.thinking_summary_gap();
                     for _ in 0..gap {
-                        crlf(&mut out);
+                        crlf(out);
                     }
-                    let rows = render_thinking_summary(&mut out, width, &label, line_count, true);
+                    let rows = render_thinking_summary(out, width, &label, line_count, true);
                     streaming_rows += gap + rows;
                 }
             }
@@ -2606,9 +2582,9 @@ impl Screen {
                 )
             };
             for _ in 0..gap {
-                crlf(&mut out);
+                crlf(out);
             }
-            let rows = blocks::render_block(&mut out, block, width, self.show_thinking);
+            let rows = blocks::render_block(out, block, width, self.show_thinking);
             streaming_rows += gap + rows;
         }
 
@@ -2630,10 +2606,10 @@ impl Screen {
                     gap_between(&Element::ActiveTool, &Element::ActiveTool)
                 };
                 for _ in 0..tool_gap {
-                    crlf(&mut out);
+                    crlf(out);
                 }
                 let rows = render_tool(
-                    &mut out,
+                    out,
                     &tool.call_id,
                     &tool.name,
                     &tool.summary,
@@ -2659,13 +2635,13 @@ impl Screen {
                     0
                 };
                 for _ in 0..agent_gap {
-                    crlf(&mut out);
+                    crlf(out);
                 }
                 let elapsed = agent
                     .final_elapsed
                     .unwrap_or_else(|| agent.start_time.elapsed());
                 let rows = blocks::render_block(
-                    &mut out,
+                    out,
                     &Block::Agent {
                         agent_id: agent.agent_id.clone(),
                         slug: agent.slug.clone(),
@@ -2692,9 +2668,9 @@ impl Screen {
                     0
                 };
                 for _ in 0..exec_gap {
-                    crlf(&mut out);
+                    crlf(out);
                 }
-                let rows = blocks::render_active_exec(&mut out, exec, width);
+                let rows = blocks::render_active_exec(out, exec, width);
                 active_rows += exec_gap + rows;
             }
         }
@@ -2706,12 +2682,12 @@ impl Screen {
             // (never includes the gap), so we emit it unconditionally here.
             let gap: u16 = if self.has_content() { 1 } else { 0 };
             for _ in 0..gap {
-                crlf(&mut out);
+                crlf(out);
             }
 
             let pre_prompt = block_rows + streaming_rows + active_rows + gap;
             let (top_row, new_rows, scrolled) = self.draw_prompt_sections(
-                &mut out,
+                out,
                 p.state,
                 p.mode,
                 width,
@@ -2747,8 +2723,6 @@ impl Screen {
             self.prompt.dirty = false;
 
             let _ = out.queue(cursor::Show);
-            let _ = out.queue(terminal::EndSynchronizedUpdate);
-            let _ = out.flush();
             false
         } else {
             // ── Content-only mode (dialog inline) ───────────────────────
@@ -2786,9 +2760,6 @@ impl Screen {
             self.prompt.drawn = true;
             self.prompt.dirty = false;
 
-            // The BeginSync issued at the top of draw_frame stays open.
-            // The dialog's EndSync + flush closes it, so the terminal
-            // paints tool overlay + dialog as one atomic frame.
             content_rows > 0
         }
     }

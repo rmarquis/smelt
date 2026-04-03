@@ -6,7 +6,7 @@ use crate::keymap::{hints, nav_lookup, NavAction};
 use crate::render::highlight::{
     count_inline_diff_rows, print_inline_diff, print_syntax_file, BashHighlighter,
 };
-use crate::render::{crlf, draw_bar, ConfirmChoice, RenderOut, TerminalBackend};
+use crate::render::{crlf, draw_bar, ConfirmChoice, RenderOut};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::style::Print;
@@ -729,14 +729,12 @@ impl super::Dialog for ConfirmDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let mut out = backend.make_output();
-        let (width, height) = backend.size();
         self.term_size = (width, height);
         let w = width as usize;
 
@@ -748,13 +746,12 @@ impl super::Dialog for ConfirmDialog {
         self.preview_scroll = self.preview_scroll.min(max_scroll);
 
         let (bar_row, _) = begin_dialog_draw(
-            &mut out,
+            out,
             start_row,
             ly.total_rows,
             height,
             None,
             &mut self.anchor_row,
-            sync_started,
         );
 
         // Where the options section should begin in the current layout.
@@ -793,8 +790,8 @@ impl super::Dialog for ConfirmDialog {
             } else {
                 theme::accent()
             };
-            draw_bar(&mut out, w, None, None, title_color);
-            crlf(&mut out);
+            draw_bar(out, w, None, None, title_color);
+            crlf(out);
             row += 1;
 
             // Title
@@ -823,11 +820,11 @@ impl super::Dialog for ConfirmDialog {
                     let _ = out.queue(Print(" "));
                 }
                 if let Some(ref mut h) = bh {
-                    h.print_line(&mut out, seg);
+                    h.print_line(out, seg);
                 } else {
                     let _ = out.queue(Print(seg));
                 }
-                crlf(&mut out);
+                crlf(out);
                 row += 1;
             }
 
@@ -840,7 +837,7 @@ impl super::Dialog for ConfirmDialog {
                     out.push_fg(theme::muted());
                     let _ = out.queue(Print(seg));
                     out.pop_style();
-                    crlf(&mut out);
+                    crlf(out);
                     row += 1;
                 }
             }
@@ -852,11 +849,11 @@ impl super::Dialog for ConfirmDialog {
                     out.push_fg(theme::bar());
                     let _ = out.queue(Print(&separator));
                     out.pop_style();
-                    crlf(&mut out);
+                    crlf(out);
                     row += 1;
                 }
                 self.preview
-                    .render(&mut out, self.preview_scroll as u16, ly.viewport_rows, w);
+                    .render(out, self.preview_scroll as u16, ly.viewport_rows, w);
                 row += ly.viewport_rows;
                 // Bottom separator -- show scroll indicator when content is clipped
                 out.push_fg(theme::bar());
@@ -876,12 +873,12 @@ impl super::Dialog for ConfirmDialog {
                     let _ = out.queue(Print(&separator));
                     out.pop_style();
                 }
-                crlf(&mut out);
+                crlf(out);
                 row += 1;
             }
 
             if !ly.has_preview {
-                crlf(&mut out);
+                crlf(out);
                 row += 1;
             }
             // Action prompt
@@ -890,7 +887,7 @@ impl super::Dialog for ConfirmDialog {
             out.push_dim();
             let _ = out.queue(Print(prompt_text));
             out.pop_style();
-            crlf(&mut out);
+            crlf(out);
             row += 1;
         }
 
@@ -933,7 +930,7 @@ impl super::Dialog for ConfirmDialog {
                     let _ = out.queue(Print(line));
                 }
                 if li < lines.len() - 1 {
-                    crlf(&mut out);
+                    crlf(out);
                     row += 1;
                 }
             }
@@ -943,7 +940,7 @@ impl super::Dialog for ConfirmDialog {
                 let text_col = (prefix_cols + last_line_len + 2) as u16;
                 let wrap_w = (w as u16).saturating_sub(text_col) as usize;
                 let (new_row, cpos) = render_inline_textarea(
-                    &mut out,
+                    out,
                     &self.textarea,
                     self.editing,
                     text_col,
@@ -953,14 +950,14 @@ impl super::Dialog for ConfirmDialog {
                 row = new_row;
                 cursor_pos = cpos;
             } else {
-                crlf(&mut out);
+                crlf(out);
                 row += 1;
             }
         }
 
         // footer: blank line + hint
-        crlf(&mut out);
-        crlf(&mut out);
+        crlf(out);
+        crlf(out);
         out.push_dim();
         let hint = if self.editing {
             hints::join(&[hints::SEND, hints::CANCEL])
@@ -993,6 +990,6 @@ impl super::Dialog for ConfirmDialog {
             let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
         }
 
-        finish_dialog_frame(&mut out, cursor_pos, self.editing);
+        finish_dialog_frame(out, cursor_pos, self.editing);
     }
 }

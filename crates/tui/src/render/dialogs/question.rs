@@ -3,7 +3,7 @@ use super::{
     TextArea,
 };
 use crate::keymap::{hints, nav_lookup, NavAction};
-use crate::render::{crlf, draw_bar, TerminalBackend};
+use crate::render::{crlf, draw_bar, RenderOut};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::style::Print;
@@ -352,14 +352,12 @@ impl super::Dialog for QuestionDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let mut out = backend.make_output();
-        let (width, height) = backend.size();
         self.term_size = (width, height);
         let w = width as usize;
 
@@ -379,18 +377,17 @@ impl super::Dialog for QuestionDialog {
         let q = &self.questions[self.active_tab];
 
         let (bar_row, _) = begin_dialog_draw(
-            &mut out,
+            out,
             start_row,
             content_rows,
             height,
             None,
             &mut self.anchor_row,
-            sync_started,
         );
         let mut row = bar_row;
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
         row += 1;
 
         if self.has_tabs {
@@ -422,7 +419,7 @@ impl super::Dialog for QuestionDialog {
                     out.pop_style();
                 }
             }
-            crlf(&mut out);
+            crlf(out);
             row += 1;
         }
 
@@ -443,11 +440,11 @@ impl super::Dialog for QuestionDialog {
                 let _ = out.queue(Print(suffix));
                 out.pop_style();
             }
-            crlf(&mut out);
+            crlf(out);
             row += 1;
         }
 
-        crlf(&mut out);
+        crlf(out);
         row += 1;
 
         for (i, opt) in q.options.iter().enumerate() {
@@ -497,7 +494,7 @@ impl super::Dialog for QuestionDialog {
                     out.pop_style();
                 }
             }
-            crlf(&mut out);
+            crlf(out);
             row += 1;
         }
 
@@ -540,16 +537,16 @@ impl super::Dialog for QuestionDialog {
         let mut cursor_pos = None;
         if ta_visible {
             let (new_row, cpos) =
-                render_inline_textarea(&mut out, ta, editing, other_text_col, other_wrap_w, row);
+                render_inline_textarea(out, ta, editing, other_text_col, other_wrap_w, row);
             row = new_row;
             cursor_pos = cpos;
         } else {
-            crlf(&mut out);
+            crlf(out);
         }
         let _ = row;
 
         // Footer
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let hint = if editing {
             hints::join(&[hints::CANCEL, hints::CONFIRM])
@@ -567,6 +564,6 @@ impl super::Dialog for QuestionDialog {
             let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
         }
 
-        finish_dialog_frame(&mut out, cursor_pos, editing);
+        finish_dialog_frame(out, cursor_pos, editing);
     }
 }

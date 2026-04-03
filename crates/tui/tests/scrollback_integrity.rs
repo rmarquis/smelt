@@ -542,15 +542,16 @@ fn dialog_overlay_replaced_by_live_tool() {
     };
     let mut dialog = ConfirmDialog::new(&req, false);
     dialog.set_term_size(h.width, h.height);
-    h.screen.render_pending_blocks_for_dialog();
-    h.screen.erase_prompt_nosync();
+    h.screen.render_pending_blocks();
+    h.screen.erase_prompt();
     let fits = h.screen.tool_overlay_fits_with_dialog(dialog.height());
     h.screen.set_show_tool_in_dialog(fits);
-    h.screen.draw_frame(h.width as usize, None);
-    h.drain_sink();
-    let sync = h.screen.take_sync_started();
-    let dr = h.screen.dialog_row();
-    dialog.draw(dr, sync, h.screen.backend());
+    {
+        let mut frame = tui::render::Frame::begin(h.screen.backend());
+        h.screen.draw_frame(&mut frame, h.width as usize, None);
+        let dr = h.screen.dialog_row();
+        dialog.draw(&mut frame, dr, h.width, h.height);
+    }
     h.drain_sink();
     let da = dialog.anchor_row();
     h.screen.sync_dialog_anchor(da);
@@ -605,9 +606,11 @@ fn rewind_dialog_does_not_shift_prompt() {
 
     // Simulate the real app flow: erase_prompt → dialog draws → tick with dialog.
     h.screen.erase_prompt();
-    let sync = h.screen.take_sync_started();
-    let dr = h.screen.dialog_row();
-    dialog.draw(dr, sync, h.screen.backend());
+    {
+        let mut frame = tui::render::Frame::begin(h.screen.backend());
+        let dr = h.screen.dialog_row();
+        dialog.draw(&mut frame, dr, h.width, h.height);
+    }
     h.drain_sink();
 
     // Dismiss the dialog.

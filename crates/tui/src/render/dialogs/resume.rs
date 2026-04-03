@@ -6,7 +6,7 @@ use crossterm::style::Print;
 use crossterm::{terminal, QueueableCommand};
 use std::time::Instant;
 
-use super::{end_dialog_draw, truncate_str, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, truncate_str, DialogResult, ListState, RenderOut};
 
 pub struct ResumeDialog {
     entries: Vec<ResumeEntry>,
@@ -174,7 +174,7 @@ impl super::Dialog for ResumeDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         if !self.list.dirty {
             let freshest = self.filtered.iter().map(resume_ts).max().unwrap_or(0);
             let age_s = session::now_ms().saturating_sub(freshest) / 1000;
@@ -194,17 +194,17 @@ impl super::Dialog for ResumeDialog {
         }
         self.last_drawn = Instant::now();
 
-        let Some((mut out, w, _)) =
+        let Some((w, _)) =
             self.list
-                .begin_draw(start_row, self.filtered.len().max(1), sync_started, backend)
+                .begin_draw(out, start_row, self.filtered.len().max(1), width, height)
         else {
             return;
         };
 
         let now_ms = session::now_ms();
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
 
         out.push_dim();
         if self.workspace_only {
@@ -215,13 +215,13 @@ impl super::Dialog for ResumeDialog {
         out.pop_style();
         let _ = out.queue(Print(" "));
         let _ = out.queue(Print(&self.query));
-        crlf(&mut out);
+        crlf(out);
 
         if self.filtered.is_empty() {
             out.push_dim();
             let _ = out.queue(Print("  No matches"));
             out.pop_style();
-            crlf(&mut out);
+            crlf(out);
         } else {
             let range = self.list.visible_range(self.filtered.len());
             for (i, entry) in self
@@ -251,11 +251,11 @@ impl super::Dialog for ResumeDialog {
                 out.push_dim();
                 let _ = out.queue(Print(&time_ago));
                 out.pop_style();
-                crlf(&mut out);
+                crlf(out);
             }
         }
 
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let toggle = if self.workspace_only {
             "ctrl+w: all sessions"
@@ -269,7 +269,7 @@ impl super::Dialog for ResumeDialog {
             toggle,
         ])));
         out.pop_style();
-        end_dialog_draw(&mut out);
+        end_dialog_draw(out);
     }
 }
 

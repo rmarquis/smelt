@@ -81,15 +81,19 @@ fn fresh_render(blocks: &[Block], width: u16, height: u16) -> String {
     screen.render_pending_blocks();
 
     let input = tui::input::InputState::default();
-    screen.draw_frame(
-        width as usize,
-        Some(tui::render::FramePrompt {
-            state: &input,
-            mode: protocol::Mode::Normal,
-            queued: &[],
-            prediction: None,
-        }),
-    );
+    {
+        let mut frame = tui::render::Frame::begin(screen.backend());
+        screen.draw_frame(
+            &mut frame,
+            width as usize,
+            Some(tui::render::FramePrompt {
+                state: &input,
+                mode: protocol::Mode::Normal,
+                queued: &[],
+                prediction: None,
+            }),
+        );
+    }
 
     let bytes = sink.lock().unwrap().clone();
     let mut parser = vt100::Parser::new(height, width, 10_000);
@@ -188,15 +192,19 @@ impl TestHarness {
 
         // Draw a prompt frame so both sides end in the same state.
         let input = tui::input::InputState::default();
-        self.screen.draw_frame(
-            self.width as usize,
-            Some(tui::render::FramePrompt {
-                state: &input,
-                mode: protocol::Mode::Normal,
-                queued: &[],
-                prediction: None,
-            }),
-        );
+        {
+            let mut frame = tui::render::Frame::begin(self.screen.backend());
+            self.screen.draw_frame(
+                &mut frame,
+                self.width as usize,
+                Some(tui::render::FramePrompt {
+                    state: &input,
+                    mode: protocol::Mode::Normal,
+                    queued: &[],
+                    prediction: None,
+                }),
+            );
+        }
         self.drain_sink();
 
         let incremental = extract_full_content(&mut self.parser);
@@ -265,17 +273,19 @@ impl TestHarness {
         dialog.set_term_size(self.width, self.height);
 
         // Open dialog.
-        self.screen.render_pending_blocks_for_dialog();
-        self.screen.erase_prompt_nosync();
+        self.screen.render_pending_blocks();
+        self.screen.erase_prompt();
         let fits = self.screen.tool_overlay_fits_with_dialog(dialog.height());
         self.screen.set_show_tool_in_dialog(fits);
 
-        // Draw content-only frame (no prompt).
-        self.screen.draw_frame(self.width as usize, None);
-        self.drain_sink();
-        let sync = self.screen.take_sync_started();
-        let dr = self.screen.dialog_row();
-        dialog.draw(dr, sync, self.screen.backend());
+        // Draw content + dialog in a single frame.
+        {
+            let mut frame = tui::render::Frame::begin(self.screen.backend());
+            self.screen
+                .draw_frame(&mut frame, self.width as usize, None);
+            let dr = self.screen.dialog_row();
+            dialog.draw(&mut frame, dr, self.width, self.height);
+        }
         self.drain_sink();
         let da = dialog.anchor_row();
         self.screen.sync_dialog_anchor(da);
@@ -304,15 +314,19 @@ impl TestHarness {
         // (draw_frame with prompt) picks up the deferred render — this
         // mirrors the real event loop which calls tick() after every event.
         let input = tui::input::InputState::default();
-        self.screen.draw_frame(
-            self.width as usize,
-            Some(tui::render::FramePrompt {
-                state: &input,
-                mode: protocol::Mode::Normal,
-                queued: &[],
-                prediction: None,
-            }),
-        );
+        {
+            let mut frame = tui::render::Frame::begin(self.screen.backend());
+            self.screen.draw_frame(
+                &mut frame,
+                self.width as usize,
+                Some(tui::render::FramePrompt {
+                    state: &input,
+                    mode: protocol::Mode::Normal,
+                    queued: &[],
+                    prediction: None,
+                }),
+            );
+        }
         self.drain_sink();
     }
 
@@ -320,15 +334,19 @@ impl TestHarness {
     pub fn draw_prompt(&mut self) {
         self.actions.push("draw_prompt".into());
         let input = tui::input::InputState::default();
-        self.screen.draw_frame(
-            self.width as usize,
-            Some(tui::render::FramePrompt {
-                state: &input,
-                mode: protocol::Mode::Normal,
-                queued: &[],
-                prediction: None,
-            }),
-        );
+        {
+            let mut frame = tui::render::Frame::begin(self.screen.backend());
+            self.screen.draw_frame(
+                &mut frame,
+                self.width as usize,
+                Some(tui::render::FramePrompt {
+                    state: &input,
+                    mode: protocol::Mode::Normal,
+                    queued: &[],
+                    prediction: None,
+                }),
+            );
+        }
         self.drain_sink();
     }
 
@@ -348,15 +366,19 @@ impl TestHarness {
         for line in text.split_inclusive('\n') {
             self.screen.append_streaming_text(line);
             let input = tui::input::InputState::default();
-            self.screen.draw_frame(
-                self.width as usize,
-                Some(tui::render::FramePrompt {
-                    state: &input,
-                    mode: protocol::Mode::Normal,
-                    queued: &[],
-                    prediction: None,
-                }),
-            );
+            {
+                let mut frame = tui::render::Frame::begin(self.screen.backend());
+                self.screen.draw_frame(
+                    &mut frame,
+                    self.width as usize,
+                    Some(tui::render::FramePrompt {
+                        state: &input,
+                        mode: protocol::Mode::Normal,
+                        queued: &[],
+                        prediction: None,
+                    }),
+                );
+            }
             self.drain_sink();
         }
         self.screen.flush_streaming_text();

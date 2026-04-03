@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::{terminal, QueueableCommand};
 
-use super::{end_dialog_draw, truncate_str, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, truncate_str, DialogResult, ListState, RenderOut};
 
 pub struct RewindDialog {
     turns: Vec<(usize, String)>,
@@ -99,20 +99,19 @@ impl super::Dialog for RewindDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         let n = self.total_items();
-        let Some((mut out, w, _)) = self.list.begin_draw(start_row, n, sync_started, backend)
-        else {
+        let Some((w, _)) = self.list.begin_draw(out, start_row, n, width, height) else {
             return;
         };
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
 
         out.push_dim();
         let _ = out.queue(Print(" Rewind to:"));
         out.pop_style();
-        crlf(&mut out);
+        crlf(out);
 
         let num_width = n.to_string().len();
         let range = self.list.visible_range(n);
@@ -139,13 +138,13 @@ impl super::Dialog for RewindDialog {
                 let _ = out.queue(Print(" "));
                 let _ = out.queue(Print(&truncated));
             }
-            crlf(&mut out);
+            crlf(out);
         }
 
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let _ = out.queue(Print(&hints::join(&[hints::SELECT, hints::CANCEL])));
         out.pop_style();
-        end_dialog_draw(&mut out);
+        end_dialog_draw(out);
     }
 }

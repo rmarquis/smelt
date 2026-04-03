@@ -9,7 +9,7 @@ use crossterm::QueueableCommand;
 use engine::registry::{AgentStatus, RegistryEntry};
 use std::sync::{Arc, Mutex};
 
-use super::{end_dialog_draw, truncate_str, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, truncate_str, DialogResult, ListState, RenderOut};
 
 /// Snapshot of a tracked agent's state, passed to the dialog for rendering.
 #[derive(Clone)]
@@ -265,8 +265,8 @@ impl super::Dialog for AgentsDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
-        self.term_size = backend.size();
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
+        self.term_size = (width, height);
         match &self.view {
             View::Detail {
                 agent_id,
@@ -301,15 +301,15 @@ impl super::Dialog for AgentsDialog {
 
                 let visible = total.min(max_vis);
 
-                let Some((mut out, w, _)) =
-                    self.list
-                        .begin_draw(start_row, visible + 2, sync_started, backend)
+                let Some((w, _)) = self
+                    .list
+                    .begin_draw(out, start_row, visible + 2, width, height)
                 else {
                     return;
                 };
 
-                draw_bar(&mut out, w, None, None, crate::theme::AGENT);
-                crlf(&mut out);
+                draw_bar(out, w, None, None, crate::theme::AGENT);
+                crlf(out);
 
                 // Header: agent name + slug
                 let _ = out.queue(Print(" "));
@@ -337,8 +337,8 @@ impl super::Dialog for AgentsDialog {
                         out.pop_style();
                     }
                 }
-                crlf(&mut out);
-                crlf(&mut out);
+                crlf(out);
+                crlf(out);
 
                 // Content
                 for line in lines.iter().skip(scroll).take(visible) {
@@ -347,17 +347,17 @@ impl super::Dialog for AgentsDialog {
                             out.push_dim();
                             let _ = out.queue(Print(format!("  {text}")));
                             out.pop_style();
-                            crlf(&mut out);
+                            crlf(out);
                         }
                         DetailLine::Text(text) => {
                             let _ = out.queue(Print(format!(
                                 "   {}",
                                 truncate_str(text, w.saturating_sub(4))
                             )));
-                            crlf(&mut out);
+                            crlf(out);
                         }
                         DetailLine::Blank => {
-                            crlf(&mut out);
+                            crlf(out);
                         }
                         DetailLine::ToolCall(entry) => {
                             let _ = out.queue(Print("  "));
@@ -379,13 +379,13 @@ impl super::Dialog for AgentsDialog {
                                     out.pop_style();
                                 }
                             }
-                            crlf(&mut out);
+                            crlf(out);
                         }
                     }
                 }
 
                 // Hints
-                crlf(&mut out);
+                crlf(out);
                 out.push_dim();
                 let can_scroll = total > max_vis;
                 if can_scroll {
@@ -400,7 +400,7 @@ impl super::Dialog for AgentsDialog {
                     let _ = out.queue(Print(&hints::join(&[hints::BACK])));
                 }
                 out.pop_style();
-                end_dialog_draw(&mut out);
+                end_dialog_draw(out);
 
                 self.view = View::Detail {
                     agent_id,
@@ -415,28 +415,26 @@ impl super::Dialog for AgentsDialog {
                 }
                 self.agents = fresh;
 
-                let Some((mut out, w, _)) = self.list.begin_draw(
-                    start_row,
-                    self.agents.len().max(1),
-                    sync_started,
-                    backend,
-                ) else {
+                let Some((w, _)) =
+                    self.list
+                        .begin_draw(out, start_row, self.agents.len().max(1), width, height)
+                else {
                     return;
                 };
 
-                draw_bar(&mut out, w, None, None, crate::theme::AGENT);
-                crlf(&mut out);
+                draw_bar(out, w, None, None, crate::theme::AGENT);
+                crlf(out);
 
                 out.push_dim();
                 let _ = out.queue(Print(" Agents"));
                 out.pop_style();
-                crlf(&mut out);
+                crlf(out);
 
                 if self.agents.is_empty() {
                     out.push_dim();
                     let _ = out.queue(Print("  No subagents running"));
                     out.pop_style();
-                    crlf(&mut out);
+                    crlf(out);
                 } else {
                     let name_w = self
                         .agents
@@ -477,11 +475,11 @@ impl super::Dialog for AgentsDialog {
                             let max = w.saturating_sub(name_w + 12);
                             let _ = out.queue(Print(format!("  {}", truncate_str(slug, max))));
                         }
-                        crlf(&mut out);
+                        crlf(out);
                     }
                 }
 
-                crlf(&mut out);
+                crlf(out);
                 out.push_dim();
                 let _ = out.queue(Print(&hints::join(&[
                     "enter: view",
@@ -489,7 +487,7 @@ impl super::Dialog for AgentsDialog {
                     hints::CLOSE,
                 ])));
                 out.pop_style();
-                end_dialog_draw(&mut out);
+                end_dialog_draw(out);
             }
         }
     }

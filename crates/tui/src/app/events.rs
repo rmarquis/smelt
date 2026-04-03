@@ -807,21 +807,26 @@ impl App {
 
     // ── Tick ─────────────────────────────────────────────────────────────
 
-    /// Returns true if a dialog overlay needs to be re-dirtied (because
-    /// `draw_frame` cleared the area underneath it).
-    pub(super) fn tick(&mut self, agent_running: bool, has_dialog: bool) -> bool {
+    /// Render a dialog-mode frame into the provided output buffer.
+    /// Returns true if content was drawn (caller should re-dirty the dialog).
+    pub(super) fn tick_dialog(&mut self, out: &mut render::RenderOut) -> bool {
+        let _perf = crate::perf::begin("tick");
+        let w = render::term_width();
+        self.screen.set_dialog_open(true);
+        self.screen.draw_frame(out, w, None)
+    }
+
+    /// Render a full-mode frame (content + prompt) in its own sync frame.
+    pub(super) fn tick_prompt(&mut self, agent_running: bool) {
         let _perf = crate::perf::begin("tick");
         let w = render::term_width();
         let show_queued = agent_running || self.is_compacting();
-        self.screen.set_dialog_open(has_dialog);
-        let screen = &mut self.screen;
+        self.screen.set_dialog_open(false);
 
-        if has_dialog {
-            return screen.draw_frame(w, None);
-        }
-
+        let mut frame = render::Frame::begin(self.screen.backend());
         if show_queued {
-            screen.draw_frame(
+            self.screen.draw_frame(
+                &mut frame,
                 w,
                 Some(FramePrompt {
                     state: &self.input,
@@ -831,7 +836,8 @@ impl App {
                 }),
             );
         } else {
-            screen.draw_frame(
+            self.screen.draw_frame(
+                &mut frame,
                 w,
                 Some(FramePrompt {
                     state: &self.input,
@@ -841,6 +847,5 @@ impl App {
                 }),
             );
         }
-        false
     }
 }

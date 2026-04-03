@@ -688,7 +688,6 @@ fn print_tool_line(
     print_dim(out, &format!(" {} ", name));
 
     if name == "bash" {
-        // Pre-wrap all lines so we can count and cap them.
         let wrapped: Vec<String> = summary
             .lines()
             .flat_map(|line| wrap_line(line, ly.max_summary.max(1)))
@@ -731,8 +730,6 @@ fn print_tool_line(
 
     let truncated = truncate_str(summary, ly.max_summary);
     if matches!(name, "message_agent" | "stop_agent" | "peek_agent") {
-        // Agent tool summaries start with agent name(s), followed by
-        // optional text. Color only the leading agent name tokens.
         print_agent_summary(out, &truncated);
     } else {
         let _ = out.queue(Print(&truncated));

@@ -434,16 +434,16 @@ fn no_double_gap_when_overlay_hidden() {
     let mut dialog = tui::render::ConfirmDialog::new(&req, false);
     dialog.set_term_size(80, height);
 
-    h.screen.render_pending_blocks_for_dialog();
-    h.screen.erase_prompt_nosync();
+    h.screen.render_pending_blocks();
+    h.screen.erase_prompt();
     let fits = h.screen.tool_overlay_fits_with_dialog(dialog.height());
     h.screen.set_show_tool_in_dialog(fits);
-    h.screen.draw_frame(80, None);
-    h.drain_sink();
-
-    let sync = h.screen.take_sync_started();
-    let dr = h.screen.dialog_row();
-    dialog.draw(dr, sync, h.screen.backend());
+    {
+        let mut frame = tui::render::Frame::begin(h.screen.backend());
+        h.screen.draw_frame(&mut frame, 80, None);
+        let dr = h.screen.dialog_row();
+        dialog.draw(&mut frame, dr, 80, height);
+    }
     h.drain_sink();
     let da = dialog.anchor_row();
     h.screen.sync_dialog_anchor(da);

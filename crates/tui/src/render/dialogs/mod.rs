@@ -18,9 +18,8 @@ pub use rewind::RewindDialog;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::{cursor, style::Print, terminal, QueueableCommand};
-use std::io::Write;
 
-use super::{crlf, wrap_line, ConfirmChoice, RenderOut, TerminalBackend};
+use super::{crlf, wrap_line, ConfirmChoice, RenderOut};
 
 pub enum DialogResult {
     Dismissed,
@@ -56,7 +55,9 @@ pub trait Dialog {
     }
     fn height(&self) -> u16;
     fn mark_dirty(&mut self);
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend);
+    /// Render the dialog into the provided output buffer.
+    /// The caller owns the sync frame — this method only queues draw commands.
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16);
     fn handle_resize(&mut self);
     fn anchor_row(&self) -> Option<u16>;
     fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<DialogResult>;
@@ -187,28 +188,25 @@ impl ListState {
 
     pub fn begin_draw(
         &mut self,
+        out: &mut RenderOut,
         start_row: u16,
         item_count: usize,
-        sync_started: bool,
-        backend: &dyn TerminalBackend,
-    ) -> Option<(RenderOut, usize, u16)> {
+        width: u16,
+        height: u16,
+    ) -> Option<(usize, u16)> {
         if !self.dirty {
             return None;
         }
         self.dirty = false;
 
-        let mut out = backend.make_output();
-        let (width, height) = backend.size();
-
         let wanted_rows = (item_count as u16).saturating_add(self.overhead);
         let (bar_row, granted) = begin_dialog_draw(
-            &mut out,
+            out,
             start_row,
             wanted_rows,
             height,
             self.max_height,
             &mut self.anchor_row,
-            sync_started,
         );
         self.max_visible = (granted as usize)
             .saturating_sub(self.overhead as usize)
@@ -223,7 +221,7 @@ impl ListState {
                 .min(item_count.saturating_sub(self.max_visible));
         }
 
-        Some((out, width as usize, bar_row))
+        Some((width as usize, bar_row))
     }
 
     pub fn visible_range(&self, item_count: usize) -> std::ops::Range<usize> {
@@ -597,13 +595,8 @@ pub(crate) fn begin_dialog_draw(
     height: u16,
     max_rows: Option<u16>,
     anchor_row: &mut Option<u16>,
-    sync_started: bool,
 ) -> (u16, u16) {
-    if !sync_started {
-        let _ = out.queue(terminal::BeginSynchronizedUpdate);
-    }
     let _ = out.queue(cursor::Hide);
-
     // Reserve the last row for the status bar.
     let usable_height = height.saturating_sub(1);
 
@@ -636,8 +629,6 @@ pub(crate) fn begin_dialog_draw(
 
 pub(crate) fn end_dialog_draw(out: &mut RenderOut) {
     let _ = out.queue(terminal::Clear(terminal::ClearType::FromCursorDown));
-    let _ = out.queue(terminal::EndSynchronizedUpdate);
-    let _ = out.flush();
 }
 
 pub(crate) fn finish_dialog_frame(
@@ -651,8 +642,6 @@ pub(crate) fn finish_dialog_frame(
         }
         let _ = out.queue(cursor::Show);
     }
-    let _ = out.queue(terminal::EndSynchronizedUpdate);
-    let _ = out.flush();
 }
 
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {

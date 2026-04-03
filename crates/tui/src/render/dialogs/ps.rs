@@ -6,7 +6,7 @@ use crossterm::style::Print;
 use crossterm::{terminal, QueueableCommand};
 use engine::tools::ProcessInfo;
 
-use super::{end_dialog_draw, truncate_str, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, truncate_str, DialogResult, ListState, RenderOut};
 
 pub struct PsDialog {
     registry: engine::tools::ProcessRegistry,
@@ -91,34 +91,34 @@ impl super::Dialog for PsDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         let fresh = Self::fetch_procs(&self.registry, &self.killed);
         if fresh.len() != self.procs.len() {
             self.list.set_items(fresh.len().max(1));
         }
         self.procs = fresh;
 
-        let Some((mut out, w, _)) =
+        let Some((w, _)) =
             self.list
-                .begin_draw(start_row, self.procs.len().max(1), sync_started, backend)
+                .begin_draw(out, start_row, self.procs.len().max(1), width, height)
         else {
             return;
         };
         let now = std::time::Instant::now();
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
 
         out.push_dim();
         let _ = out.queue(Print(" Background Processes"));
         out.pop_style();
-        crlf(&mut out);
+        crlf(out);
 
         if self.procs.is_empty() {
             out.push_dim();
             let _ = out.queue(Print("  No processes"));
             out.pop_style();
-            crlf(&mut out);
+            crlf(out);
         } else {
             let range = self.list.visible_range(self.procs.len());
             for (i, proc) in self
@@ -146,14 +146,14 @@ impl super::Dialog for PsDialog {
                 out.push_dim();
                 let _ = out.queue(Print(format!("{time} {}", proc.id)));
                 out.pop_style();
-                crlf(&mut out);
+                crlf(out);
             }
         }
 
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let _ = out.queue(Print(&hints::join(&[hints::CLOSE, hints::KILL_PROC])));
         out.pop_style();
-        end_dialog_draw(&mut out);
+        end_dialog_draw(out);
     }
 }

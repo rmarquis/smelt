@@ -784,19 +784,9 @@ impl App {
 
             // ── Render ───────────────────────────────────────────────────
             let will_render = self.screen.is_dirty();
-            let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+            self.render_frame(agent.is_some(), &mut active_dialog);
             if will_render {
                 last_frame = Instant::now();
-            }
-            if let Some(d) = active_dialog.as_mut() {
-                if redirtied {
-                    d.mark_dirty();
-                }
-                let scr = &mut self.screen;
-                let sync = scr.take_sync_started();
-                d.draw(scr.dialog_row(), sync, scr.backend());
-                self.screen.sync_dialog_anchor(d.anchor_row());
-                self.screen.draw_dialog_status_line();
             }
 
             // ── Wait for next event ──────────────────────────────────────
@@ -822,16 +812,8 @@ impl App {
                     }
 
                     // Render immediately after terminal events for responsive typing.
-                    let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
-                    last_frame = Instant::now(); // Always update — terminal events trigger real renders
-                    if let Some(d) = active_dialog.as_mut() {
-                        if redirtied { d.mark_dirty(); }
-                        let scr = &mut self.screen;
-                        let sync = scr.take_sync_started();
-                        d.draw(scr.dialog_row(), sync, scr.backend());
-                        self.screen.sync_dialog_anchor(d.anchor_row());
-                        self.screen.draw_dialog_status_line();
-                    }
+                    self.render_frame(agent.is_some(), &mut active_dialog);
+                    last_frame = Instant::now();
                 }
 
                 Some(ev) = self.engine.recv(), if !active_dialog.as_ref().is_some_and(|d| d.blocks_agent()) => {
@@ -904,15 +886,8 @@ impl App {
                         self.screen.mark_dirty();
                     }
                     // Render deferred engine events + animations.
-                    let redirtied = self.tick(agent.is_some(), active_dialog.is_some());
+                    self.render_frame(agent.is_some(), &mut active_dialog);
                     last_frame = Instant::now();
-                    if let Some(d) = active_dialog.as_mut() {
-                        if redirtied { d.mark_dirty(); }
-                        let scr = &mut self.screen;
-                        let sync = scr.take_sync_started();
-                        d.draw(scr.dialog_row(), sync, scr.backend());
-                        self.screen.draw_dialog_status_line();
-                    }
                 }
             }
         }
@@ -1436,23 +1411,41 @@ impl App {
         engine::registry::update_status(my_pid, engine::registry::AgentStatus::Idle);
     }
 
+    /// Render a complete frame. When a dialog is active, content + dialog +
+    /// status line are all painted inside a single `Frame` (one atomic
+    /// synchronized update). Without a dialog, content + prompt are rendered
+    /// in their own frame.
+    fn render_frame(
+        &mut self,
+        agent_running: bool,
+        active_dialog: &mut Option<Box<dyn render::Dialog>>,
+    ) {
+        if let Some(d) = active_dialog.as_mut() {
+            let mut frame = render::Frame::begin(self.screen.backend());
+            let redirtied = self.tick_dialog(&mut frame);
+            if redirtied {
+                d.mark_dirty();
+            }
+            let (w, h) = self.screen.size();
+            let dialog_row = self.screen.dialog_row();
+            d.draw(&mut frame, dialog_row, w, h);
+            self.screen.sync_dialog_anchor(d.anchor_row());
+            self.screen.queue_status_line(&mut frame);
+        } else {
+            self.tick_prompt(agent_running);
+        }
+    }
+
     fn open_blocking_dialog(
         &mut self,
         mut dialog: Box<dyn render::Dialog>,
         active_dialog: &mut Option<Box<dyn render::Dialog>>,
     ) {
-        // Flush pending blocks (e.g. Thinking) to scroll mode so they
-        // persist in scrollback.  Leave the sync frame open so that the
-        // subsequent tool overlay + dialog draw is part of the same
-        // atomic terminal update — no flicker between block flush and
-        // dialog appearance.
+        // Flush pending blocks to scroll mode so they persist in scrollback.
         let scr = &mut self.screen;
-        scr.render_pending_blocks_for_dialog();
+        scr.render_pending_blocks();
         let fits = scr.tool_overlay_fits_with_dialog(dialog.height());
-        // Always clear the prompt section before drawing a blocking dialog.
-        // Keeping old prompt rows (including tab bar) around and relying on
-        // later overlay redraws can leave stale lines on some terminals.
-        scr.erase_prompt_nosync();
+        scr.erase_prompt();
         scr.set_show_tool_in_dialog(fits);
         // Share the kill ring so Ctrl+K/Y work across input ↔ dialog.
         dialog.set_kill_ring(self.input.take_kill_ring());

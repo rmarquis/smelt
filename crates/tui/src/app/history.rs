@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::render::TerminalBackend;
 use crossterm::{event, event::Event, event::KeyEvent, terminal};
 use std::collections::HashMap;
 
@@ -155,7 +156,11 @@ impl App {
         );
         terminal::enable_raw_mode().ok();
         loop {
-            dialog.draw(0, false, &render::StdioBackend);
+            {
+                let mut frame = render::Frame::begin(&render::StdioBackend);
+                let (w, h) = render::StdioBackend.size();
+                dialog.draw(&mut frame, 0, w, h);
+            }
             match event::read() {
                 Ok(Event::Key(KeyEvent {
                     code, modifiers, ..

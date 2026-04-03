@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::{terminal, QueueableCommand};
 
-use super::{end_dialog_draw, DialogResult, ListState, TerminalBackend};
+use super::{end_dialog_draw, DialogResult, ListState, RenderOut};
 
 pub struct HelpDialog {
     list: ListState,
@@ -90,7 +90,7 @@ impl super::Dialog for HelpDialog {
         }
     }
 
-    fn draw(&mut self, start_row: u16, sync_started: bool, backend: &dyn TerminalBackend) {
+    fn draw(&mut self, out: &mut RenderOut, start_row: u16, width: u16, height: u16) {
         let label_col = self
             .sections
             .iter()
@@ -111,9 +111,9 @@ impl super::Dialog for HelpDialog {
         }
         let total_content = content_lines.len();
 
-        let Some((mut out, w, _)) =
-            self.list
-                .begin_draw(start_row, total_content, sync_started, backend)
+        let Some((w, _)) = self
+            .list
+            .begin_draw(out, start_row, total_content, width, height)
         else {
             return;
         };
@@ -123,14 +123,14 @@ impl super::Dialog for HelpDialog {
         let max_scroll = total_content.saturating_sub(max_visible);
         self.list.scroll_offset = self.list.scroll_offset.min(max_scroll);
 
-        draw_bar(&mut out, w, None, None, theme::accent());
-        crlf(&mut out);
+        draw_bar(out, w, None, None, theme::accent());
+        crlf(out);
 
         out.push_dim();
         let _ = out.queue(Print(" help"));
         out.pop_style();
-        crlf(&mut out);
-        crlf(&mut out);
+        crlf(out);
+        crlf(out);
 
         for &(label, detail) in content_lines
             .iter()
@@ -138,7 +138,7 @@ impl super::Dialog for HelpDialog {
             .take(max_visible)
         {
             if label.is_empty() && detail.is_empty() {
-                crlf(&mut out);
+                crlf(out);
             } else {
                 let _ = out.queue(Print("  "));
                 out.push_fg(theme::muted());
@@ -149,11 +149,11 @@ impl super::Dialog for HelpDialog {
                 let _ = out.queue(Print(format!("{padding}{detail}")));
                 out.pop_style();
                 let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
-                crlf(&mut out);
+                crlf(out);
             }
         }
 
-        crlf(&mut out);
+        crlf(out);
         out.push_dim();
         let _ = out.queue(Print(&hints::join(&[
             hints::CLOSE,
@@ -163,6 +163,6 @@ impl super::Dialog for HelpDialog {
         out.pop_style();
         let _ = out.queue(terminal::Clear(terminal::ClearType::UntilNewLine));
 
-        end_dialog_draw(&mut out);
+        end_dialog_draw(out);
     }
 }
