@@ -495,11 +495,15 @@ impl App {
         });
     }
 
+    pub fn is_compacting(&self) -> bool {
+        self.screen.working_throbber() == Some(render::Throbber::Compacting)
+    }
+
     pub fn compact_history(&mut self, instructions: Option<String>) {
         self.pending_compact_epoch = self.compact_epoch;
         self.screen.set_throbber(render::Throbber::Compacting);
         self.engine.send(UiCommand::Compact {
-            keep_turns: 2,
+            keep_turns: 1,
             history: self.history.clone(),
             model: self.model.clone(),
             instructions,
@@ -507,29 +511,20 @@ impl App {
     }
 
     pub(super) fn apply_compaction(&mut self, messages: Vec<protocol::Message>) {
-        // The first message is the summary; the rest are kept turns already
-        // in history. Just append the summary as a regular history entry.
-        let Some(marker) = messages.into_iter().next() else {
+        if messages.is_empty() {
             self.screen.set_throbber(render::Throbber::Done);
             return;
-        };
-
-        let summary = marker
-            .content
-            .as_ref()
-            .map(|c| c.as_text())
-            .and_then(|t| t.strip_prefix("Summary of prior conversation:\n\n"))
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        self.snapshot_tokens();
-        self.history.push(marker);
-
-        if !summary.is_empty() {
-            self.screen.push(Block::Compacted { summary });
         }
 
+        // Replace history with the compacted messages (summary + kept turns).
+        // Old token/cost snapshots refer to positions in the pre-compaction
+        // history and are no longer valid.
+        self.history = messages;
+        self.token_snapshots.clear();
+        self.cost_snapshots.clear();
+        self.turn_metas.clear();
+
+        self.restore_screen();
         self.screen.clear_context_tokens();
         self.save_session();
         self.screen.set_throbber(render::Throbber::Done);

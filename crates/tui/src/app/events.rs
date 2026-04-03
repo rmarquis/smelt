@@ -186,7 +186,16 @@ impl App {
                 false
             }
             EventOutcome::Submit { content, display } => {
-                if self.try_btw_submit(&content, &display) {
+                // Queue messages while compaction is in progress so they
+                // are sent against the compacted history, not the old one.
+                if self.is_compacting() {
+                    let text = content.text_content();
+                    if !text.is_empty() {
+                        self.queued_messages.push(text);
+                        self.screen.erase_prompt();
+                        self.screen.mark_dirty();
+                    }
+                } else if self.try_btw_submit(&content, &display) {
                     // handled
                 } else {
                     let text = content.text_content();
@@ -767,13 +776,14 @@ impl App {
     pub(super) fn tick(&mut self, agent_running: bool, has_dialog: bool) -> bool {
         let _perf = crate::perf::begin("tick");
         let w = render::term_width();
+        let show_queued = agent_running || self.is_compacting();
         let screen = &mut self.screen;
 
         if has_dialog {
             return screen.draw_frame(w, None);
         }
 
-        if agent_running {
+        if show_queued {
             screen.draw_frame(
                 w,
                 Some(FramePrompt {

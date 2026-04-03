@@ -655,7 +655,7 @@ impl App {
             }
 
             // ── Auto-start from leftover queued messages ─────────────────
-            if agent.is_none() && !self.queued_messages.is_empty() {
+            if agent.is_none() && !self.queued_messages.is_empty() && !self.is_compacting() {
                 let items = std::mem::take(&mut self.queued_messages);
 
                 // Find the first custom command in the queue.
