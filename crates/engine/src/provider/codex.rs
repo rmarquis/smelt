@@ -48,11 +48,7 @@ impl CodexTokens {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
 
         file_save(&json)?;
-        if keyring_save(&json).is_ok() {
-            println!("  Credentials saved to keyring ({KEYRING_SERVICE})");
-        } else {
-            println!("  Credentials saved to {}", token_path().display());
-        }
+        let _ = keyring_save(&json);
         Ok(())
     }
 
