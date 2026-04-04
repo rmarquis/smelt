@@ -131,39 +131,23 @@ impl ListState {
     }
 
     pub fn select_prev(&mut self, item_count: usize) {
-        if item_count == 0 {
+        if item_count == 0 || self.selected == 0 {
             return;
         }
-        self.selected = if self.selected > 0 {
-            self.selected - 1
-        } else {
-            item_count - 1
-        };
+        self.selected -= 1;
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
-        }
-        // Wrap to bottom: scroll to show the last item.
-        if self.selected >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = self.selected + 1 - self.max_visible;
         }
         self.dirty = true;
     }
 
     pub fn select_next(&mut self, item_count: usize) {
-        if item_count == 0 {
+        if item_count == 0 || self.selected + 1 >= item_count {
             return;
         }
-        self.selected = if self.selected + 1 < item_count {
-            self.selected + 1
-        } else {
-            0
-        };
+        self.selected += 1;
         if self.selected >= self.scroll_offset + self.max_visible {
             self.scroll_offset = self.selected + 1 - self.max_visible;
-        }
-        // Wrap to top: reset scroll.
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
         }
         self.dirty = true;
     }

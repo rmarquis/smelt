@@ -154,7 +154,7 @@ impl WorkingState {
                 let idx = (elapsed.as_millis() / 150) as usize % SPINNER_FRAMES.len();
                 vec![
                     BarSpan {
-                        text: format!(" {} compacting", SPINNER_FRAMES[idx]),
+                        text: format!(" {} compacting ", SPINNER_FRAMES[idx]),
                         color: Color::Reset,
                         bg: None,
                         bold: true,
@@ -162,7 +162,7 @@ impl WorkingState {
                         priority: 0,
                     },
                     BarSpan {
-                        text: format!(" {}", format_duration(elapsed.as_secs())),
+                        text: format!(" {} ", format_duration(elapsed.as_secs())),
                         color: theme::muted(),
                         bg: None,
                         bold: false,
@@ -183,7 +183,7 @@ impl WorkingState {
                 };
                 let mut spans = vec![
                     BarSpan {
-                        text: format!(" {} working", SPINNER_FRAMES[idx]),
+                        text: format!(" {} working ", SPINNER_FRAMES[idx]),
                         color: spinner_color,
                         bg: None,
                         bold: true,
@@ -191,7 +191,7 @@ impl WorkingState {
                         priority: 0,
                     },
                     BarSpan {
-                        text: format!(" {}", format_duration(elapsed.as_secs())),
+                        text: format!(" {} ", format_duration(elapsed.as_secs())),
                         color: theme::muted(),
                         bg: None,
                         bold: false,
@@ -202,7 +202,7 @@ impl WorkingState {
                 if show_tps {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
-                            text: " · ".into(),
+                            text: "·".into(),
                             color: theme::muted(),
                             bg: None,
                             bold: false,
@@ -210,7 +210,7 @@ impl WorkingState {
                             priority: 3, // drop first
                         });
                         spans.push(BarSpan {
-                            text: format!("{:.1} tok/s", avg),
+                            text: format!(" {:.1} tok/s ", avg),
                             color: theme::muted(),
                             bg: None,
                             bold: false,
@@ -225,7 +225,7 @@ impl WorkingState {
                         .map(|t| t.saturating_duration_since(Instant::now()))
                         .unwrap_or(delay);
                     spans.push(BarSpan {
-                        text: format!(" (retrying in {}s #{})", remaining.as_secs(), attempt),
+                        text: format!(" (retrying in {}s #{}) ", remaining.as_secs(), attempt),
                         color: theme::muted(),
                         bg: None,
                         bold: false,
@@ -238,7 +238,7 @@ impl WorkingState {
             Throbber::Done => {
                 let secs = self.final_elapsed.map(|d| d.as_secs()).unwrap_or(0);
                 let mut spans = vec![BarSpan {
-                    text: format!(" done {}", format_duration(secs)),
+                    text: format!(" done {} ", format_duration(secs)),
                     color: theme::muted(),
                     bg: None,
                     bold: false,
@@ -248,7 +248,7 @@ impl WorkingState {
                 if show_tps {
                     if let Some(avg) = self.avg_tokens_per_sec() {
                         spans.push(BarSpan {
-                            text: " · ".into(),
+                            text: "·".into(),
                             color: theme::muted(),
                             bg: None,
                             bold: false,
@@ -256,7 +256,7 @@ impl WorkingState {
                             priority: 3,
                         });
                         spans.push(BarSpan {
-                            text: format!("{:.1} tok/s", avg),
+                            text: format!(" {:.1} tok/s ", avg),
                             color: theme::muted(),
                             bg: None,
                             bold: false,
@@ -269,7 +269,7 @@ impl WorkingState {
             }
             Throbber::Interrupted => {
                 vec![BarSpan {
-                    text: " interrupted".into(),
+                    text: " interrupted ".into(),
                     color: theme::muted(),
                     bg: None,
                     bold: false,
