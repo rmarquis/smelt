@@ -1,4 +1,4 @@
-use super::highlight::{build_inline_diff_cache, CachedInlineDiff};
+use super::highlight::{build_inline_diff_cache_ext, CachedInlineDiff};
 use engine::tools::NotebookRenderData;
 use protocol::{Message, TurnMeta};
 use serde::{Deserialize, Serialize};
@@ -119,9 +119,9 @@ pub fn build_tool_output_render_cache(
                 return None;
             }
             let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            Some(ToolOutputRenderCache::InlineDiff(build_inline_diff_cache(
-                old, new, path, new,
-            )))
+            Some(ToolOutputRenderCache::InlineDiff(
+                build_inline_diff_cache_ext(old, new, path, new, None),
+            ))
         }
         "notebook_edit" => {
             let meta = metadata?;
@@ -129,11 +129,12 @@ pub fn build_tool_output_render_cache(
             let diff = if data.edit_mode == "insert" {
                 None
             } else {
-                Some(build_inline_diff_cache(
+                Some(build_inline_diff_cache_ext(
                     &data.old_source,
                     &data.new_source,
                     &data.path,
                     &data.old_source,
+                    Some(data.syntax_ext()),
                 ))
             };
             Some(ToolOutputRenderCache::NotebookEdit(CachedNotebookEdit {

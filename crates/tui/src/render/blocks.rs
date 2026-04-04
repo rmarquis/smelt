@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::highlight::{
-    print_cached_inline_diff, print_inline_diff, print_syntax_file, render_code_block,
-    render_markdown_table, strip_markdown_markers, BashHighlighter,
+    print_cached_inline_diff, print_inline_diff, print_syntax_file, print_syntax_file_ext,
+    render_code_block, render_markdown_table, strip_markdown_markers, BashHighlighter,
 };
 use super::{
     crlf, truncate_str, wrap_line, ActiveExec, ApprovalScope, Block, ConfirmChoice, RenderOut,
@@ -906,7 +906,14 @@ fn render_notebook_output(out: &mut RenderOut, output: &ToolOutput, width: usize
     rows += 1;
 
     if data.edit_mode == "insert" {
-        rows += print_syntax_file(out, &data.new_source, &data.path, 0, 0);
+        rows += print_syntax_file_ext(
+            out,
+            &data.new_source,
+            &data.path,
+            Some(data.syntax_ext()),
+            0,
+            0,
+        );
     } else if let Some(crate::render::ToolOutputRenderCache::NotebookEdit(ref nb)) =
         output.render_cache
     {
