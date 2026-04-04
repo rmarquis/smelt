@@ -3824,19 +3824,20 @@ fn render_status_spans(
         if max_pri == 0 {
             break; // only priority-0 spans left, nothing more to drop
         }
-        // Find the last span at this priority (prefer dropping rightmost first).
-        let idx = spans.iter().rposition(|s| s.priority == max_pri).unwrap();
-
-        if spans[idx].truncatable {
+        // Try truncating first: find the last truncatable span at this priority.
+        let trunc_idx = spans
+            .iter()
+            .rposition(|s| s.priority == max_pri && s.truncatable);
+        if let Some(idx) = trunc_idx {
             let available =
                 width.saturating_sub(total_width(spans) - spans[idx].text.chars().count());
             if available >= 2 {
-                // Truncate: keep at least 1 char + "…"
                 spans[idx].text = truncate_str(&spans[idx].text, available);
                 continue;
             }
         }
-        spans.remove(idx);
+        // Drop ALL spans at this priority level at once (avoids orphaned separators).
+        spans.retain(|s| s.priority != max_pri);
     }
 
     // Render.
