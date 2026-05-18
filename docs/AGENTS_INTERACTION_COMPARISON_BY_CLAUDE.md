@@ -106,7 +106,7 @@ buffer to emit minimal ANSI output.
 | Concern | smelt | kimi-cli | claude-code |
 |---------|-------|----------|-------------|
 | **Rendering model** | Imperative double-buffer diff | Transient Live + committed history | React reconciler + screen buffer diff |
-| **Layout engine** | Custom word-wrap + linear layout | Rich's layout engine | Yoga flexbox |
+| **Layout engine** | Yoga-like flexbox (editor chrome + splits) + parallel linear projection (transcript) | Rich's layout engine | Yoga flexbox |
 | **Input framework** | crossterm EventStream | prompt-toolkit `PromptSession` | Custom Ink `useInput` + `useTextInput` |
 | **Markdown rendering** | Custom block renderer (syntect for code) | Rich markdown + syntax highlighting | Custom React components |
 | **Concurrent layout** | Yes — up to 8 Rayon-ish threads for blocks | No | No |
@@ -330,7 +330,7 @@ streaming, before the stream closes.
 | **Concurrency partitioning** | `ToolExecutionPlan`: concurrent / sequential | `asyncio.create_task()` for all, same-step dedup prevents double-execution | `StreamingToolExecutor`: concurrent-safe / exclusive |
 | **Concurrent execution** | `FuturesUnordered` (Tokio) | `asyncio.Task` with `Future` per call | `Promise` array, resolved in registration order |
 | **Sequential execution** | `run_sequential()` — dispatches one, awaits result | Not explicit; dedup prevents parallel calls of the same tool | Non-concurrent tools wait for all concurrent ones to finish |
-| **Result ordering** | Not guaranteed (futures unordered) | Futures keyed by `tool_call_id` | Results yielded in registration order (not completion order) |
+| **Result ordering** | Completion time non-deterministic; results keyed by `tool_call_id` and assembled in call order | Futures keyed by `tool_call_id` | Results yielded in registration order (not completion order) |
 
 ### Same-tool deduplication
 
@@ -403,7 +403,7 @@ in the TUI.
 |---------|-------|----------|-------------|
 | **Decision point** | Engine (before dispatch) | Tool call site (before `tool.__call__()`) | Tool execution (`runToolUse`, before `tool.call()`) |
 | **Blocking mechanism** | `EngineClient::recv()` returns `pending()` | `asyncio.Future` awaited in tool | `Promise` awaited in `canUseTool()` |
-| **Multi-consumer approval** | No (single TUI dialog) | Yes — `RootWireHub` broadcasts | No (single REPL dialog) |
+| **Multi-consumer approval** | No (single TUI dialog) | Architecturally yes — `RootWireHub` broadcasts to all consumers; in practice the typical deployment has a single active resolver | No (single REPL dialog) |
 | **Permission modes** | `Decision::Allow/Deny/Ask/Error` | `yolo`, `afk`, per-tool patterns, `ApprovalRuntime` | 7 modes: `default`, `acceptEdits`, `bypassPermissions`, `dontAsk`, `plan`, `auto`, `bubble` |
 | **Rule storage** | Lua `approval_patterns`, `decide` callback | Config + session state | `ToolPermissionRulesBySource` (user/project/local/flag/policy/cli/command/session) |
 | **Auto-approve** | Lua `decide` returning `Allow` | `yolo` flag / `afk` mode | `bypassPermissions` mode / YOLO classifier (ML, `auto` mode) |
@@ -559,12 +559,13 @@ to evaluate hooks on the IDE side.
 | **Subagent isolation** | N/A | Separate `KimiSoul` instance, separate Wire | Separate `query()` call, separate `agentId` |
 | **Permission delegation** | N/A | `SubagentEvent` on parent Wire | `'bubble'` permission mode → swarm coordinator |
 | **Swarm coordinator** | N/A | Not present | Yes — coordinator owns TUI + permission prompt; workers delegate via `handleSwarmWorkerPermission()` |
-| **Inter-agent messaging** | N/A | D-Mail / `DenwaRenji` (`SendDMail` tool) | Not present (coordinator/worker IPC via channel) |
+| **Inter-agent messaging** | N/A | `SendDMail` tool — passes structured messages to named agents across sessions | Not present (coordinator/worker IPC via channel) |
 | **Result summary** | N/A | Not detailed | `AgentSummary` service → `ToolUseSummaryMessage` |
-| **History rewind** | Undo ring in buffer | `BackToTheFuture` exception → `DenwaRenji` | `TombstoneMessage` / compaction boundary |
+| **History rewind** | Undo ring in buffer | `BackToTheFuture` exception — unwinds the asyncio call stack to a named checkpoint in conversation history | `TombstoneMessage` / compaction boundary |
 
-smelt has no subagent system — it is a single-agent editor. kimi-cli supports a D-Mail
-(inter-agent messaging) protocol where agents can pass structured messages across sessions.
+smelt has no subagent system — it is a single-agent editor. kimi-cli's primary subagent
+system is `LaborMarket` + `SubagentStore` + the `Agent` tool; D-Mail / `BackToTheFuture`
+is a separate, more experimental mechanism for inter-session IPC and history rewind.
 claude-code has the most complete swarm infrastructure with coordinator/worker permission
 delegation.
 
@@ -600,17 +601,20 @@ delegation.
 |---------|-------|----------|-------------|
 | **Extension language** | Lua (in-process, mlua) | Python (in-process, importlib DI) | TypeScript (in-process, `feature()` gates) |
 | **Tool registration** | `smelt.tools.register(name, execute, ...)` | `CallableTool2[T]` class, YAML agent spec | `buildTool(def)`, `getAllBaseTools()` |
-| **Command registration** | `smelt.cmd.register(name, ...)` | YAML `allowed_tools` / `exclude_tools` | Not present — slash commands are hardcoded |
+| **Command registration** | `smelt.cmd.register(name, ...)` | YAML `allowed_tools` / `exclude_tools` | Slash commands are hardcoded; **skills** injected into system prompt serve a similar discovery role |
 | **Keymap registration** | `smelt.keymap.set(mode, chord, fn)` | Not present | Not present |
 | **Theme registration** | `smelt.theme.set(...)` | `/theme` switch via `Reload` | Not present |
 | **Plugin discovery** | `~/.config/smelt/plugins/*.lua` | Plugin tools via YAML | `src/services/plugins/` |
 | **Agent spec** | Not present | YAML agent spec with `extend` inheritance | Not present (single agent, tools configured at runtime) |
+| **Skills system** | Lua skill section in system prompt | `KIMI_SKILLS` in Jinja2 system prompt template | Loaded at `init()`, bundled + custom; injected into system prompt — closest analogue to slash command extensibility |
 | **Feature flags** | Lua `smelt.feature(name)` | Python import guards | `feature('...')` via GrowthBook + `bun:bundle` dead-code elimination |
 
 smelt is the most extensible at the TUI layer — Lua can register keymaps, themes, commands,
 and custom dialogs. kimi-cli is the most extensible at the agent layer — YAML specs allow
 defining entirely different agents with different system prompts, tools, and subagents.
-claude-code's extensions are largely internal build-time gates.
+claude-code's primary user-facing extensibility mechanism is the **skills system** (loaded
+at init, injected into the system prompt); its slash commands and plugin API are largely
+internal build-time constructs.
 
 ---
 
@@ -692,12 +696,13 @@ all exist to make a large transcript render fast and a large file edit safely. T
 pattern isolates LLM I/O — the TUI render loop never stalls on network. Lua sits on top as a
 scripting layer, not as the core.
 
-### kimi-cli — *Flexibility and multi-frontend through protocol*
+### kimi-cli — *Flexibility through protocol and declarative configuration*
 
 The dominant concern is making the agent's behavior controllable and observable from multiple
-surfaces. The `Wire` SPMC channel is the linchpin: any number of UI consumers (shell, web,
+surfaces. The `Wire` SPMC channel is one linchpin: any number of UI consumers (shell, web,
 vis, IDE) can subscribe without the soul knowing about them. The YAML agent spec + `extend`
-inheritance enables defining entirely different agents without code changes. The `kosong`
+inheritance is the other: it enables defining entirely different agents — different system
+prompts, toolsets, and subagent hierarchies — without modifying Python code. The `kosong`
 provider abstraction makes switching LLM backends a config decision. The approval broadcast
 via `RootWireHub` means any connected client can gate a tool call.
 
@@ -710,3 +715,46 @@ The multi-strategy compaction pipeline (5 strategies, feature-flagged, with circ
 manages a very large context budget. `StreamingToolExecutor` starts concurrent-safe tools
 mid-stream to maximize throughput. The `feature()` + GrowthBook system enables controlled
 rollout of new capabilities to large user populations.
+
+---
+
+## 18. Cross-Cutting Theme: Mutability Architecture
+
+A theme that cuts across all seventeen sections above is each system's stance toward
+mutability. The language choice is not incidental — it reflects a deliberate philosophy
+that shapes rendering, concurrency, and the entire event transport model.
+
+| System | Mutability model | Why it follows from the language |
+|--------|-----------------|----------------------------------|
+| **smelt** | **Aggressively immutable** — content-addressed `BlockHistory`, append-only block store, pure `TranscriptProjection` | Rust's ownership model makes shared mutable state expensive; immutability is the path of least resistance. Immutable blocks can be safely shared across threads without locks, which is what enables the parallel layout workers. |
+| **kimi-cli** | **Mutable object-oriented** — `Context` mutated in-place, `KimiSoul` holds and grows `messages` across steps | Python's object model normalizes shared mutable state. The `Wire` side-channel exists precisely because the soul mutates state that UI consumers must *observe* — if the soul's state were immutable values, consumers could hold references directly. |
+| **claude-code** | **React-mutable** — Zustand store with immutable snapshots, `setState` triggers reconciler | JavaScript/React's model: state is replaced (not mutated), triggering a diff. The reconciler makes re-rendering the entire `REPL` on every stream delta cheap enough that no finer-grained invalidation is needed. |
+
+This spectrum explains several downstream choices that otherwise look arbitrary:
+
+- **Why smelt needs parallel layout workers** — immutable blocks have stable identity and
+  content, so their layout can be cached and recomputed on any thread without coordination.
+  A mutable block store would require locks or a copy-per-worker strategy.
+
+- **Why kimi-cli needs a broadcast queue** — the soul mutates conversation state that
+  multiple consumers (shell, web, vis, IDE) need to track. If the state were immutable and
+  passed by value, consumers could snapshot it directly; because it evolves in-place,
+  the `Wire` protocol must push deltas outward.
+
+- **Why claude-code re-renders `REPL` on every stream event** — React's reconciler
+  diffing makes this cheap enough to be the default. The reconciler handles granular
+  invalidation; the application code does not need to. In a mutable imperative system
+  (like smelt's compositor), re-running the full render pass on every text delta would
+  require the double-buffer diff to suppress unnecessary terminal writes.
+
+### Failure isolation follows the same spectrum
+
+| System | Failure model |
+|--------|--------------|
+| **smelt** | Rust `Result`/`Option` throughout; the engine actor runs in a separate Tokio task — a panic there does not stall the TUI render loop, which continues to process input and redraw |
+| **kimi-cli** | Python exceptions used as control flow: `Reload` resets session state, `BackToTheFuture` unwinds the agent stack, `QueueShutDown` tears down the Wire — exceptions are first-class state machine transitions |
+| **claude-code** | TypeScript Promise chains with recovery loops: `withRetry()` with up to 10 attempts, fallback model on persistent 529 errors, `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT` as a circuit breaker — failures are expected and budgeted for |
+
+The smelt model isolates failures by process boundary (actor). The kimi-cli model absorbs
+failures by catching and converting them to state transitions. The claude-code model
+retries failures with exponential backoff and graceful degradation.

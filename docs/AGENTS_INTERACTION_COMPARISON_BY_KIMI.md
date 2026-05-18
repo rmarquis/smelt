@@ -115,6 +115,7 @@ BlockHistory (immutable blocks + mutable ToolState sidecars)
 - **Parallel block layout:** Each block rendered independently on worker threads
 - **Immutable blocks + mutable sidecars:** Allows permanent per-block layout caches
 - **Double-buffered diff:** Only changed terminal cells emitted
+- **Synchronized update markers:** Each frame wrapped in `\x1b[?2026h/l` to prevent tearing during high-frequency diff flushes
 - **Plugin pre-rendering:** Lua tool render hooks run on main thread before parallel layout
 
 ### Kimi-CLI: Rich Live + Prompt-Toolkit ANSI Injection
@@ -167,7 +168,7 @@ React state update (setMessages)
 | **Message format** | Internal `Message` → provider-specific JSON | Kosong `Message` → provider-specific | Internal `Message` → Anthropic SDK `MessageParam` |
 | **Auth** | Bearer token, OAuth (Codex/Copilot), env vars | OAuth + env vars (`KIMI_API_KEY`, `OPENAI_API_KEY`) | OAuth, API key, AWS/GCP credentials, keychain |
 | **Cache control** | Not documented | Kimi `prompt_cache_key` | `cache_control: { type: 'ephemeral' }` (prompt caching) |
-| **Retry logic** | Basic (via reqwest) | `tenacity` library | Custom `withRetry()` — up to 10 retries, fallback model, auth refresh |
+| **Retry logic** | Cancellation token per chunk + provider-level retry | `tenacity` library | Custom `withRetry()` — up to 10 retries, fallback model, auth refresh |
 | **Streaming parser** | Custom SSE parser per provider | Kosong `StreamedMessagePart` with `merge_in_place()` | Raw Anthropic SSE stream, explicit event switch |
 | **Non-streaming fallback** | Not documented | Not documented | Yes — `executeNonStreamingRequest()` on empty stream |
 | **Stream watchdog** | Cancellation token per chunk | Not documented | 90s timeout (`CLAUDE_ENABLE_STREAM_WATCHDOG`) |
@@ -307,10 +308,10 @@ REPL.onSubmit()
 ```
 
 - **QueryEngine owns mutable message history** across turns
-- `query()` is a pure async generator — no side effects except yielding
+- `query()` is **externally stateless** (pure async generator yielding events) but **internally stateful** — it carries a mutable `State` struct across loop iterations (`maxOutputTokensRecoveryCount`, `hasAttemptedReactiveCompact`, etc.)
 - REPL mirrors QueryEngine state into React state for rendering
 
-**Key Difference:** Smelt's engine is a **long-running actor** that maintains state internally. Kimi-CLI's soul is a **stateful object** that delegates LLM interaction to Kosong. Claude Code's `query()` is a **stateless async generator** that operates on immutable parameters — state lives in `QueryEngine` which wraps it.
+**Key Difference:** Smelt's engine is a **long-running actor** that maintains state internally. Kimi-CLI's soul is a **stateful object** that delegates LLM interaction to Kosong. Claude Code's `query()` is **externally a stateless async generator** — state lives inside the generator's `State` struct and in `QueryEngine` which wraps it.
 
 ---
 
@@ -324,13 +325,15 @@ REPL.onSubmit()
 | **MCP integration** | `McpDispatcher` via `McpManager` | `fastmcp.Client` per server, `MCPTool` wrapper | `fastmcp` client, tool wrapping, official registry |
 | **Tool execution** | Lua coroutine (main thread) or Rust async | `asyncio` coroutine | Async function with abort signal |
 | **Concurrency** | `FuturesUnordered` (core tools) + sequential (Lua) | Kosong handles via `asyncio.Task` futures | Partitioned: concurrent (safe) + serial (destructive) |
-| **Deduplication** | Same-step dedup in engine; cross-step nag | Same-step + cross-step dedup in `KimiToolset` | Not documented in analysis |
+| **Deduplication** | Result dedup (`result_dedup.rs`) — avoids redundant tokens in history | Same-step + cross-step dedup in `KimiToolset` | Not documented in analysis |
 | **Hooks** | PreToolUse / PostToolUse via Lua middleware | `HookEngine` with `PreToolUse` / `PostToolUse` / `Stop` | Pre-tool hooks + post-tool hooks + stop hooks |
 | **Tool rendering** | Lua `render()` hook → `RenderedLayout` cached | `display` blocks (diff, shell, todo) in `ToolReturnValue` | `renderToolUseMessage()`, `renderToolResultMessage()` React components |
 | **Result budget** | Not documented | `ToolResultBuilder` (50K chars default) | `applyToolResultBudget()` |
 | **MCP output budget** | Not documented | 100K char budget, media dropped silently | Not documented |
 
 **Key Difference:** All three support MCP, but their **native tool models differ significantly**. Smelt is **Lua-first** — most built-in tools are Lua scripts that can be overridden by users. Kimi-CLI uses **Python classes with dependency injection**. Claude Code uses **TypeScript interfaces with React renderers** — tools can define how they appear in the UI.
+
+> **Note on deduplication:** Smelt's `result_dedup.rs` prevents redundant *tokens* in history when two tool calls produce identical output — it does not prevent redundant *executions*. Kimi-CLI's `KimiToolset` prevents both same-step execution dedup and cross-step re-execution with nag reminders.
 
 ---
 
@@ -345,7 +348,7 @@ REPL.onSubmit()
 | **Engine blocking** | `EngineClient::recv()` returns `pending()` during confirms | `ApprovalRuntime.wait_for_response()` blocks tool | `canUseTool()` async function awaited in tool execution |
 | **UI dialog** | Confirm overlay in TUI | `ApprovalRequestPanel` (Rich) + `ApprovalPromptDelegate` modal | Interactive permission queue in REPL |
 | **Auto-approve** | `yolo` mode | `yolo` / `afk` mode | `auto` mode with classifier + `acceptEdits` fast-path |
-| **Sandbox** | Not documented | `SandboxManager` | `SandboxManager` with unsandboxed command guards |
+| **Sandbox** | Not documented | Not documented | `SandboxManager` with unsandboxed command guards |
 
 **Key Difference:** Claude Code has the **most sophisticated permission system** with 7 modes, a YOLO classifier, denial tracking, and multi-consumer races. Kimi-CLI's `RootWireHub` is architecturally elegant — any consumer can resolve an approval. Smelt keeps permissions simpler, delegating decisions to Lua tool hooks and the `ToolDispatcher`.
 
@@ -426,7 +429,7 @@ useSetAppState()           // store.setState
 | **Tool registration** | `smelt.tools.register()` at runtime | `toolset.load_tools()` with dependency injection | `getTools()` + `assembleToolPool()` |
 | **Command registration** | `smelt.cmd.register()` at runtime | Slash command registries | Slash commands in `commands.ts` |
 | **Keymap registration** | `smelt.keymap.set()` at runtime | Not documented | Not documented |
-| **Theme customization** | `smelt.theme.use()` | `smelt.theme.set()` | Built-in themes + settings |
+| **Theme customization** | `smelt.theme.use()` | `/theme` slash command (Reload exception) | Built-in themes + settings |
 | **Agent specs** | Not documented | **YAML with inheritance** (`agentspec.py`) | `--agents` JSON flag |
 | **Skill system** | `smelt.skills` API | Skills discovered from dirs, formatted into system prompt | Skills loaded at init, bundled + custom |
 | **Plugin loading** | Lua autoload (`tools/`, `commands/`, `plugins/`) | `loadAllPluginsCacheOnly()`, versioned plugins | `initBuiltinPlugins()`, `initializeVersionedPlugins()` |
@@ -449,11 +452,13 @@ useSetAppState()           // store.setState
 | **Context file** | Not documented | `context.json` with system prompt + messages | Not documented |
 | **System prompt** | `AGENTS.md` + skill section + `--system-prompt` | Jinja2-rendered from `system.md` + `AGENTS.md` | `fetchSystemPromptParts()` + `CLAUDE.md` |
 | **Context sources** | `AGENTS.md` (merged root→leaf) | `AGENTS.md`, skills, work dir listing, OS, shell | Git status, `CLAUDE.md`, current date, system context |
-| **Compaction** | Engine auto-compact + manual `/compact` | Auto-compact + `max_steps_per_turn` | Auto-compact, micro-compact, snip, compact boundaries |
-| **Token tracking** | `token_snapshots`, `cost_snapshots` | `StatusUpdate` with `context_usage` | `checkTokenBudget()`, +500k auto-continue |
+| **Compaction** | Auto-compact on context threshold (`maybe_compact()`) + manual `/compact` | Auto-compact + `max_steps_per_turn` | Auto-compact, micro-compact, snip, compact boundaries |
+| **Token tracking** | `token_snapshots`, `cost_snapshots` | `StatusUpdate` with `context_usage` | `calculateTokenWarningState()` + `checkTokenBudget()` (+500k auto-continue); `task_budget` tracks server-side context cost across compaction boundaries |
 | **Background tasks** | Not documented | `BackgroundTaskManager` with `TaskList`/`TaskOutput`/`TaskStop` tools | Not documented in analysis |
 
-**Key Difference:** All three read `AGENTS.md` for project-specific instructions. Claude Code has the ** richest context sources** (git status, branch info, commit history). Kimi-CLI's **YAML agent specs with inheritance** are unique. Smelt's session storage is the **most explicitly structured** (separate meta, content, and blob files).
+**Key Difference:** All three read `AGENTS.md` for project-specific instructions. Claude Code has the **richest context sources** (git status, branch info, commit history). Kimi-CLI's **YAML agent specs with inheritance** are unique. Smelt's session storage is the **most explicitly structured** (separate meta, content, and blob files).
+
+> **Claude Code invariant:** When `querySource = 'compact'`, the query loop skips the blocking-limit check. This is a **correctness invariant**, not a performance optimisation — if the compaction agent were blocked by the same token limit it is trying to fix, it would deadlock.
 
 ---
 
@@ -522,7 +527,7 @@ useSetAppState()           // store.setState
 | **Cross-provider portability** | Smelt / Kimi-CLI | Both abstract across OpenAI, Anthropic, Gemini, etc. |
 | **Enterprise deployment** | Claude Code | Policy limits, remote managed settings, bridge mode, daemon |
 | **Minimal dependencies / small binary** | Smelt | Rust binary with no runtime dependencies |
-| **Team collaboration features** | Kimi-CLI | Subagent spawning, background tasks, dmail (inter-agent messaging) |
+| **Team collaboration features** | Kimi-CLI | Subagent spawning, background tasks, D-Mail (inter-agent messaging); `BackToTheFuture` exception enables history rewind to named checkpoints |
 
 ---
 
