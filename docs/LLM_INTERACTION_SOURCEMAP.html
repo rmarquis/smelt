@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smelt LLM Interaction Sourcemap</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --fg: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #a371f7;
+    --rust: #f74c00;
+    --lua: #000080;
+    --border: #30363d;
+    --card: #161b22;
+    --code-bg: #1e2530;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --error: #f85149;
+    --tool: #58a6ff;
+    --llm: #a371f7;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.6;
+  }
+  a { color: var(--accent); }
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(13,17,23,0.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border); padding: 1rem 2rem;
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.2rem; }
+  header .badge {
+    font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--border); color: var(--muted);
+  }
+  .legend { margin-left: auto; display: flex; gap: 0.8rem; font-size: 0.8rem; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.rust { background: var(--rust); }
+  .dot.lua { background: var(--lua); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+  h2 { margin-top: 2.5rem; font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+  h3 { margin-top: 1.8rem; font-size: 1.1rem; color: var(--accent); }
+  h4 { margin-top: 1.2rem; font-size: 0.95rem; color: var(--accent2); }
+
+  .phase {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    margin: 1rem 0; overflow: hidden;
+  }
+  .phase-header {
+    padding: 1rem 1.2rem; cursor: pointer; display: flex; align-items: center; gap: 0.8rem;
+    background: linear-gradient(90deg, rgba(88,166,255,0.08), transparent);
+    transition: background 0.2s;
+  }
+  .phase-header:hover { background: linear-gradient(90deg, rgba(88,166,255,0.15), transparent); }
+  .phase-header .num {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent); color: #fff; display: grid; place-items: center;
+    font-weight: 700; font-size: 0.85rem; flex-shrink: 0;
+  }
+  .phase-header h3 { margin: 0; font-size: 1rem; color: inherit; }
+  .phase-header .lang { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+  .phase-body { padding: 0 1.2rem 1.2rem; display: none; }
+  .phase.open .phase-body { display: block; }
+  .phase.open .chevron { transform: rotate(180deg); }
+  .chevron { transition: transform 0.2s; font-size: 0.8rem; color: var(--muted); }
+
+  .flow {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 1rem 0; padding: 1rem;
+    background: var(--code-bg); border-radius: 8px; border: 1px dashed var(--border);
+  }
+  .flow-box {
+    padding: 0.5rem 0.8rem; border-radius: 6px; background: var(--card); border: 1px solid var(--border);
+    font-size: 0.85rem; white-space: nowrap;
+  }
+  .flow-box.rust { border-left: 3px solid var(--rust); }
+  .flow-box.lua { border-left: 3px solid var(--lua); }
+  .flow-box.llm { border-left: 3px solid var(--llm); background: rgba(163,113,247,0.08); }
+  .flow-arrow { color: var(--muted); font-size: 1.2rem; }
+
+  .tag {
+    display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 4px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-right: 0.4rem;
+  }
+  .tag.rust { background: rgba(247,76,0,0.15); color: #ff7b47; }
+  .tag.lua { background: rgba(0,0,128,0.25); color: #8888ff; }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+  }
+  code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+  .json-key { color: #7ee787; }
+  .json-string { color: #a5d6ff; }
+  .json-number { color: #79c0ff; }
+  .json-bool { color: #ff7b72; }
+
+  table {
+    width: 100%; border-collapse: collapse; margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th, td { padding: 0.55rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: rgba(88,166,255,0.06); font-weight: 600; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .mermaid {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; margin: 1rem 0; overflow-x: auto;
+  }
+
+  .interactive-toggle {
+    display: inline-flex; gap: 0.5rem; margin: 0.5rem 0;
+  }
+  .interactive-toggle button {
+    background: var(--card); color: var(--fg); border: 1px solid var(--border);
+    padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+  }
+  .interactive-toggle button.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+
+  .tool-viz {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.8rem; margin: 1rem 0;
+  }
+  .tool-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem; font-size: 0.85rem;
+  }
+  .tool-card .name { font-weight: 700; color: var(--accent); margin-bottom: 0.3rem; }
+  .tool-card .meta { color: var(--muted); font-size: 0.75rem; }
+  .tool-card.hidden { opacity: 0.4; border-style: dashed; }
+
+  .note {
+    border-left: 3px solid var(--warn); background: rgba(210,153,34,0.08);
+    padding: 0.8rem 1rem; border-radius: 0 6px 6px 0; margin: 1rem 0; font-size: 0.9rem;
+  }
+  .note.ok { border-left-color: var(--ok); background: rgba(63,185,80,0.08); }
+
+  .sticky-nav {
+    position: fixed; right: 1.5rem; top: 5rem; width: 180px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem; font-size: 0.8rem; max-height: calc(100vh - 7rem); overflow-y: auto;
+    display: none;
+  }
+  .sticky-nav a { display: block; padding: 0.25rem 0; color: var(--muted); text-decoration: none; }
+  .sticky-nav a:hover { color: var(--accent); }
+  @media (min-width: 1400px) { .sticky-nav { display: block; } }
+
+  footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔥 Smelt LLM Interaction Sourcemap</h1>
+  <span class="badge">Exhaustive</span>
+  <span class="badge">Interactive</span>
+  <div class="legend">
+    <span><span class="dot rust"></span> Rust</span>
+    <span><span class="dot lua"></span> Lua</span>
+  </div>
+</header>
+
+<nav class="sticky-nav">
+  <strong>Sections</strong>
+  <a href="#overview">Overview</a>
+  <a href="#phase1">Phase 1 — Input</a>
+  <a href="#phase2">Phase 2 — Assembly</a>
+  <a href="#phase3">Phase 3 — Engine Turn</a>
+  <a href="#compaction">Compaction</a>
+  <a href="#tools">Tool Execution</a>
+  <a href="#events">Event Stream</a>
+  <a href="#rendering">Rendering</a>
+  <a href="#prompts">What LLM Sees</a>
+  <a href="#inventory">Tool Inventory</a>
+</nav>
+
+<main>
+
+<h2 id="overview">Overview</h2>
+<p>A single user turn in Smelt is a <strong>stateful loop</strong> that can involve multiple LLM calls, tool executions (concurrent and sequential), permission dialogs, mid-turn user steering, history compaction, and automatic retries.</p>
+
+<div class="flow">
+  <div class="flow-box rust">User Input<br><small>TUI / Rust</small></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-box rust">TUI Assembly<br><small>Prompt + Tools</small></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-box rust">Engine Turn<br><small>Loop + Tools</small></div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-box llm">LLM API</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-box rust">Event Stream</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-box rust">Transcript Render</div>
+</div>
+
+<div class="note ok">
+  <strong>Key insight:</strong> The turn loop repeats until the LLM responds with <strong>no tool calls</strong>. Each iteration re-sends the full conversation history plus all prior tool results.
+</div>
+
+<!-- PHASE 1 -->
+<div class="phase open" id="phase1">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">1</div>
+    <h3>User Input Capture</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/tui/src/input/mod.rs</code> → <code>crates/tui/src/app/events.rs</code></p>
+
+    <h4>Input Pipeline</h4>
+    <ol>
+      <li><strong>Keystrokes</strong> go through <code>PromptState::handle_event</code>.</li>
+      <li>The prompt buffer uses a custom <code>PromptBufferParser</code> that wraps lines, highlights attachments (<code>[img.png]</code>) and <code>@refs</code> in blue, and highlights command prefixes (<code>/model</code>) and exec bangs (<code>!cmd</code>).</li>
+      <li><strong>Attachments</strong> are stored as <code>\u{FFFC}</code> (object replacement character) in the raw source; the parser expands them to display labels.</li>
+    </ol>
+
+    <h4>Submit Action</h4>
+    <p>When the user presses <code>Enter</code>, <code>PromptState::build_content</code> expands the raw buffer:</p>
+    <ul>
+      <li><strong>Text</strong>: attachment markers are expanded to their textual representation.</li>
+      <li><strong>Images</strong>: deduplicated; each image becomes a <code>ContentPart::ImageUrl { url: data_url, label }</code>.</li>
+      <li>The result is a <code>protocol::Content</code> enum (<code>Text</code> or <code>Parts</code>).</li>
+    </ul>
+
+    <h4>Command Routing</h4>
+    <p><code>process_input</code> checks:</p>
+    <ol>
+      <li><strong>Slash commands</strong> (<code>/model</code>, <code>/clear</code>, etc.) — dispatched via <code>crate::commands::run_command</code>.</li>
+      <li><strong>Exec bangs</strong> (<code>!cmd</code>) — spawn a shell process, <strong>skip the agent entirely</strong>.</li>
+      <li><strong>Normal text</strong> — fires the <code>input_submit</code> Lua cell, returns <code>InputOutcome::StartAgent</code>.</li>
+    </ol>
+
+    <div class="note">
+      <strong>Queuing behavior:</strong> If a turn is already in flight, new submissions are queued in <code>self.queued_messages</code> instead of starting a new turn immediately. After the current turn ends, the queue is drained one message at a time.
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 2 -->
+<div class="phase open" id="phase2">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">2</div>
+    <h3>TUI Assembly — Prompts, Tools &amp; Mode</h3>
+    <span class="lang">🦀 Rust + 🌙 Lua</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/tui/src/app/agent.rs</code>, <code>crates/tui/src/prompt_sections.rs</code><br>
+       <span class="tag lua">Lua</span> <code>runtime/lua/smelt/plugins/plan_mode.lua</code></p>
+
+    <h4>System Prompt Construction</h4>
+    <p>The system prompt is <strong>not a single string</strong>. It is an ordered map of named sections (<code>PromptSections</code>) that Lua plugins can mutate.</p>
+
+    <table>
+      <thead><tr><th>Section</th><th>Source</th><th>Condition</th></tr></thead>
+      <tbody>
+        <tr><td><code>base</code></td><td>Hard-coded base prompt (tools, code style, approach)</td><td>Always</td></tr>
+        <tr><td><code>behavior</code></td><td><code>interactive_behavior()</code> or <code>autonomous_behavior()</code></td><td>Always</td></tr>
+        <tr><td><code>write_access</code></td><td>Write-access reminder</td><td><code>Apply</code> or <code>Yolo</code> mode</td></tr>
+        <tr><td><code>skills</code></td><td>Plugin-provided skill text</td><td>If non-empty</td></tr>
+        <tr><td><code>instructions</code></td><td>Extra user instructions</td><td>If non-empty</td></tr>
+      </tbody>
+    </table>
+
+    <p>Assembly: sections are concatenated with double newlines via <code>PromptSections::assemble()</code>.</p>
+
+    <h4>Lua Prompt Mutation</h4>
+    <p>Lua plugins can modify sections at runtime:</p>
+    <ul>
+      <li><code>smelt.prompt.set_section(name, content)</code> — insert/replace a section.</li>
+      <li><code>smelt.prompt.remove_section(name)</code> — remove a section.</li>
+    </ul>
+
+    <h4>Plan Mode Example (Lua)</h4>
+    <p><span class="tag lua">Lua</span> <code>runtime/lua/smelt/plugins/plan_mode.lua</code></p>
+    <pre><code>-- On agent_mode == "plan", injects a strict read-only section
+smelt.prompt.set_section("plan_mode", PLAN_PROMPT)
+
+-- Registers the exit_plan_mode tool (mode-gated to "plan" only)
+smelt.tools.register({ name = "exit_plan_mode", modes = { "plan" }, ... })
+
+-- On mode change, removes section and unregisters tool
+smelt.prompt.remove_section("plan_mode")
+smelt.tools.unregister("exit_plan_mode")</code></pre>
+
+    <h4>Built-in System Prompt Template</h4>
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/prompts/system.txt</code> rendered via MiniJinja in <code>crates/engine/src/lib.rs</code></p>
+    <p>Key behavioral rules injected:</p>
+    <ul>
+      <li>"Use dedicated tools over bash"</li>
+      <li>"Always read a file with read_file before editing it"</li>
+      <li>"Always use edit_file for modifying existing files"</li>
+      <li>"Call multiple tools in parallel when there are no dependencies"</li>
+      <li>"Never create files unless absolutely necessary"</li>
+    </ul>
+
+    <h4>Tool Collection</h4>
+    <p>Tools are gathered from <strong>two sources</strong> and sent to the engine in <code>StartTurnPayload.tools: Vec&lt;ToolDef&gt;</code>:</p>
+    <ol>
+      <li><strong>Core/MCP tools</strong> — provided by the engine's <code>ToolDispatcher</code>.</li>
+      <li><strong>Lua plugin tools</strong> — registered via <code>smelt.tools.register(...)</code>.</li>
+    </ol>
+  </div>
+</div>
+
+<!-- PHASE 3 -->
+<div class="phase open" id="phase3">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">3</div>
+    <h3>Engine Turn — The LLM Loop</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/agent.rs</code></p>
+
+    <h4>Turn Initialization</h4>
+    <p><code>engine_task</code> listens on <code>cmd_rx: mpsc::UnboundedReceiver&lt;UiCommand&gt;</code>. On <code>StartTurn(payload)</code>:</p>
+    <ol>
+      <li><strong>Build Provider</strong> with per-turn API overrides (<code>api_base</code>, <code>api_key</code>, <code>model_config_overrides</code>).</li>
+      <li><strong>Resolve system prompt</strong> in priority order:
+        <ul>
+          <li>TUI-provided <code>system_prompt</code></li>
+          <li>Engine config override (<code>config.system_prompt_override</code>)</li>
+          <li>Built-in template (<code>build_system_prompt_full(mode, cwd, instructions, skill_section)</code>)</li>
+        </ul>
+      </li>
+      <li><strong>Construct <code>Turn</code></strong> struct holding provider, dispatcher, channels, config, cancel token, messages, mode, reasoning_effort, model, system_prompt, and Lua-registered tools.</li>
+      <li>Call <code>turn.run(input_content, history).await</code>.</li>
+    </ol>
+
+    <h4>The Turn Loop (<code>Turn::run</code>)</h4>
+    <pre><code>loop {
+    if !first { self.drain_commands(); }
+    self.regenerate_system_prompt();
+
+    // Recompute tool definitions each iteration — mode may have changed
+    let tool_defs: Vec&lt;ToolDefinition&gt; = if self.provider.tool_calling() { ... } else { Vec::new() };
+
+    let (result, partial_text, partial_reasoning) = self.call_llm(&amp;tool_defs).await;
+    // ... handle response, execute tools, loop back if tools were called
+}</code></pre>
+
+    <div class="note ok">
+      <strong>Loop invariant:</strong> Each iteration sends the current <code>self.messages</code> (system + history + user input + all prior assistant/tool exchanges) plus the current tool definitions to the LLM.
+    </div>
+
+    <h4>Tool Definition Assembly (Per-Iteration)</h4>
+    <p>Tool definitions are rebuilt <strong>every loop iteration</strong> because the mode may have changed mid-turn:</p>
+    <pre><code>let tool_defs: Vec&lt;ToolDefinition&gt; = if self.provider.tool_calling() {
+    let mut defs = self.dispatcher.definitions()
+        .into_iter()
+        .filter(|d| self.dispatcher.is_visible(d.function.name.as_str(), self.mode))
+        .collect();
+
+    // Plugin tools with override_core shadow core tools
+    let overridden = self.tools.iter().filter(|pt| pt.override_core).map(|pt| pt.name.as_str()).collect();
+    defs.retain(|d| !overridden.contains(d.function.name.as_str()));
+
+    // Append Lua-registered tools filtered by mode
+    for pt in &amp;self.tools {
+        if let Some(ref modes) = pt.modes {
+            if !modes.contains(&amp;self.mode) { continue; }
+        }
+        defs.push(ToolDefinition::new(FunctionSchema { name, description, parameters }));
+    }
+    defs
+} else {
+    Vec::new()
+};</code></pre>
+
+    <div class="note">
+      <strong>NOT all tools are always presented.</strong> Tools are filtered by:
+      <ul>
+        <li><code>provider.tool_calling()</code> — if false, no tools are sent.</li>
+        <li><code>dispatcher.is_visible(name, mode)</code> — core tools can be hidden per mode.</li>
+        <li><code>pt.modes</code> — Lua tools can restrict themselves to specific modes.</li>
+        <li><code>pt.override_core</code> — Lua tools can shadow core tools of the same name.</li>
+      </ul>
+    </div>
+
+    <h4>Calling the LLM (<code>call_llm</code>)</h4>
+    <p><code>call_llm</code> is a <code>tokio::select!</code> loop:</p>
+    <ol>
+      <li>Spawns <code>provider.chat(&amp;self.messages, tool_defs, &amp;self.model, self.reasoning_effort, &amp;opts)</code>.</li>
+      <li>Streams deltas back to the TUI via <code>EngineEvent::TextDelta</code> / <code>ThinkingDelta</code>.</li>
+      <li>Handles mid-flight UI commands:
+        <ul>
+          <li><code>Cancel</code> → sets cancel token, lets the future finish.</li>
+          <li><code>SetAgentMode</code> → updates mode/system prompt/tool list for next iteration.</li>
+          <li><code>SetReasoningEffort</code> → updates effort for next iteration.</li>
+          <li><code>SetModel</code> → deferred until after the request completes.</li>
+          <li><code>Steer { text }</code> / <code>Unsteer { count }</code> → deferred until after the request, then injected into history.</li>
+        </ul>
+      </li>
+    </ol>
+
+    <div class="note ok">
+      <strong>Steer mechanism:</strong> <code>Steer</code> injects a new user message into <code>self.messages</code> mid-turn. If a <code>Steer</code> arrived during the LLM call, <code>had_injected</code> is set to <code>true</code>, and the loop continues without emitting the assistant's text (so the model can respond to the new user message instead).
+    </div>
+  </div>
+</div>
+
+<!-- PROVIDER FORMATS -->
+<div class="phase" id="provider-formats">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">3a</div>
+    <h3>Provider-Level Body Construction</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/provider/</code></p>
+
+    <table>
+      <thead><tr><th>Provider Kind</th><th>Endpoint</th><th>Body Builder</th></tr></thead>
+      <tbody>
+        <tr><td><code>OpenAiCompatible</code></td><td><code>/chat/completions</code></td><td><code>chat_completions::build_body</code></td></tr>
+        <tr><td><code>OpenAi</code></td><td><code>/responses</code></td><td><code>openai::build_body</code></td></tr>
+        <tr><td><code>Codex</code></td><td>Codex endpoint</td><td><code>openai::build_body</code> (with <code>store: false</code>)</td></tr>
+        <tr><td><code>Anthropic</code> / <code>AnthropicCompatible</code></td><td><code>/messages</code></td><td><code>anthropic::build_body</code></td></tr>
+        <tr><td><code>Copilot</code></td><td>proxy <code>/chat/completions</code></td><td><code>chat_completions::build_body</code></td></tr>
+      </tbody>
+    </table>
+
+    <h4>OpenAI-compatible (Chat Completions)</h4>
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/provider/chat_completions.rs</code></p>
+    <pre><code>{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "..." },
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "...", "tool_calls": [...] },
+    { "role": "tool", "tool_call_id": "call_1", "content": "..." }
+  ],
+  "tools": [
+    { "type": "function", "function": { "name": "bash", "description": "...", "parameters": {...} } }
+  ],
+  "temperature": 0.7,
+  "reasoning_effort": "medium"
+}</code></pre>
+
+    <h4>OpenAI Responses API</h4>
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/provider/openai.rs</code></p>
+    <pre><code>{
+  "model": "gpt-4o",
+  "instructions": "system prompt text...",
+  "input": [
+    { "role": "user", "content": "..." },
+    { "type": "message", "role": "assistant", "content": [{"type":"output_text","text":"..."}] },
+    { "type": "function_call", "call_id": "call_1", "name": "bash", "arguments": "{\"command\":\"ls\"}" },
+    { "type": "function_call_output", "call_id": "call_1", "output": "..." }
+  ],
+  "tools": [
+    { "type": "function", "name": "bash", "description": "...", "parameters": {...} }
+  ],
+  "reasoning": { "effort": "medium", "summary": "auto" }
+}</code></pre>
+
+    <h4>Anthropic Messages API</h4>
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/provider/anthropic.rs</code></p>
+    <pre><code>{
+  "model": "claude-sonnet-4-6",
+  "system": [{"type":"text","text":"..."}],
+  "messages": [
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": [
+      {"type":"text","text":"..."},
+      {"type":"tool_use","id":"call_1","name":"bash","input":{"command":"ls"}}
+    ]},
+    { "role": "user", "content": [{"type":"tool_result","tool_use_id":"call_1","content":"..."}] }
+  ],
+  "tools": [
+    { "name": "bash", "description": "...", "input_schema": {...} }
+  ],
+  "thinking": { "type": "adaptive", "display": "summarized" }
+}</code></pre>
+
+    <div class="note">
+      <strong>Tool output trimming:</strong> Before serialization, all tool outputs are truncated to <code>MAX_TOOL_OUTPUT_LINES</code> (default 2000 lines) to prevent context overflow.
+    </div>
+  </div>
+</div>
+
+<!-- COMPACTION -->
+<div class="phase" id="compaction">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">4</div>
+    <h3>History Compaction</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/compact.rs</code></p>
+
+    <p>Compaction is a background LLM call that summarizes old history to free context window.</p>
+
+    <h4>Trigger</h4>
+    <p><code>maybe_compact</code> checks if <code>prompt_tokens &gt; context_window * 80%</code>. Only fires once per turn.</p>
+
+    <h4>Process</h4>
+    <ol>
+      <li>Build a summarization prompt from <code>prompts/compact.md</code> + history.</li>
+      <li>Call the auxiliary compaction model (or primary if no auxiliary configured) with <code>ReasoningEffort::Off</code> and <strong>no tools</strong>.</li>
+      <li>Replace old history with a single summary user message.</li>
+      <li>Emit <code>CompactionComplete { messages }</code>.</li>
+    </ol>
+
+    <h4>Retry Logic</h4>
+    <ul>
+      <li>Empty summaries: retry up to 2 times.</li>
+      <li>Context-window errors during compaction: drop oldest history message and retry (up to 20 trims).</li>
+    </ul>
+  </div>
+</div>
+
+<!-- TOOLS -->
+<div class="phase open" id="tools">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">5</div>
+    <h3>Tool Execution</h3>
+    <span class="lang">🦀 Rust + 🌙 Lua</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/engine/src/agent.rs</code> (lines 922–1518)<br>
+       <span class="tag lua">Lua</span> <code>runtime/lua/smelt/tools/*.lua</code></p>
+
+    <h4>Classification (<code>classify_tools</code>)</h4>
+    <p>For each <code>ToolCall</code> in the LLM response:</p>
+    <ol>
+      <li>Parse arguments (<code>serde_json::from_str::&lt;HashMap&lt;String, Value&gt;&gt;</code>).</li>
+      <li>Emit <code>ToolStarted</code> event to TUI.</li>
+      <li><strong>Check Lua plugin tools first</strong>:
+        <ul>
+          <li>If <code>hooks.any()</code> → emit <code>ToolHooksRequest</code> to TUI for evaluation.</li>
+          <li>If <code>execution_mode == Sequential</code> → add to sequential queue.</li>
+          <li>Otherwise → emit <code>ToolDispatch</code> to TUI for execution.</li>
+        </ul>
+      </li>
+      <li><strong>Otherwise, core/MCP tool</strong>:
+        <ul>
+          <li>Evaluate hooks via <code>dispatcher.evaluate_hooks(name, &amp;args, mode)</code>.</li>
+          <li>Decision: <code>Allow</code> → dispatch; <code>Ask</code> → emit <code>RequestPermission</code>; <code>Deny</code> → synthetic denial; <code>Error</code> → synthetic error.</li>
+        </ul>
+      </li>
+    </ol>
+
+    <h4>Concurrent Execution (<code>execute_concurrent</code>)</h4>
+    <p>A <code>tokio::select!</code> loop manages:</p>
+    <ul>
+      <li><strong><code>futs</code></strong>: <code>FuturesUnordered</code> of actively running core tool dispatches.</li>
+      <li><strong><code>side_futs</code></strong>: Side calls from Lua (<code>CallCoreTool</code>).</li>
+      <li><strong><code>cmd_rx</code></strong>: UI commands arriving mid-flight (Cancel, PermissionDecision, ToolHooksResponse, ToolResult, etc.).</li>
+    </ul>
+    <p>On cancel: emit cancelled results for all pending tools.</p>
+
+    <h4>Sequential Execution (<code>run_sequential</code>)</h4>
+    <p>After concurrent tools finish, sequential tools run one-at-a-time. The only built-in sequential tool is <code>ask_user_question</code>.</p>
+
+    <h4>Result Collection (<code>collect_results</code>)</h4>
+    <ol>
+      <li><strong>Dedup check</strong>: if output duplicates a prior tool result in history, replace with a stub.</li>
+      <li>Push <code>Message::tool(call_id, content, is_error)</code> to <code>self.messages</code>.</li>
+      <li>Emit <code>ToolFinished</code> event.</li>
+    </ol>
+
+    <h4>Tool Execution in Lua</h4>
+    <p>When the TUI receives <code>ToolDispatch</code>, it calls the Lua <code>execute</code> function. Lua tools run in coroutines and can:</p>
+    <ul>
+      <li>Yield via <code>smelt.task.wait(id)</code> for async operations.</li>
+      <li>Call other tools via <code>smelt.tools.call(name, args, parent_call_id)</code>.</li>
+      <li>Spawn subprocesses via <code>smelt.process.run_streaming</code>.</li>
+      <li>Make HTTP requests via <code>smelt.http.get/post</code>.</li>
+    </ul>
+    <p>When done, the Lua runtime calls <code>smelt.tools.resolve(request_id, call_id, { content, is_error })</code>, which sends <code>UiCommand::ToolResult</code> back to the engine.</p>
+
+    <h4>Permission Flow</h4>
+    <p>When the engine emits <code>RequestPermission</code>:</p>
+    <ol>
+      <li>TUI checks <code>is_auto_approved</code> against runtime approvals (session/workspace scope).</li>
+      <li>Checks hard <code>decide()</code> policy.</li>
+      <li>If user is actively typing (last keypress within 1500ms) and prompt is non-empty → <strong>defer dialog</strong> and set tool status to <code>Confirm</code>.</li>
+      <li>Otherwise → opens confirm overlay immediately.</li>
+    </ol>
+  </div>
+</div>
+
+<!-- EVENTS -->
+<div class="phase" id="events">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">6</div>
+    <h3>Event Stream</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/protocol/src/event.rs</code></p>
+
+    <table>
+      <thead><tr><th>Event</th><th>Direction</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>Ready</code></td><td>Engine → TUI</td><td>Engine started</td></tr>
+        <tr><td><code>Thinking / ThinkingDelta</code></td><td>Engine → TUI</td><td>Reasoning content</td></tr>
+        <tr><td><code>Text / TextDelta</code></td><td>Engine → TUI</td><td>Assistant text</td></tr>
+        <tr><td><code>Steered</code></td><td>Engine → TUI</td><td>User message injected mid-turn</td></tr>
+        <tr><td><code>ToolStarted</code></td><td>Engine → TUI</td><td>Tool call began</td></tr>
+        <tr><td><code>ToolOutput</code></td><td>Engine → TUI</td><td>Chunk of streamed tool output</td></tr>
+        <tr><td><code>ToolFinished</code></td><td>Engine → TUI</td><td>Tool call completed</td></tr>
+        <tr><td><code>RequestPermission</code></td><td>Engine → TUI</td><td>User approval needed</td></tr>
+        <tr><td><code>ToolDispatch</code></td><td>Engine → TUI</td><td>Lua tool needs execution</td></tr>
+        <tr><td><code>ToolHooksRequest</code></td><td>Engine → TUI</td><td>Lua tool hooks need evaluation</td></tr>
+        <tr><td><code>TokenUsage</code></td><td>Engine → TUI</td><td>Token/cost metrics</td></tr>
+        <tr><td><code>Retrying</code></td><td>Engine → TUI</td><td>Provider retry in progress</td></tr>
+        <tr><td><code>CompactionComplete</code></td><td>Engine → TUI</td><td>History was compacted</td></tr>
+        <tr><td><code>TurnComplete</code></td><td>Engine → TUI</td><td>Turn finished</td></tr>
+        <tr><td><code>TurnError</code></td><td>Engine → TUI</td><td>Turn failed</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- RENDERING -->
+<div class="phase" id="rendering">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">7</div>
+    <h3>Transcript Rendering</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p><span class="tag rust">Rust</span> <code>crates/core/src/content/stream_parser.rs</code>, <code>crates/core/src/transcript_model.rs</code></p>
+
+    <h4>Stream Parser</h4>
+    <p><code>StreamParser</code> converts <code>EngineEvent</code> deltas into <code>BlockHistory</code> mutations:</p>
+    <ul>
+      <li><code>ThinkingDelta</code> → accumulates into <code>Block::Thinking</code>, rewrites in place.</li>
+      <li><code>TextDelta</code> → detects code fences, tables, paragraph breaks; commits finished structures as <code>Block::Text</code> or <code>Block::CodeLine</code>.</li>
+      <li><code>ToolStarted</code> → pushes <code>Block::ToolCall</code> + <code>ToolState { status: Pending }</code>.</li>
+      <li><code>ToolOutput</code> → appends to <code>ToolState::output</code>.</li>
+      <li><code>ToolFinished</code> → updates <code>ToolState::status</code> to <code>Ok</code>/<code>Err</code>/<code>Denied</code>.</li>
+    </ul>
+
+    <h4>Block Types</h4>
+    <pre><code>pub enum Block {
+    User { text: String, image_labels: Vec&lt;String&gt; },
+    Thinking { content: String },
+    Text { content: String },
+    CodeLine { content: String, lang: String },
+    ToolCall { call_id: String, name: String, summary: String, args: HashMap&lt;String, Value&gt; },
+    Exec { command: String, output: String },
+    Compacted { summary: String },
+}</code></pre>
+
+    <h4>Layout Caching</h4>
+    <p>Each block computes a stable <code>content_hash</code> (via <code>seahash</code>). Layout is cached keyed by <code>LayoutKey { width, show_thinking, view_state, content_hash }</code>. Identical blocks produce identical hashes, so layout is instant for repeated content.</p>
+  </div>
+</div>
+
+<!-- WHAT LLM SEES -->
+<div class="phase open" id="prompts">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">8</div>
+    <h3>What the LLM Actually Sees</h3>
+    <span class="lang">🦀 Rust</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Click a scenario to see the exact JSON structure sent to the LLM:</p>
+
+    <div class="interactive-toggle">
+      <button class="active" onclick="showPrompt('first')">First Call</button>
+      <button onclick="showPrompt('tools')">After Tool Results</button>
+      <button onclick="showPrompt('steer')">After Steer</button>
+      <button onclick="showPrompt('compact')">After Compaction</button>
+    </div>
+
+    <div id="prompt-first" class="prompt-example">
+      <h4>First Call of a Turn (OpenAI-compatible)</h4>
+      <pre><code>{
+  "model": "gpt-4o",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an expert coding agent...\nWorking directory: /home/user/project\n# Tools..."
+    },
+    { "role": "user", "content": "previous user message" },
+    { "role": "assistant", "content": "previous assistant reply" },
+    { "role": "user", "content": "current user message" }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "bash",
+        "description": "Execute a non-interactive bash command...",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "string" },
+            "description": { "type": "string" },
+            "timeout_ms": { "type": "integer" }
+          },
+          "required": ["command"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Reads a file from the local filesystem...",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": { "type": "string" },
+            "offset": { "type": "integer" },
+            "limit": { "type": "integer" }
+          },
+          "required": ["file_path"]
+        }
+      }
+    }
+  ],
+  "temperature": 0.7,
+  "reasoning_effort": "medium",
+  "chat_template_kwargs": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+  }
+}</code></pre>
+    </div>
+
+    <div id="prompt-tools" class="prompt-example" style="display:none">
+      <h4>Second Call (After Tool Execution)</h4>
+      <pre><code>{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "..." },
+    { "role": "user", "content": "previous user message" },
+    {
+      "role": "assistant",
+      "content": "...",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "bash",
+            "arguments": "{\"command\":\"ls -la\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "total 128\ndrwxr-xr-x ..."
+    },
+    {
+      "role": "assistant",
+      "content": "...",
+      "tool_calls": [
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"file_path\":\"/home/user/project/README.md\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_2",
+      "content": "# Project\n..."
+    }
+  ],
+  "tools": [ ... ],
+  "temperature": 0.7
+}</code></pre>
+    </div>
+
+    <div id="prompt-steer" class="prompt-example" style="display:none">
+      <h4>After Mid-Turn Steer</h4>
+      <pre><code>{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "..." },
+    { "role": "user", "content": "original user message" },
+    { "role": "assistant", "content": "partial assistant reply..." },
+    { "role": "user", "content": "steer: actually use grep instead" }
+  ],
+  "tools": [ ... ]
+}</code></pre>
+      <p>The assistant's partial text is <strong>not emitted</strong> to the user; the model must respond to the steer instead.</p>
+    </div>
+
+    <div id="prompt-compact" class="prompt-example" style="display:none">
+      <h4>After Compaction</h4>
+      <pre><code>{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "..." },
+    {
+      "role": "user",
+      "content": "&lt;summary of earlier conversation&gt;\n\nThe user asked about refactoring the auth module. The assistant suggested..."
+    },
+    { "role": "user", "content": "current user message" }
+  ],
+  "tools": [ ... ]
+}</code></pre>
+    </div>
+  </div>
+</div>
+
+<!-- TOOL INVENTORY -->
+<div class="phase open" id="inventory">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">9</div>
+    <h3>Tool Inventory</h3>
+    <span class="lang">🌙 Lua</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Filter by mode to see which tools are presented to the LLM in each mode:</p>
+    <div class="interactive-toggle">
+      <button class="active" onclick="filterTools('all')">All</button>
+      <button onclick="filterTools('normal')">Normal</button>
+      <button onclick="filterTools('plan')">Plan</button>
+      <button onclick="filterTools('apply')">Apply</button>
+      <button onclick="filterTools('yolo')">Yolo</button>
+    </div>
+
+    <div class="tool-viz" id="toolViz">
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">bash</div>
+        <div class="meta">🌙 Lua · Concurrent · Ask (decide hook)</div>
+        <div>Execute non-interactive shell commands. Streaming, timeout up to 10min, auto-approval for read-only commands.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">read_file</div>
+        <div class="meta">🌙 Lua · Concurrent · Allow</div>
+        <div>Read text, image, and notebook files. Returns data URLs for images, rendered notebooks, line-numbered text.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">write_file</div>
+        <div class="meta">🌙 Lua · Concurrent · Apply=Allow</div>
+        <div>Write files. Refuses unread overwrites, mtime staleness check, flock on existing files.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">edit_file</div>
+        <div class="meta">🌙 Lua · Concurrent · Apply=Allow</div>
+        <div>Exact string find/replace. Supports replace_all, uniqueness check, flock + staleness.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">grep</div>
+        <div class="meta">🌙 Lua · Concurrent · Allow</div>
+        <div>ripgrep-based search with grep fallback. Full regex, glob, type, multiline support.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">glob</div>
+        <div class="meta">🌙 Lua · Concurrent · Allow</div>
+        <div>Gitignore-aware file pattern matching. Sorted newest-first, max 200 results.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">web_search</div>
+        <div class="meta">🌙 Lua · Concurrent · Ask</div>
+        <div>DuckDuckGo HTML search. 15-minute cache, rotated User-Agent.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">web_fetch</div>
+        <div class="meta">🌙 Lua · Concurrent · Ask (decide hook)</div>
+        <div>Fetch URL + markdown conversion + auxiliary LLM extraction. Domain redirect guard.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">ask_user_question</div>
+        <div class="meta">🌙 Lua · Sequential · Allow</div>
+        <div>1-4 questions with 2-4 options each, free-text "Other". Blocks agent until reply.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">edit_notebook</div>
+        <div class="meta">🌙 Lua · Concurrent · Ask</div>
+        <div>Edit Jupyter notebook cells. Replace/insert/delete by cell_number or cell_id.</div>
+      </div>
+      <div class="tool-card" data-modes="all normal plan apply yolo">
+        <div class="name">load_skill</div>
+        <div class="meta">🌙 Lua · Concurrent · Ask</div>
+        <div>Load skill markdown by name from smelt.skills.content.</div>
+      </div>
+      <div class="tool-card" data-modes="plan">
+        <div class="name">exit_plan_mode</div>
+        <div class="meta">🌙 Lua · Sequential · —</div>
+        <div>Signal planning complete. Approval dialog with "yes, and auto-apply" / "yes" / "no". Saves plan to session dir.</div>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Visibility rules:</strong> Core tools are filtered by <code>dispatcher.is_visible(name, mode)</code>. Lua tools are filtered by their <code>modes</code> table. A tool without <code>modes</code> is visible in all modes. The <code>exit_plan_mode</code> tool sets <code>modes = { "plan" }</code>, so it only appears in Plan mode.
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary Table — Mid-Turn Mutability</h2>
+<table>
+  <thead><tr><th>Change</th><th>Trigger</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Mode switch</strong></td><td>User toggles mode (<code>/mode plan</code>)</td><td>Updates <code>self.mode</code>, system prompt, and tool list for next iteration.</td></tr>
+    <tr><td><strong>Reasoning effort</strong></td><td>User cycles reasoning (<code>ctrl+r</code>)</td><td>Updates for next iteration.</td></tr>
+    <tr><td><strong>Model switch</strong></td><td>User changes model (<code>/model gpt-4o-mini</code>)</td><td>Deferred until after current LLM call.</td></tr>
+    <tr><td><strong>Steer</strong></td><td>User sends message while agent runs</td><td>Injects user message into history mid-call; loop continues without emitting assistant text.</td></tr>
+    <tr><td><strong>Unsteer</strong></td><td>User removes last steer</td><td>Removes last user message from history.</td></tr>
+    <tr><td><strong>Cancel</strong></td><td>User presses <code>Ctrl+C</code></td><td>Sets cancel token; graceful stop.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="auxiliary">Auxiliary LLM Calls</h2>
+<table>
+  <thead><tr><th>Task</th><th>Trigger</th><th>Tools Sent</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Title generation</td><td>After first user message</td><td>No tools</td><td>Generate session title</td></tr>
+    <tr><td>Compaction</td><td>Token threshold exceeded or <code>/compact</code></td><td>No tools</td><td>Summarize old history</td></tr>
+    <tr><td>BTW</td><td>Background question (<code>/btw</code>)</td><td>No tools</td><td>Answer without interrupting transcript</td></tr>
+    <tr><td>EngineAsk</td><td>Tool auxiliary request (e.g., web_fetch extraction)</td><td>No tools</td><td>Isolated extraction/summarization</td></tr>
+  </tbody>
+</table>
+
+</main>
+
+<footer>
+  Generated from source inspection of Smelt codebase · Rust + Lua · 2026-05-13
+</footer>
+
+<script>
+function toggle(header) {
+  const phase = header.parentElement;
+  phase.classList.toggle('open');
+}
+
+function showPrompt(id) {
+  document.querySelectorAll('.prompt-example').forEach(el => el.style.display = 'none');
+  document.getElementById('prompt-' + id).style.display = 'block';
+  document.querySelectorAll('#prompts .interactive-toggle button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+function filterTools(mode) {
+  const cards = document.querySelectorAll('#toolViz .tool-card');
+  cards.forEach(card => {
+    const modes = card.dataset.modes.split(' ');
+    if (mode === 'all' || modes.includes(mode)) {
+      card.classList.remove('hidden');
+    } else {
+      card.classList.add('hidden');
+    }
+  });
+  document.querySelectorAll('#inventory .interactive-toggle button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+// Syntax highlighting for JSON
+function highlightJSON() {
+  document.querySelectorAll('pre code').forEach(block => {
+    let html = block.innerHTML;
+    html = html.replace(/"(\w+)":/g, '<span class="json-key">"$1"</span>:');
+    html = html.replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>');
+    html = html.replace(/: (\d+)/g, ': <span class="json-number">$1</span>');
+    html = html.replace(/: (true|false)/g, ': <span class="json-bool">$1</span>');
+    block.innerHTML = html;
+  });
+}
+highlightJSON();
+</script>
+
+</body>
+</html>

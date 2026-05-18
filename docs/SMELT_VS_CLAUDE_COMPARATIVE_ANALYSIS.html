@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smelt vs Claude Code: Comparative Analysis</title>
+<style>
+  :root {
+    --bg: #0d1117; --fg: #c9d1d9; --muted: #8b949e;
+    --accent: #58a6ff; --accent2: #a371f7; --ok: #3fb950; --warn: #d29922; --error: #f85149;
+    --border: #30363d; --card: #161b22; --code-bg: #1e2530;
+    --smelt: #f74c00; --claude: #d4a017; --both: #a371f7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
+  a { color: var(--accent); }
+  header { position: sticky; top: 0; z-index: 100; background: rgba(13,17,23,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 1.1rem; }
+  .badge { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 999px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
+  .legend { margin-left: auto; display: flex; gap: 0.8rem; font-size: 0.8rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 0.3rem; }
+  .dot.smelt { background: var(--smelt); }
+  .dot.claude { background: var(--claude); }
+  .dot.both { background: var(--both); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+  h2 { margin-top: 2.5rem; font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+  h3 { margin-top: 1.8rem; font-size: 1.1rem; color: var(--accent); }
+  h4 { margin-top: 1.2rem; font-size: 0.95rem; color: var(--accent2); }
+
+  .phase { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin: 1rem 0; overflow: hidden; }
+  .phase-header { padding: 1rem 1.2rem; cursor: pointer; display: flex; align-items: center; gap: 0.8rem; transition: background 0.2s; }
+  .phase-header:hover { background: rgba(88,166,255,0.08); }
+  .phase-header .num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 0.85rem; flex-shrink: 0; }
+  .phase-header h3 { margin: 0; font-size: 1rem; color: inherit; }
+  .phase-body { padding: 0 1.2rem 1.2rem; display: none; }
+  .phase.open .phase-body { display: block; }
+  .phase.open .chevron { transform: rotate(180deg); }
+  .chevron { transition: transform 0.2s; font-size: 0.8rem; color: var(--muted); margin-left: auto; }
+
+  .tag { display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-right: 0.4rem; }
+  .tag.smelt { background: rgba(247,76,0,0.15); color: #ff7b47; }
+  .tag.claude { background: rgba(212,160,23,0.15); color: #e5c76b; }
+  .tag.both { background: rgba(163,113,247,0.15); color: #c084fc; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { padding: 0.55rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: rgba(88,166,255,0.06); font-weight: 600; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .compare-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  .compare-box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+  .compare-box.smelt { border-top: 3px solid var(--smelt); }
+  .compare-box.claude { border-top: 3px solid var(--claude); }
+  .compare-box h4 { margin-top: 0; }
+
+  .note { border-left: 3px solid var(--warn); background: rgba(210,153,34,0.08); padding: 0.8rem 1rem; border-radius: 0 6px 6px 0; margin: 1rem 0; font-size: 0.9rem; }
+  .note.ok { border-left-color: var(--ok); background: rgba(63,185,80,0.08); }
+  .note.error { border-left-color: var(--error); background: rgba(248,81,73,0.08); }
+
+  .interactive-toggle { display: inline-flex; gap: 0.5rem; margin: 0.5rem 0; flex-wrap: wrap; }
+  .interactive-toggle button { background: var(--card); color: var(--fg); border: 1px solid var(--border); padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  .interactive-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .spectrum { display: flex; align-items: stretch; height: 60px; border-radius: 8px; overflow: hidden; margin: 1rem 0; border: 1px solid var(--border); }
+  .spectrum-segment { display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 600; padding: 0.5rem; text-align: center; }
+  .spectrum-smelt { background: rgba(247,76,0,0.15); color: #ff7b47; flex: 1; }
+  .spectrum-middle { background: rgba(163,113,247,0.15); color: #c084fc; flex: 1.5; }
+  .spectrum-claude { background: rgba(212,160,23,0.15); color: #e5c76b; flex: 1; }
+
+  .winner-badge { display: inline-block; font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 700; text-transform: uppercase; margin-left: 0.3rem; }
+  .winner-smelt { background: rgba(247,76,0,0.2); color: #ff7b47; }
+  .winner-claude { background: rgba(212,160,23,0.2); color: #e5c76b; }
+  .winner-both { background: rgba(163,113,247,0.2); color: #c084fc; }
+
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; }
+  code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+
+  .sticky-nav { position: fixed; right: 1.5rem; top: 5rem; width: 200px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.8rem; max-height: calc(100vh - 7rem); overflow-y: auto; display: none; }
+  .sticky-nav a { display: block; padding: 0.25rem 0; color: var(--muted); text-decoration: none; }
+  .sticky-nav a:hover { color: var(--accent); }
+  @media (min-width: 1400px) { .sticky-nav { display: block; } }
+
+  footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚖️ Smelt vs Claude Code: Comparative Analysis</h1>
+  <span class="badge">Interactive</span>
+  <div class="legend">
+    <span><span class="dot smelt"></span> Smelt</span>
+    <span><span class="dot claude"></span> Claude Code</span>
+    <span><span class="dot both"></span> Both / Hybrid</span>
+  </div>
+</header>
+
+<nav class="sticky-nav">
+  <strong>Sections</strong>
+  <a href="#exec">Executive Summary</a>
+  <a href="#arch">Architecture</a>
+  <a href="#prompt">System Prompt</a>
+  <a href="#tools">Tool Visibility</a>
+  <a href="#perm">Permission Philosophy</a>
+  <a href="#compact">Compaction</a>
+  <a href="#steer">Mid-Turn Mutability</a>
+  <a href="#subagents">Subagents</a>
+  <a href="#framework">Effectiveness Framework</a>
+  <a href="#recs">Recommendations</a>
+  <a href="#conclusion">Conclusion</a>
+</nav>
+
+<main>
+
+<h2 id="exec">1. Executive Summary</h2>
+
+<table>
+  <thead><tr><th>Dimension</th><th>Smelt</th><th>Claude Code</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Language</strong></td><td>Rust engine + Lua runtime</td><td>TypeScript monolith</td></tr>
+    <tr><td><strong>System prompt size</strong></td><td>~50 lines (template) + sections</td><td>~800 lines (hardcoded) + dynamic env</td></tr>
+    <tr><td><strong>Tool count</strong></td><td>12 built-in + plugins</td><td>30+ built-in + MCP + deferred</td></tr>
+    <tr><td><strong>Permission system</strong></td><td>Deterministic hooks (Lua)</td><td>7-step pipeline + LLM classifier</td></tr>
+    <tr><td><strong>Compaction</strong></td><td>1 strategy (auxiliary LLM)</td><td>5 strategies (auto, reactive, micro, snip, collapse)</td></tr>
+    <tr><td><strong>Subagents</strong></td><td>None</td><td>Built-in (Explore, Plan, Verify, Fork, Custom)</td></tr>
+    <tr><td><strong>Mid-turn steering</strong></td><td>Yes (<code>Steer</code> command)</td><td>No direct equivalent</td></tr>
+    <tr><td><strong>Plugin extensibility</strong></td><td>Lua plugins (user-writable)</td><td>Internal only</td></tr>
+  </tbody>
+</table>
+
+<div class="note ok">
+  <strong>Thesis:</strong> Both agents use extensive hardcoded rules, but differ in <em>how</em> those rules are enforced and <em>what</em> is left to the model. Smelt constrains the model through <strong>tool visibility</strong> and <strong>deterministic permission hooks</strong>. Claude Code constrains the model through <strong>prose instructions</strong> and a <strong>secondary LLM classifier</strong>. The most effective approach: <strong>hardcode invariants, structure constraints via schemas/filtering, and reserve model autonomy for tactics within safe boundaries</strong>.
+</div>
+
+<h2 id="arch">2. Architecture Philosophy</h2>
+
+<div class="compare-row">
+  <div class="compare-box smelt">
+    <h4><span class="tag smelt">Smelt</span> Engine + Runtime Separation</h4>
+    <ul>
+      <li><strong>Rust engine</strong>: LLM loop, HTTP, provider abstraction</li>
+      <li><strong>Rust TUI</strong>: Terminal UI, prompt parsing</li>
+      <li><strong>Lua runtime</strong>: Tool definitions, prompt sections, behavior plugins</li>
+    </ul>
+    <p><strong>Implication:</strong> Users write Lua plugins to add tools, mutate prompts, and change behavior without recompiling. The engine is a stable substrate; behavior lives in the runtime.</p>
+  </div>
+  <div class="compare-box claude">
+    <h4><span class="tag claude">Claude Code</span> Monolithic TypeScript</h4>
+    <ul>
+      <li><strong>Single codebase</strong>: All tools, prompts, permissions in TypeScript</li>
+      <li><strong>Feature flags</strong>: <code>feature('FLAG')</code> gates behavior</li>
+      <li><strong>Build-time defines</strong>: <code>process.env.USER_TYPE === 'ant'</code> for internal vs external</li>
+    </ul>
+    <p><strong>Implication:</strong> All behavior is internal. Users configure permissions/rules but cannot add tools or change system prompt structure.</p>
+  </div>
+</div>
+
+<table>
+  <thead><tr><th>Aspect</th><th>Smelt</th><th>Claude Code</th></tr></thead>
+  <tbody>
+    <tr><td>Customizability</td><td>High (Lua plugins)</td><td>Low (rules only)</td></tr>
+    <tr><td>Consistency</td><td>Varies by plugin</td><td>High (single codebase)</td></tr>
+    <tr><td>Safety auditability</td><td>Harder (distributed Lua)</td><td>Easier (centralized TS)</td></tr>
+    <tr><td>Iteration speed</td><td>Fast (Lua hot-reload)</td><td>Slow (rebuild + deploy)</td></tr>
+    <tr><td>Tool richness</td><td>Moderate (~10 hooks)</td><td>High (~30 methods)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="prompt">3. System Prompt Design</h2>
+
+<div class="interactive-toggle">
+  <button class="active" onclick="showPrompt('smelt')">Smelt Prompt</button>
+  <button onclick="showPrompt('claude')">Claude Code Prompt</button>
+  <button onclick="showPrompt('compare')">Side-by-Side</button>
+</div>
+
+<div id="prompt-smelt" class="prompt-example">
+  <h4>Smelt: Template-Driven, Mutable Sections</h4>
+  <pre><code>Template: crates/engine/src/prompts/system.txt (~50 lines)
+
+You are an expert coding agent...
+Working directory: {{ cwd }}
+
+# Tools
+- Use dedicated tools over bash
+- Always read a file with read_file before editing it
+...
+
+# Code
+- Elegant code is simple...
+...
+
+# Approach
+- Think before you act...
+
+{% if write_access %}
+# Write access
+You have write access...
+{% endif %}
+
+{% if skills_section %}
+{{ skills_section }}
+{% endif %}
+
+{% if extra_instructions %}
+{{ extra_instructions }}
+{% endif %}</code></pre>
+  <p>Plus Lua-mutable sections via <code>smelt.prompt.set_section("plan_mode", PLAN_PROMPT)</code></p>
+  <p><strong>Size:</strong> ~2-3 KB rendered</p>
+</div>
+
+<div id="prompt-claude" class="prompt-example" style="display:none">
+  <h4>Claude Code: Massive Hardcoded Prompt</h4>
+  <pre><code>Static sections (~2KB, globally cached):
+  - Intro + cyber-risk instruction
+  - System (permission mode, system-reminders, compression)
+  - Doing tasks (~30 behavioral rules)
+  - Actions (risky ops guidance, 4 categories)
+  - Using your tools (dedicated > bash, parallel calls)
+  - Tone and style (no emojis, line_number refs)
+  - Output efficiency ("Go straight to the point")
+
+Boundary: __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__
+
+Dynamic sections (~3-5KB, per-session):
+  - session_guidance (agent tool, skills, verification contract)
+  - memory (memdir/)
+  - env_info (cwd, git, platform, shell, model)
+  - language, output_style, mcp_instructions
+  - scratchpad, frc, summarize_tool_results
+  - numeric_length_anchors (ant-only: ≤25 words)
+  - token_budget, brief (KAIROS)</code></pre>
+  <p><strong>Size:</strong> ~5-8 KB total. Source file: <code>prompts.ts</code> is 53 KB generating the prompt.</p>
+</div>
+
+<div id="prompt-compare" class="prompt-example" style="display:none">
+  <h4>Side-by-Side Comparison</h4>
+  <table>
+    <thead><tr><th>Dimension</th><th>Smelt</th><th>Claude Code</th></tr></thead>
+    <tbody>
+      <tr><td>Lines of prompt source</td><td>~50 (template)</td><td>~800 (hardcoded)</td></tr>
+      <tr><td>Rendered size</td><td>~2-3 KB</td><td>~5-8 KB</td></tr>
+      <tr><td>Mutability</td><td>Lua plugins mutate sections</td><td>Dynamic boundary only</td></tr>
+      <tr><td>Caching strategy</td><td>Per-session</td><td>Global (static prefix) + ephemeral</td></tr>
+      <tr><td>Behavioral rules</td><td>~10 high-level rules</td><td>~50+ specific rules</td></tr>
+      <tr><td>Anti-pattern rules</td><td>Minimal</td><td>Extensive (no comments, verify first, etc.)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="note">
+  <strong>Observation:</strong> Claude Code's prompt is ~10x larger than Smelt's. Does more instruction = better behavior?
+  <ul>
+    <li><strong>Pro:</strong> More instructions cover edge cases; less room for bad improvisation</li>
+    <li><strong>Con:</strong> Consumes context window; conflicting instructions confuse the model; excessive constraints feel robotic</li>
+  </ul>
+  <strong>Smelt's leaner prompt</strong> trusts the model more but constrains it structurally (tool visibility + deterministic hooks). <strong>Claude Code's massive prompt</strong> tries to specify every behavioral dimension in prose.
+</div>
+
+<h2 id="tools">4. Tool Visibility: Structural Constraints vs. Prose Instructions</h2>
+
+<div class="compare-row">
+  <div class="compare-box smelt">
+    <h4><span class="tag smelt">Smelt</span> Mode-Gated Visibility</h4>
+    <pre><code>// Tools filtered PER ITERATION
+let tool_defs = if self.provider.tool_calling() {
+    let mut defs = self.dispatcher.definitions()
+        .filter(|d| self.dispatcher.is_visible(
+            d.function.name.as_str(), self.mode))
+        .collect();
+    for pt in &self.tools {
+        if let Some(ref modes) = pt.modes {
+            if !modes.contains(&self.mode) { continue; }
+        }
+        defs.push(...);
+    }
+    defs
+} else { Vec::new() };</code></pre>
+    <p>The model <strong>cannot use tools it doesn't see</strong>. <code>exit_plan_mode</code> is literally invisible outside Plan mode.</p>
+  </div>
+  <div class="compare-box claude">
+    <h4><span class="tag claude">Claude Code</span> Deny Rules + Deferred Loading</h4>
+    <pre><code>function assembleToolPool(ctx, mcpTools) {
+    const builtIns = getTools(ctx)  // deny rules, isEnabled
+    const allowedMcp = filterToolsByDenyRules(mcpTools, ctx)
+    return uniqBy(
+        [...builtIns].sort(byName)
+        .concat(allowedMcp.sort(byName)),
+        'name'
+    )
+}</code></pre>
+    <p>Plus <strong>deferred loading</strong>: non-essential tools sent with <code>defer_loading: true</code>; model must discover them via <code>tool_reference</code> blocks.</p>
+  </div>
+</div>
+
+<table>
+  <thead><tr><th>Approach</th><th>Strength</th><th>Weakness</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Smelt: mode-gated visibility</strong></td><td>Absolute guarantee; simple mental model</td><td>Coarse-grained (all-or-nothing per mode)</td></tr>
+    <tr><td><strong>Claude Code: deny rules + deferred</strong></td><td>Fine-grained user control; scales to unlimited tools</td><td>Complex; model can still misuse non-deferred tools</td></tr>
+  </tbody>
+</table>
+
+<h2 id="perm">5. Permission Philosophy</h2>
+
+<p>This is the <strong>most consequential difference</strong> between the two agents.</p>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">A</div>
+    <h3>Smelt: Deterministic Permission Hooks</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Each tool defines hooks evaluated at call time:</p>
+    <pre><code>-- bash.lua
+decide = function(args, mode)
+    local tool = smelt.permissions.check_tool(mode, "bash")
+    if tool == "deny" then return "deny" end
+    local sub = smelt.permissions.check(mode, "bash", args.command or "")
+    if sub == "deny" then return "deny" end
+    return sub
+end,
+
+approval_patterns = function(args)
+    -- Returns patterns like "git *" for auto-approval
+end,</code></pre>
+    <p><strong>Characteristics:</strong></p>
+    <ul>
+      <li><strong>Deterministic</strong>: Same input → same decision, every time</li>
+      <li><strong>Transparent</strong>: Users can read the Lua and understand the logic</li>
+      <li><strong>Fast</strong>: No extra LLM call</li>
+      <li><strong>Predictable</strong>: The model knows which tools are auto-allowed vs ask</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">B</div>
+    <h3>Claude Code: Multi-Layer Pipeline + LLM Classifier</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <h4>Layer 1: Deterministic Rules (steps 1a-1g)</h4>
+    <pre><code>1a. Deny rule? → DENY
+1b. Ask rule? → ASK
+1c. Tool.checkPermissions() → allow/ask/deny/passthrough
+1d. Tool denied? → DENY
+1e. Requires interaction? → ASK
+1f. Content-specific ask rule? → ASK
+1g. Safety check? → ASK (bypass-immune)</code></pre>
+    <h4>Layer 2: Mode Transformation</h4>
+    <pre><code>bypassPermissions → ALLOW (except safety)
+acceptEdits → auto-allow file edits
+dontAsk → ASK becomes DENY
+auto → RUN CLASSIFIER</code></pre>
+    <h4>Layer 3: Auto Mode Classifier (secondary LLM)</h4>
+    <pre><code>// Fast-path 1: acceptEdits check
+if (acceptEditsResult.behavior === 'allow') → ALLOW
+
+// Fast-path 2: safe-tool allowlist
+if (isAutoModeAllowlistedTool(tool.name)) → ALLOW
+
+// Main path: classifyYoloAction()
+classifierResult = await classifyYoloAction(
+    context.messages,    // FULL conversation history
+    action,              // formatted tool use
+    context.options.tools,
+    permissionContext,
+    signal
+)
+// Two-stage: quick check → full analysis if needed
+// Returns: allowed / blocked (with reason) / unavailable</code></pre>
+    <p><strong>Characteristics:</strong></p>
+    <ul>
+      <li><strong>Probabilistic for auto mode</strong>: The classifier LLM may approve/deny inconsistently</li>
+      <li><strong>Opaque</strong>: The classifier's reasoning is not directly inspectable</li>
+      <li><strong>Expensive</strong>: Extra LLM call per tool use (~100-500ms, extra tokens)</li>
+      <li><strong>Fail-closed</strong>: If classifier unavailable → DENY</li>
+      <li><strong>Adaptive</strong>: Tracks consecutive denials; falls back to prompting after threshold</li>
+    </ul>
+  </div>
+</div>
+
+<h3>The Permission Spectrum</h3>
+<div class="spectrum">
+  <div class="spectrum-segment spectrum-smelt">Smelt Hooks<br><small>Deterministic</small></div>
+  <div class="spectrum-segment spectrum-middle">Claude Code Pipeline<br><small>Deterministic + Mode</small></div>
+  <div class="spectrum-segment spectrum-claude">Claude Classifier<br><small>Probabilistic</small></div>
+</div>
+
+<h3>When Hardcoded Rules Win vs. Model Autonomy Wins</h3>
+
+<table>
+  <thead><tr><th>Scenario</th><th>Hardcoded Rules Win</th><th>Model Autonomy Wins</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Safety invariants</strong></td><td>"Never write to .git/" — deterministic, no hallucination risk</td><td>—</td></tr>
+    <tr><td><strong>Predictable workflows</strong></td><td>"Read before Edit" — prevents known failure at 100% reliability</td><td>—</td></tr>
+    <tr><td><strong>Permission boundaries</strong></td><td>"Bash(rm -rf) → ask" — user must approve</td><td>—</td></tr>
+    <tr><td><strong>Token efficiency</strong></td><td>"Use Glob instead of find" — saves reasoning tokens</td><td>—</td></tr>
+    <tr><td><strong>Novel situations</strong></td><td>—</td><td>Unusual project structure; model adapts</td></tr>
+    <tr><td><strong>Context-dependent trade-offs</strong></td><td>—</td><td>"Tests or more reading first?" — depends on confidence</td></tr>
+    <tr><td><strong>Exploratory tasks</strong></td><td>—</td><td>"Find the bug" — rigid rules prevent creative debugging</td></tr>
+    <tr><td><strong>Natural language nuance</strong></td><td>—</td><td>"Make it cleaner" — rules can't specify meaning</td></tr>
+  </tbody>
+</table>
+
+<div class="note ok">
+  <strong>Recommendation:</strong> The most effective permission system combines:
+  <ol>
+    <li><strong>Structural constraints</strong> (tool visibility) for coarse safety</li>
+    <li><strong>Deterministic rules</strong> (deny/ask/allow) for common cases</li>
+    <li><strong>LLM classifier</strong> only for ambiguous cases where false positives are acceptable</li>
+    <li><strong>Always allow user override</strong> — the human is the ultimate authority</li>
+  </ol>
+</div>
+
+<h2 id="compact">6. Compaction Strategies</h2>
+
+<table>
+  <thead><tr><th>Strategy</th><th>Smelt</th><th>Claude Code</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Trigger</strong></td><td>Token threshold (80%)</td><td>Multiple: threshold, 413 error, media size, proactive</td></tr>
+    <tr><td><strong>Mechanism</strong></td><td>Auxiliary LLM call (no tools)</td><td>5 strategies: auto, reactive, micro, snip, collapse</td></tr>
+    <tr><td><strong>Preserves</strong></td><td>System prompt + recent user message</td><td>Configurable; preserves critical attachments</td></tr>
+    <tr><td><strong>Cost</strong></td><td>1 LLM call per compaction</td><td>Variable; microcompact uses cache editing (no LLM)</td></tr>
+    <tr><td><strong>Recovery</strong></td><td>None (compaction is final)</td><td>Reactive compact recovers from 413 errors</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>Insight:</strong> Context window management is a <strong>hard constraint</strong> that benefits from multiple redundant strategies. The "best" compaction is the one that fires <em>before</em> the API rejects the request. Claude Code's layered approach (proactive + reactive + server-side) is more resilient than Smelt's single strategy.
+</div>
+
+<h2 id="steer">7. Mid-Turn Mutability</h2>
+
+<div class="compare-row">
+  <div class="compare-box smelt">
+    <h4><span class="tag smelt">Smelt</span> Steering</h4>
+    <ul>
+      <li>User sends message while agent is working</li>
+      <li><code>Steer</code> injects new user message into history</li>
+      <li>Current LLM call finishes</li>
+      <li>Loop continues; model responds to steer</li>
+    </ul>
+    <p><strong>Effectiveness:</strong> High for real-time collaboration. User can course-correct without waiting.</p>
+  </div>
+  <div class="compare-box claude">
+    <h4><span class="tag claude">Claude Code</span> No Direct Equivalent</h4>
+    <ul>
+      <li>User must cancel current turn (<code>Ctrl+C</code>)</li>
+      <li>Wait for tool execution to finish</li>
+      <li>Submit a new message</li>
+    </ul>
+    <p><strong>Exception:</strong> <code>AskUserQuestion</code> allows sequential dialogs, but these are <strong>model-initiated</strong>, not user-initiated.</p>
+    <p><strong>Effectiveness:</strong> Lower for real-time collaboration; higher for deterministic turn completion.</p>
+  </div>
+</div>
+
+<h2 id="subagents">8. Subagents and Delegation</h2>
+
+<table>
+  <thead><tr><th>Type</th><th>Claude Code</th><th>Tool Restrictions</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Explore</strong></td><td>Broad codebase research</td><td>Read-only tools</td></tr>
+    <tr><td><strong>Plan</strong></td><td>Implementation planning</td><td>Read-only + AskUserQuestion</td></tr>
+    <tr><td><strong>Verify</strong></td><td>Adversarial verification</td><td>Read + Bash(test)</td></tr>
+    <tr><td><strong>Fork</strong></td><td>Background execution</td><td>Inherits parent's exact tool pool</td></tr>
+    <tr><td><strong>Custom</strong></td><td>User-defined via <code>.claude/agents/</code></td><td>Configurable via frontmatter</td></tr>
+  </tbody>
+</table>
+
+<div class="note ok">
+  <strong>Effectiveness:</strong> Subagents are a <strong>force multiplier</strong>:
+  <ul>
+    <li>They parallelize work</li>
+    <li>They protect the main context window</li>
+    <li>They enforce read-only constraints</li>
+    <li>They enable verification (another LLM checks the first LLM's work)</li>
+  </ul>
+  <strong>Trade-off:</strong> Add latency, cost, and complexity. Poor delegation wastes tokens.
+</div>
+
+<h2 id="framework">9. What Makes an Agent Effective? A Framework</h2>
+
+<h3>The Three Pillars</h3>
+<table>
+  <thead><tr><th>Pillar</th><th>Hardcoded Rules Help</th><th>Model Autonomy Helps</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Safety</strong><br><small>(don't harm)</small></td><td>Tool visibility, deny rules, safety checks, deterministic hooks</td><td>Context-aware risk assessment (classifier)</td></tr>
+    <tr><td><strong>Reliability</strong><br><small>(do what you say)</small></td><td>Workflow rules (read before edit), verification instructions</td><td>Adapting to project-specific conventions</td></tr>
+    <tr><td><strong>Utility</strong><br><small>(help achieve goals)</small></td><td>Tool definitions, parallel execution</td><td>Creative problem-solving, novel approaches</td></tr>
+  </tbody>
+</table>
+
+<h3>The Optimal Balance</h3>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">1</div>
+    <h3>Structural constraints > prose rules</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Use tool visibility, schema validation, and mode filtering instead of "please don't do X" instructions.</p>
+    <p><strong>Example:</strong> Hide <code>write_file</code> in Plan mode (Smelt) rather than saying "don't write files in plan mode" (Claude Code tries both).</p>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">2</div>
+    <h3>Deterministic gates > probabilistic classifiers for safety</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Use explicit <code>decide()</code> hooks or permission rules for high-stakes decisions. Reserve LLM classifiers for ambiguous cases where false positives are acceptable. Always allow user override.</p>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">3</div>
+    <h3>Lean system prompt + rich tool definitions</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>The system prompt should specify <strong>what</strong> and <strong>why</strong>, not <strong>how</strong>. Tool schemas and descriptions should encode the "how".</p>
+    <p><strong>Example:</strong> Smelt's <code>edit_file</code> schema enforces uniqueness; Claude Code's prompt says "use Edit for modifications".</p>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">4</div>
+    <h3>Multiple compaction strategies</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Context window is the ultimate bottleneck. Layer proactive, reactive, and server-side strategies. Prefer server-side deletion (cache editing) over LLM summarization when possible.</p>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">5</div>
+    <h3>Subagents for separation of concerns</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Read-only research should not share a context window with write operations. Verification should be independent. Forks should not pollute the main transcript.</p>
+  </div>
+</div>
+
+<div class="phase open">
+  <div class="phase-header" onclick="toggle(this)">
+    <div class="num">6</div>
+    <h3>Mid-turn mutability for collaboration</h3>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="phase-body">
+    <p>Users should be able to steer the agent without canceling. The model should handle injected context gracefully.</p>
+  </div>
+</div>
+
+<h2 id="recs">10. Cross-Recommendations</h2>
+
+<div class="compare-row">
+  <div class="compare-box smelt">
+    <h4><span class="tag smelt">For Smelt</span> (from Claude Code strengths)</h4>
+    <ol>
+      <li><strong>Add a verification tool</strong>: After <code>write_file</code>, optionally spawn a read-only verifier</li>
+      <li><strong>Explore deferred tool loading</strong>: For large plugin ecosystems</li>
+      <li><strong>Add reactive compaction</strong>: Recover from 413 errors mid-turn</li>
+      <li><strong>Consider a lightweight classifier</strong>: For <code>auto</code> mode read-only approvals</li>
+      <li><strong>Tool result budget</strong>: Persist oversized results to disk automatically</li>
+    </ol>
+  </div>
+  <div class="compare-box claude">
+    <h4><span class="tag claude">For Claude Code</span> (from Smelt strengths)</h4>
+    <ol>
+      <li><strong>Simplify the system prompt</strong>: Test whether a leaner prompt with stronger structural constraints achieves equivalent behavior</li>
+      <li><strong>Make tool definitions more inspectable</strong>: Users can't see <code>checkPermissions()</code> logic</li>
+      <li><strong>Add mid-turn steering</strong>: Allow users to inject messages without canceling</li>
+      <li><strong>Reduce classifier dependency</strong>: More deterministic fast-paths; classifier is expensive and opaque</li>
+      <li><strong>Plugin system</strong>: Users want to add tools; a Lua or WASM runtime would enable this</li>
+    </ol>
+  </div>
+</div>
+
+<h2 id="conclusion">11. Conclusion</h2>
+
+<p>Both Smelt and Claude Code are effective agents, but they optimize for different trade-offs:</p>
+
+<div class="compare-row">
+  <div class="compare-box smelt">
+    <h4><span class="tag smelt">Smelt</span> optimizes for <strong>simplicity, transparency, and extensibility</strong></h4>
+    <p>It uses structural constraints (tool visibility, deterministic hooks) and a lean system prompt. It trusts the model within safe boundaries.</p>
+  </div>
+  <div class="compare-box claude">
+    <h4><span class="tag claude">Claude Code</span> optimizes for <strong>control, consistency, and scale</strong></h4>
+    <p>It uses massive prose instructions, a multi-layer permission pipeline, and a secondary LLM classifier. It constrains the model extensively and verifies its work.</p>
+  </div>
+</div>
+
+<div class="note ok">
+  <strong>The most effective agent likely lies in the middle:</strong>
+  <ul>
+    <li><strong>Structural constraints</strong> for safety and reliability</li>
+    <li><strong>Lean prompts</strong> for token efficiency and model flexibility</li>
+    <li><strong>Deterministic hooks</strong> for common permission decisions</li>
+    <li><strong>LLM classifiers</strong> only for genuinely ambiguous cases</li>
+    <li><strong>Subagents</strong> for separation of concerns</li>
+    <li><strong>User override</strong> as the ultimate authority</li>
+  </ul>
+  <p><strong>The lesson is not "more rules = better agent."</strong> The lesson is <strong>"the right kind of constraints in the right places."</strong> Hardcode the invariants, structure the workflows, and let the model breathe everywhere else.</p>
+</div>
+
+</main>
+
+<footer>
+  Comparative analysis of Smelt and Claude Code interaction architectures · 2026-05-13
+</footer>
+
+<script>
+function toggle(header) {
+  const phase = header.parentElement;
+  phase.classList.toggle('open');
+}
+
+function showPrompt(id) {
+  document.querySelectorAll('.prompt-example').forEach(el => el.style.display = 'none');
+  document.getElementById('prompt-' + id).style.display = 'block';
+  document.querySelectorAll('#prompt .interactive-toggle button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+</script>
+
+</body>
+</html>
