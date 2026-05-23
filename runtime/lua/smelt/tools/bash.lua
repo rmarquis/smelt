@@ -90,6 +90,7 @@ end
 smelt.tools.register({
   name = "bash",
   override = true,
+  permission_defaults = { plan = "allow" },
   default_allow = DEFAULT_ALLOW,
   subpattern_parser = "shell",
   description =

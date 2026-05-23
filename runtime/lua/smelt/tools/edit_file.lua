@@ -45,7 +45,7 @@ smelt.tools.register({
   name = "edit_file",
   description = "Performs exact string replacements in files. The old_string must be unique in the file unless replace_all is true.",
   override = true,
-  permission_defaults = { apply = "allow" },
+  permission_defaults = { plan = "deny", apply = "allow" },
   parameters = {
     type = "object",
     properties = {

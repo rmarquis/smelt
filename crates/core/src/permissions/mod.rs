@@ -206,10 +206,10 @@ impl Permissions {
 
     pub fn check_tool(&self, mode: AgentMode, tool_name: &str) -> Decision {
         let perms = self.mode_perms(mode);
-        let default = if mode == AgentMode::Yolo {
-            Decision::Allow
-        } else {
-            Decision::Ask
+        let default = match mode {
+            AgentMode::Yolo => Decision::Allow,
+            AgentMode::Plan => Decision::Deny,
+            _ => Decision::Ask,
         };
         perms.tools.get(tool_name).cloned().unwrap_or(default)
     }

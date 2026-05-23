@@ -202,6 +202,7 @@ smelt.tools.register({
     .. "The page is fetched, converted to markdown, then an isolated LLM call "
     .. "extracts only what the prompt asks for.",
   override = true,
+  permission_defaults = { normal = "allow", plan = "allow", apply = "allow" },
   parameters = {
     type = "object",
     properties = {

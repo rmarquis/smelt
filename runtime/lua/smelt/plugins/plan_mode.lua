@@ -107,6 +107,7 @@ local function register_exit_plan_mode()
     name = "exit_plan_mode",
     description = "Signal that planning is complete and ready for user approval. Call this when your plan is finalized.",
     modes = { "plan" },
+    permission_defaults = { plan = "allow" },
     parameters = {
       type = "object",
       properties = {

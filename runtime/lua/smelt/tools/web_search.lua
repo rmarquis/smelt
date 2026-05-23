@@ -12,6 +12,7 @@ smelt.tools.register({
   name = "web_search",
   description = "Search the web using DuckDuckGo. Returns a list of results with titles, URLs, and descriptions.",
   override = true,
+  permission_defaults = { normal = "allow", plan = "allow", apply = "allow" },
   parameters = {
     type = "object",
     properties = {
