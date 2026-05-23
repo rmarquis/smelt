@@ -252,6 +252,9 @@ local function normalize_items(items)
         description = it.description,
         key         = it.key,
       }
+      for k, v in pairs(it) do
+        if entry[k] == nil then entry[k] = v end
+      end
       if entry.description and entry.description ~= "" then
         has_descriptions = true
       end
