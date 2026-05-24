@@ -31,8 +31,9 @@ matrix.
 ## Reasoning Effort
 
 Press `Ctrl+T` to cycle through reasoning levels (`off`, `low`, `medium`,
-`high`, `max`). Set the starting level with `--reasoning-effort`, and configure
-which levels appear in the cycle with `--reasoning-cycle`.
+`high`, `max`), or use `/reasoning` (with or without an argument) to pick one
+directly. Set the starting level with `--reasoning-effort`, and configure which
+levels appear in the cycle with `--reasoning-cycle`.
 
 ## Tools
 

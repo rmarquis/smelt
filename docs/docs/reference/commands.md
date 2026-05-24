@@ -13,6 +13,7 @@ Type `/` to open the command picker with fuzzy search.
 | `/fork`, `/branch`        | Fork the current session                                   |
 | `/export`                 | Export conversation; prompts for clipboard or file         |
 | `/model [provider/model]` | Switch model (opens picker if no name given)               |
+| `/reasoning [effort]`     | Switch reasoning effort (opens picker if no name given)    |
 | `/settings`               | Toggle runtime settings                                    |
 | `/theme [name]`           | Change accent color                                        |
 | `/color [name]`           | Set task slug color                                        |
