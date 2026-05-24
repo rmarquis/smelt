@@ -213,6 +213,29 @@
   [data-md-color-scheme="slate"] .hero-actions .btn-label {
     color: #fff7f2;
   }
+
+  .home-content {
+    position: relative;
+    z-index: 2;
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 4rem 2rem 6rem;
+  }
+
+  .home-content h1 {
+    text-align: center;
+    font-weight: 700;
+    margin-bottom: 3rem;
+  }
+
+  .home-content h2 {
+    font-weight: 600;
+    margin-top: 2.5rem;
+  }
+
+  .home-content p {
+    line-height: 1.7;
+  }
 </style>
 {% endblock %} {% block content %}
 <section class="hero">
@@ -248,5 +271,8 @@
     </div>
   </div>
 </section>
+<div class="home-content md-typeset">
+  {{ page.content }}
+</div>
 <script src="javascripts/hero-lava.js"></script>
 {% endblock %} {% block footer %}{% endblock %}
