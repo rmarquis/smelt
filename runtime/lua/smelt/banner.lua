@@ -8,22 +8,25 @@
 
 local M = {}
 
+-- Truecolor RGB values sidestep Windows Terminal’s
+-- "adjust indistinguishable colors" feature (which dims
+-- indexed/256-color palette values against similar backgrounds).
 M.PALETTE = {
-	R = 124, -- dark red (outer flame edge)
-	O = 202, -- red-orange
-	o = 208, -- orange
-	Y = 220, -- yellow (hot inner glow)
-	W = 15, -- wordmark
-	G = 244, -- wordmark shadow
+	R = "#AF0000", -- dark red (outer flame edge)
+	O = "#FF5F00", -- red-orange
+	o = "#FF8700", -- orange
+	Y = "#FFD700", -- yellow (hot inner glow)
+	W = "#FFFFFF", -- wordmark
+	G = "#808080", -- wordmark shadow
 }
 
 M.LIGHT_PALETTE = {
-	R = 124,
-	O = 202,
-	o = 208,
-	Y = 220,
-	W = 235, -- wordmark
-	G = 250, -- wordmark shadow
+	R = "#AF0000",
+	O = "#FF5F00",
+	o = "#FF8700",
+	Y = "#FFD700",
+	W = "#262626", -- wordmark
+	G = "#BCBCBC", -- wordmark shadow
 }
 
 function M.palette()
@@ -105,6 +108,29 @@ function M.paint_pixels(slice, row0, col0, pixels, palette)
 	end
 end
 
+local function color_to_ansi_seq(color, ground)
+	local prefix = ground == "bg" and "48" or "38"
+	local t = type(color)
+	if t == "number" then
+		return string.format("%s;5;%d", prefix, color)
+	elseif t == "string" then
+		local hex = color:match("^#(%x%x%x%x%x%x)$")
+		if not hex then
+			error("banner: invalid color string: " .. tostring(color))
+		end
+		return string.format(
+			"%s;2;%d;%d;%d",
+			prefix,
+			tonumber(hex:sub(1, 2), 16),
+			tonumber(hex:sub(3, 4), 16),
+			tonumber(hex:sub(5, 6), 16)
+		)
+	elseif t == "table" then
+		return string.format("%s;2;%d;%d;%d", prefix, color.r or 0, color.g or 0, color.b or 0)
+	end
+	error("banner: unsupported color type: " .. t)
+end
+
 -- Render a pixel grid to an ANSI-escape string for stdout.
 function M.ansi_render(pixels, palette)
 	palette = palette or M.palette()
@@ -119,11 +145,17 @@ function M.ansi_render(pixels, palette)
 			if not fg and not bg then
 				line[#line + 1] = " "
 			elseif fg and bg then
-				line[#line + 1] = string.format("\27[38;5;%d;48;5;%dm▀\27[0m", fg, bg)
+				line[#line + 1] = string.format(
+					"\27[%s;%sm▀\27[0m",
+					color_to_ansi_seq(fg, "fg"),
+					color_to_ansi_seq(bg, "bg")
+				)
 			elseif fg then
-				line[#line + 1] = string.format("\27[38;5;%dm▀\27[0m", fg)
+				line[#line + 1] =
+					string.format("\27[%sm▀\27[0m", color_to_ansi_seq(fg, "fg"))
 			else
-				line[#line + 1] = string.format("\27[38;5;%dm▄\27[0m", bg)
+				line[#line + 1] =
+					string.format("\27[%sm▄\27[0m", color_to_ansi_seq(bg, "fg"))
 			end
 		end
 		out[#out + 1] = table.concat(line)
